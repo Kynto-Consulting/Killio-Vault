@@ -57,4 +57,6 @@ export interface Team {
   planTier?: string;
   icon?: string | null;
   role?: string;
+  myRole?: string | null;
+  isArchived?: boolean;
 }

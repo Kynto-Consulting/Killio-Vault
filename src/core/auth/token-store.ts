@@ -9,6 +9,7 @@ import * as SecureStore from 'expo-secure-store';
 const ACCESS_KEY = 'killio.accessToken';
 const REFRESH_KEY = 'killio.refreshToken';
 const PERSONAL_TEAM_KEY = 'killio.personalTeamId';
+const ACTIVE_TEAM_KEY = 'killio.activeTeamId';
 
 export interface StoredTokens {
   accessToken: string;
@@ -35,6 +36,7 @@ export async function clearTokens(): Promise<void> {
     SecureStore.deleteItemAsync(ACCESS_KEY),
     SecureStore.deleteItemAsync(REFRESH_KEY),
     SecureStore.deleteItemAsync(PERSONAL_TEAM_KEY),
+    SecureStore.deleteItemAsync(ACTIVE_TEAM_KEY),
   ]);
 }
 
@@ -44,4 +46,17 @@ export async function savePersonalTeamId(teamId: string): Promise<void> {
 
 export async function getPersonalTeamId(): Promise<string | null> {
   return SecureStore.getItemAsync(PERSONAL_TEAM_KEY);
+}
+
+/**
+ * Active workspace selected by the user for Vault. Persists across launches
+ * so the user doesn't pick again every cold start. Defaults to the personal
+ * workspace until they explicitly switch.
+ */
+export async function saveActiveTeamId(teamId: string): Promise<void> {
+  await SecureStore.setItemAsync(ACTIVE_TEAM_KEY, teamId);
+}
+
+export async function getActiveTeamId(): Promise<string | null> {
+  return SecureStore.getItemAsync(ACTIVE_TEAM_KEY);
 }

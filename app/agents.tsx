@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -28,7 +28,7 @@ import { colors, radius, spacing, typography } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
 
 const VOICE_PRESETS = [
-  { value: 'es-ES', label: 'Español (ES)' },
+  { value: 'es-ES', label: 'EspaÃ±ol (ES)' },
   { value: 'en-US', label: 'English (US)' },
 ];
 
@@ -56,7 +56,7 @@ export default function AgentsScreen() {
   const t = useTranslations('agents');
   const tc = useTranslations('common');
   const { entitlements } = useEntitlements();
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const [agents, setAgents] = useState<LocalAgent[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [docs, setDocs] = useState<DocSummary[]>([]);
@@ -71,11 +71,11 @@ export default function AgentsScreen() {
 
   // Load workspace documents (for assignment) when the editor opens.
   useEffect(() => {
-    if (!draft || !personalTeam?.id) return;
-    void listDocuments(personalTeam.id)
+    if (!draft || !activeTeam?.id) return;
+    void listDocuments(activeTeam.id)
       .then(setDocs)
       .catch(() => setDocs([]));
-  }, [draft, personalTeam?.id]);
+  }, [draft, activeTeam?.id]);
 
   const openCreate = () => {
     const limit = entitlements.policy.localAgents;
@@ -197,8 +197,8 @@ export default function AgentsScreen() {
               const on = draft.assignedDocIds.includes(d.id);
               return (
                 <Pressable key={d.id} style={styles.docRow} onPress={() => toggleDoc(d.id)}>
-                  <Text style={[styles.check, on && styles.checkOn]}>{on ? '☑' : '☐'}</Text>
-                  <Text style={styles.docTitle} numberOfLines={1}>{d.title || 'Sin título'}</Text>
+                  <Text style={[styles.check, on && styles.checkOn]}>{on ? 'â˜‘' : 'â˜'}</Text>
+                  <Text style={styles.docTitle} numberOfLines={1}>{d.title || 'Sin tÃ­tulo'}</Text>
                 </Pressable>
               );
             })
@@ -230,8 +230,8 @@ export default function AgentsScreen() {
               <Text style={styles.agentName}>{item.name}</Text>
               {item.personality ? <Text style={styles.agentMeta} numberOfLines={1}>{item.personality}</Text> : null}
               <Text style={styles.agentMeta}>
-                {item.assignedDocIds.length} doc · voz {item.voice ?? 'es-ES'}
-                {item.wakePhrase ? ` · "Hey ${item.wakePhrase}"` : ''}
+                {item.assignedDocIds.length} doc Â· voz {item.voice ?? 'es-ES'}
+                {item.wakePhrase ? ` Â· "Hey ${item.wakePhrase}"` : ''}
               </Text>
             </Pressable>
             <View style={styles.agentActions}>

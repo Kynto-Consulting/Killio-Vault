@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CheckCircle2, MessageCircle, Smartphone } from 'lucide-react-native';
@@ -10,13 +10,13 @@ import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
 
 /**
- * WhatsApp Personal pairing — enter your number, get an 8-digit code, type it
- * in WhatsApp → Linked devices → Link with phone number. Worker polls Baileys
+ * WhatsApp Personal pairing â€” enter your number, get an 8-digit code, type it
+ * in WhatsApp â†’ Linked devices â†’ Link with phone number. Worker polls Baileys
  * and the Connected status flips once the link is established.
  */
 export default function WhatsappPair() {
   const router = useRouter();
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,16 +31,16 @@ export default function WhatsappPair() {
   }, []);
 
   const startPair = async () => {
-    if (!personalTeam?.id || !phone.trim()) return;
+    if (!activeTeam?.id || !phone.trim()) return;
     setBusy(true);
     try {
-      const r = await requestPairCode(personalTeam.id, phone.trim());
+      const r = await requestPairCode(activeTeam.id, phone.trim());
       setCode(formatCode(r.code));
       // Begin polling status every 5s.
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(async () => {
         try {
-          const s = await getStatus(personalTeam.id);
+          const s = await getStatus(activeTeam.id);
           if (s.connected) {
             setConnected(true);
             setPairedPhone(s.phone);
@@ -80,8 +80,8 @@ export default function WhatsappPair() {
       {!code ? (
         <>
           <Body muted>
-            Ingresa tu número de WhatsApp en formato internacional (ej. +51999123456).
-            Generaremos un código de 8 dígitos para vincular este dispositivo.
+            Ingresa tu nÃºmero de WhatsApp en formato internacional (ej. +51999123456).
+            Generaremos un cÃ³digo de 8 dÃ­gitos para vincular este dispositivo.
           </Body>
           <View className="my-3">
             <Input
@@ -92,14 +92,14 @@ export default function WhatsappPair() {
               autoComplete="tel"
             />
           </View>
-          <Button title="Generar código" onPress={startPair} busy={busy} />
+          <Button title="Generar cÃ³digo" onPress={startPair} busy={busy} />
         </>
       ) : (
         <>
           <Card>
             <View className="flex-row items-center gap-2">
               <Smartphone size={16} color={colors.cyan} />
-              <H2>Código de vinculación</H2>
+              <H2>CÃ³digo de vinculaciÃ³n</H2>
             </View>
             <Text
               style={{ fontFamily: fonts.mono, fontSize: 36, letterSpacing: 6, color: colors.foreground }}
@@ -107,13 +107,13 @@ export default function WhatsappPair() {
             >
               {code}
             </Text>
-            <Body muted>1. Abre WhatsApp en tu teléfono.</Body>
-            <Body muted>2. Ajustes → Dispositivos vinculados → Vincular un dispositivo.</Body>
-            <Body muted>3. Toca "Vincular con número de teléfono".</Body>
-            <Body muted>4. Escribe el código de 8 dígitos.</Body>
+            <Body muted>1. Abre WhatsApp en tu telÃ©fono.</Body>
+            <Body muted>2. Ajustes â†’ Dispositivos vinculados â†’ Vincular un dispositivo.</Body>
+            <Body muted>3. Toca "Vincular con nÃºmero de telÃ©fono".</Body>
+            <Body muted>4. Escribe el cÃ³digo de 8 dÃ­gitos.</Body>
           </Card>
           <Button
-            title="Generar otro código"
+            title="Generar otro cÃ³digo"
             variant="secondary"
             onPress={() => {
               setCode(null);

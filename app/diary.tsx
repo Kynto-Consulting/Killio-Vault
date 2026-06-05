@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+﻿import { useCallback, useEffect, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { RefreshCw } from 'lucide-react-native';
 
@@ -13,23 +13,23 @@ import { fonts } from '@/theme/fonts';
 
 export default function DiaryScreen() {
   const t = useTranslations('diary');
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const { pending, refreshPending } = useCapture();
   const [hits, setHits] = useState<DiarySearchHit[]>([]);
   const [loading, setLoading] = useState(false);
   const today = localDate(Date.now());
 
   const load = useCallback(async () => {
-    if (!personalTeam?.id) return;
+    if (!activeTeam?.id) return;
     setLoading(true);
     try {
-      setHits(await searchDiary({ teamId: personalTeam.id, date: today }));
+      setHits(await searchDiary({ teamId: activeTeam.id, date: today }));
     } catch {
       setHits([]);
     } finally {
       setLoading(false);
     }
-  }, [personalTeam?.id, today]);
+  }, [activeTeam?.id, today]);
 
   useEffect(() => {
     void load();

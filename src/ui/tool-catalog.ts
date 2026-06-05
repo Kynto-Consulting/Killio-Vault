@@ -34,6 +34,12 @@ export const TOOL_CATALOG: Record<string, ToolMeta> = {
   search_memory: { icon: 'sparkles', i18nKey: 'searchMemory' },
   list_memory: { icon: 'sparkles', i18nKey: 'listMemory' },
   read_memory: { icon: 'sparkles', i18nKey: 'readMemory' },
+  save_user_memory: { icon: 'brain', i18nKey: 'saveUserMemory' },
+  search_user_memory: { icon: 'brain', i18nKey: 'searchUserMemory' },
+  list_user_memories: { icon: 'brain', i18nKey: 'listUserMemories' },
+  // ─── Workspaces ──────────────────────────────────────────────────────────
+  get_workspaces: { icon: 'layers', i18nKey: 'getWorkspaces' },
+  get_workspace_members: { icon: 'users', i18nKey: 'getWorkspaceMembers' },
   // ─── Cards ────────────────────────────────────────────────────────────────
   card_create: { icon: 'plus-circle', i18nKey: 'cardCreated' },
   card_move: { icon: 'arrow-right', i18nKey: 'cardMoved' },

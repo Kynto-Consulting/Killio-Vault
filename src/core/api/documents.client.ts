@@ -15,6 +15,26 @@ export interface DocFull {
 export interface DocSummary {
   id: string;
   title: string;
+  folderId?: string | null;
+  updatedAt?: string;
+}
+
+export interface FolderSummary {
+  id: string;
+  name: string;
+  parentFolderId: string | null;
+  icon?: string | null;
+  color?: string | null;
+}
+
+export async function listFolders(
+  teamId: string,
+  parentFolderId?: string,
+): Promise<FolderSummary[]> {
+  const { data } = await api.get<FolderSummary[]>('/folders', {
+    params: { teamId, parentFolderId },
+  });
+  return data ?? [];
 }
 
 /** Lists documents in a team (optionally within a folder) for agent assignment. */
@@ -32,6 +52,14 @@ export async function listDocuments(
 export async function getDocument(documentId: string): Promise<DocFull> {
   const { data } = await api.get<DocFull>(`/documents/${documentId}`);
   return data;
+}
+
+export async function updateBrickContent(
+  documentId: string,
+  brickId: string,
+  content: Record<string, any>,
+): Promise<void> {
+  await api.put(`/documents/${documentId}/bricks/${brickId}`, { content });
 }
 
 /** Flattens a document's text-bearing bricks into a single plain-text blob. */

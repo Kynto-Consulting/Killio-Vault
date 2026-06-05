@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+﻿import { useCallback, useState } from 'react';
 import {
   Alert,
   Linking,
@@ -32,21 +32,21 @@ import { colors, radius, spacing, typography } from '@/theme/theme';
 export default function IntegrationsScreen() {
   const t = useTranslations('integrations');
   const router = useRouter();
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const [connected, setConnected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [manual, setManual] = useState<VaultIntegration | null>(null);
 
   const load = useCallback(async () => {
-    if (!personalTeam?.id) return;
+    if (!activeTeam?.id) return;
     setLoading(true);
     try {
       // Server-side OAuth/manual connectors + device-side permissions +
       // pair-based bridges (WhatsApp Personal).
       const [serverProviders, devProviders, wa] = await Promise.all([
-        getConnectedProviders(personalTeam.id).catch(() => [] as string[]),
+        getConnectedProviders(activeTeam.id).catch(() => [] as string[]),
         getConnectedDeviceProviders(),
-        getWaStatus(personalTeam.id).catch(() => ({ connected: false, phone: null })),
+        getWaStatus(activeTeam.id).catch(() => ({ connected: false, phone: null })),
       ]);
       const pairProviders: string[] = [];
       if (wa.connected) pairProviders.push('whatsapp_personal');
@@ -56,7 +56,7 @@ export default function IntegrationsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [personalTeam?.id]);
+  }, [activeTeam?.id]);
 
   useFocusEffect(
     useCallback(() => {
@@ -65,9 +65,9 @@ export default function IntegrationsScreen() {
   );
 
   const connectOAuth = async (it: VaultIntegration) => {
-    if (!personalTeam?.id || !it.connectPath) return;
+    if (!activeTeam?.id || !it.connectPath) return;
     try {
-      const url = await getConnectUrl(personalTeam.id, it.connectPath);
+      const url = await getConnectUrl(activeTeam.id, it.connectPath);
       Alert.alert(it.name, t('connectInBrowser'), [
         { text: t('cancel'), style: 'cancel' },
         { text: t('connect'), onPress: () => void Linking.openURL(url) },
@@ -137,7 +137,7 @@ export default function IntegrationsScreen() {
 
       <ManualModal
         integration={manual}
-        teamId={personalTeam?.id}
+        teamId={activeTeam?.id}
         onClose={() => setManual(null)}
         onSaved={() => {
           setManual(null);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -47,7 +47,7 @@ export default function AssistantScreen() {
   const t = useTranslations('assistant');
   const tc = useTranslations('common');
   const navigation = useNavigation();
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const { setMuted, flushNow } = useCapture();
   const { agentId, conversationId } = useLocalSearchParams<{
     agentId?: string;
@@ -68,7 +68,7 @@ export default function AssistantScreen() {
   // Prior ~1 min of transcript captured when the user speaks (voice/wake), so
   // the agent has context of what was being said before the command.
   const recentCtx = useRef<string>('');
-  // True when the pending turn was started by voice (push-to-talk) → speak reply.
+  // True when the pending turn was started by voice (push-to-talk) â†’ speak reply.
   const voiceTurn = useRef<boolean>(false);
 
   useEffect(() => {
@@ -139,14 +139,14 @@ export default function AssistantScreen() {
       speakReply?: boolean;
     } = {},
   ) => {
-    if (!personalTeam?.id) return;
+    if (!activeTeam?.id) return;
     setBusy(true);
     draftId.current = `a-${Date.now()}`;
     let finalText = '';
     const toolInputById = new Map<string, { tool: string; input: unknown }>();
     await streamAgentChat(
       {
-        teamId: personalTeam.id,
+        teamId: activeTeam.id,
         message,
         conversationId: convId.current,
         entityType: 'vault',
@@ -183,9 +183,9 @@ export default function AssistantScreen() {
               void runtime.current.remember(lastUserMsg.current, finalText);
             }
             // Mirror the exchange to the rooms "Vault" group (history).
-            if (opts.userTurn && personalTeam?.id && cid) {
+            if (opts.userTurn && activeTeam?.id && cid) {
               void logConversation({
-                teamId: personalTeam.id,
+                teamId: activeTeam.id,
                 conversationId: cid,
                 title: firstMsg.current || lastUserMsg.current,
                 userText: lastUserMsg.current,
@@ -213,7 +213,7 @@ export default function AssistantScreen() {
 
   const handleClientAction = async (e: ClientActionEvent) => {
     const resumeWith = (result: AgentChatBody['clientActionResult']) =>
-      runTurn('(continúa)', { clientActionResult: result });
+      runTurn('(continÃºa)', { clientActionResult: result });
 
     // vault_disconnect: AI explicitly ends the voice conversation. Silence the
     // assistant, clear voice state, and stop the turn. Background wake listener
@@ -268,7 +268,7 @@ export default function AssistantScreen() {
 
   // Pick + upload a file/image attachment (embedded as an <asset> tag on send).
   const pickAttachment = async () => {
-    if (!personalTeam?.id || uploading) return;
+    if (!activeTeam?.id || uploading) return;
     const res = await DocumentPicker.getDocumentAsync({
       type: ['image/*', 'application/pdf', 'text/*'],
       copyToCacheDirectory: true,
@@ -282,7 +282,7 @@ export default function AssistantScreen() {
         name: a.name ?? 'file',
         type: a.mimeType ?? 'application/octet-stream',
         ownerScopeType: 'team',
-        ownerScopeId: personalTeam.id,
+        ownerScopeId: activeTeam.id,
         usage: 'chat_attachment',
       });
       const url = String(up.url ?? '');
@@ -291,7 +291,7 @@ export default function AssistantScreen() {
         setAttachments((prev) => [...prev, { url, name: a.name ?? 'file', kind }]);
       }
     } catch {
-      // ignore — user can retry
+      // ignore â€” user can retry
     } finally {
       setUploading(false);
     }
@@ -319,11 +319,11 @@ export default function AssistantScreen() {
     try {
       await flushNow();
     } catch {
-      // offline — agent still answers from what's already on the server
+      // offline â€” agent still answers from what's already on the server
     }
     const base = runtime.current ? await runtime.current.composeMessage(text || '(adjunto)') : text;
     const ctx = recentCtx.current
-      ? `Contexto reciente (último minuto de lo que el usuario decía): "${recentCtx.current}"\n\n`
+      ? `Contexto reciente (Ãºltimo minuto de lo que el usuario decÃ­a): "${recentCtx.current}"\n\n`
       : '';
     recentCtx.current = '';
     const speakReply = voiceTurn.current;
@@ -332,7 +332,7 @@ export default function AssistantScreen() {
     await runTurn(toSend, { remember: !!runtime.current, userTurn: true, speakReply });
   };
 
-  // Push-to-talk: one-shot native recognition → fills the input.
+  // Push-to-talk: one-shot native recognition â†’ fills the input.
   const micPress = async () => {
     if (busy || listening) return;
     if (!sttAvailable()) {
@@ -345,10 +345,10 @@ export default function AssistantScreen() {
       if (text.trim()) {
         setInput(text.trim());
         recentCtx.current = recentTranscriptText(60_000); // last minute of diary
-        voiceTurn.current = true; // voice → speak the reply
+        voiceTurn.current = true; // voice â†’ speak the reply
       }
     } catch {
-      // ignore — user can type
+      // ignore â€” user can type
     } finally {
       setListening(false);
     }

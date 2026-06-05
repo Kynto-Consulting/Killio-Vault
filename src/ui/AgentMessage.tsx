@@ -142,6 +142,16 @@ function ToolChip({ tool }: { tool: ToolState }) {
         >
           {label || tool.name}
         </Text>
+        {tool.workspace ? (
+          <View className="rounded border border-cyan/40 bg-cyan/10 px-1.5 py-0.5">
+            <Text
+              style={{ fontFamily: fonts.semibold }}
+              className="text-[9px] uppercase tracking-wide text-cyan"
+            >
+              ws
+            </Text>
+          </View>
+        ) : null}
         {hasDetail ? (
           open ? (
             <ChevronDown size={13} color={colors.mutedForeground} />

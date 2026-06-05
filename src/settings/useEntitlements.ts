@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 
 import { getEntitlements, type VaultEntitlements } from '../core/api/vault.client';
 import { useAuth } from '../core/auth/AuthContext';
@@ -23,19 +23,19 @@ export function useEntitlements(): {
   entitlements: VaultEntitlements;
   loading: boolean;
 } {
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const [entitlements, setEntitlements] = useState<VaultEntitlements>(FREE_FALLBACK);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!personalTeam?.id) {
+      if (!activeTeam?.id) {
         setLoading(false);
         return;
       }
       try {
-        const e = await getEntitlements(personalTeam.id);
+        const e = await getEntitlements(activeTeam.id);
         if (!cancelled) setEntitlements(e);
       } catch {
         if (!cancelled) setEntitlements(FREE_FALLBACK);
@@ -46,7 +46,7 @@ export function useEntitlements(): {
     return () => {
       cancelled = true;
     };
-  }, [personalTeam?.id]);
+  }, [activeTeam?.id]);
 
   return { entitlements, loading };
 }

@@ -1,4 +1,4 @@
-import { Image, View } from 'react-native';
+﻿import { Image, View } from 'react-native';
 import { useRouter } from 'expo-router';
 
 import { Screen, Card, H1, Body, Button } from '@/ui';
@@ -11,7 +11,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const t = useTranslations('home');
   const tc = useTranslations('common');
-  const { personalTeam, signOut } = useAuth();
+  const { activeTeam, signOut } = useAuth();
   const { status, pending, nativeAvailable } = useCapture();
 
   const statusLabel: Record<string, string> = {
@@ -28,7 +28,7 @@ export default function HomeScreen() {
         style={{ width: 120, height: 36, resizeMode: 'contain', marginBottom: 8 }}
       />
       <H1>Vault</H1>
-      <Body muted>{personalTeam?.name ?? t('workspace')}</Body>
+      <Body muted>{activeTeam?.name ?? t('workspace')}</Body>
 
       <Card className="mt-2">
         <View className="flex-row items-center gap-2">

@@ -13,6 +13,8 @@ export interface ToolState {
   status: ToolStatus;
   output?: unknown;
   durationMs?: number;
+  /** Optional cross-workspace override declared by the AI via `workspace="…"`. */
+  workspace?: string;
 }
 
 export type MarkupBlock =
@@ -70,7 +72,13 @@ function collectToolStates(content: string): Map<string, ToolState> {
   while ((m = INVOKE_RE.exec(content))) {
     const a = attrs(m[1]);
     const id = a.id || a.name || `tc-${byId.size}`;
-    byId.set(id, { id, name: a.name || 'tool', input: parseInvokeInput(m[2]), status: 'running' });
+    byId.set(id, {
+      id,
+      name: a.name || 'tool',
+      input: parseInvokeInput(m[2]),
+      status: 'running',
+      workspace: a.workspace || undefined,
+    });
   }
 
   TOOLCALL_RE.lastIndex = 0;

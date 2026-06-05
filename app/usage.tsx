@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+﻿import { useCallback, useState } from 'react';
 import { RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Sparkles, RotateCcw } from 'lucide-react-native';
@@ -12,21 +12,21 @@ import { fonts } from '@/theme/fonts';
 
 export default function UsageScreen() {
   const t = useTranslations('usage');
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const [usage, setUsage] = useState<AiUsage | null>(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
-    if (!personalTeam?.id) return;
+    if (!activeTeam?.id) return;
     setLoading(true);
     try {
-      setUsage(await getUsage(personalTeam.id));
+      setUsage(await getUsage(activeTeam.id));
     } catch {
       setUsage(null);
     } finally {
       setLoading(false);
     }
-  }, [personalTeam?.id]);
+  }, [activeTeam?.id]);
 
   useFocusEffect(
     useCallback(() => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+﻿import { useEffect, useRef } from 'react';
 
 import { useCapture } from '../capture/CaptureContext';
 import { useAuth } from '../core/auth/AuthContext';
@@ -10,13 +10,13 @@ import { recentTranscriptText } from '../db/outbox';
 import type { WakeMatch } from './WakeWord';
 
 /**
- * Headless wake-word handler. When "Hey Killio …" (or "Hey {agent} …") is heard
+ * Headless wake-word handler. When "Hey Killio â€¦" (or "Hey {agent} â€¦") is heard
  * in the live transcript, it routes the spoken command to the matched agent and
- * speaks the reply with that agent's voice — hands-free, screen locked.
+ * speaks the reply with that agent's voice â€” hands-free, screen locked.
  */
 export function WakeListener() {
   const { setOnWake, setMuted, flushNow } = useCapture();
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const busy = useRef(false);
   const convId = useRef<string | undefined>(undefined);
 
@@ -31,9 +31,9 @@ export function WakeListener() {
     const handler = async (m: WakeMatch) => {
       if (busy.current) return;
       const command = m.command.trim();
-      if (!command || !personalTeam?.id) return; // wake with no command → ignore
+      if (!command || !activeTeam?.id) return; // wake with no command â†’ ignore
       busy.current = true;
-      // Safety: never leave the listener locked for more than 60s — a missed
+      // Safety: never leave the listener locked for more than 60s â€” a missed
       // onDone/onError would otherwise block subsequent wake invocations.
       timeout = setTimeout(releaseBusy, 60_000);
       try {
@@ -52,7 +52,7 @@ export function WakeListener() {
 
         const ctx = recentTranscriptText(60_000);
         const ctxPrefix = ctx
-          ? `Contexto reciente (último minuto): "${ctx}"\n\n`
+          ? `Contexto reciente (Ãºltimo minuto): "${ctx}"\n\n`
           : '';
         const base = agent
           ? await new LocalAgentRuntime(agent).composeMessage(command)
@@ -62,7 +62,7 @@ export function WakeListener() {
         let finalText = '';
         await streamAgentChat(
           {
-            teamId: personalTeam.id,
+            teamId: activeTeam.id,
             message,
             conversationId: convId.current,
             entityType: 'vault',
@@ -101,7 +101,7 @@ export function WakeListener() {
       setOnWake(null);
       releaseBusy();
     };
-  }, [setOnWake, setMuted, flushNow, personalTeam?.id]);
+  }, [setOnWake, setMuted, flushNow, activeTeam?.id]);
 
   return null;
 }

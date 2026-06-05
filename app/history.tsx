@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+﻿import { useCallback, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { ChevronRight, MessageSquare } from 'lucide-react-native';
@@ -14,21 +14,21 @@ import { fonts } from '@/theme/fonts';
 export default function HistoryScreen() {
   const router = useRouter();
   const t = useTranslations('history');
-  const { personalTeam } = useAuth();
+  const { activeTeam } = useAuth();
   const [items, setItems] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
-    if (!personalTeam?.id) return;
+    if (!activeTeam?.id) return;
     setLoading(true);
     try {
-      setItems(await listConversations(personalTeam.id));
+      setItems(await listConversations(activeTeam.id));
     } catch {
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [personalTeam?.id]);
+  }, [activeTeam?.id]);
 
   useFocusEffect(
     useCallback(() => {
