@@ -19,6 +19,7 @@ import {
   Search,
   SlidersHorizontal,
   Settings,
+  Users,
   X,
   type LucideIcon,
 } from 'lucide-react-native';
@@ -37,7 +38,7 @@ type Route =
   | '/home' | '/diary' | '/assistant' | '/history' | '/agents'
   | '/integrations' | '/schedule' | '/usage' | '/settings'
   | '/documents' | '/workspace' | '/local-workspaces'
-  | '/memories' | '/search' | '/notifications' | '/rooms' | '/b';
+  | '/memories' | '/search' | '/notifications' | '/rooms' | '/b' | '/teams';
 
 interface Item {
   key: string;
@@ -64,10 +65,13 @@ const WORKSPACE_ITEMS: Item[] = [
   { key: 'documents', icon: FileText, route: '/documents' },
   { key: 'boards', icon: KanbanIcon, route: '/b' },
   { key: 'rooms', icon: MessageSquare, route: '/rooms' },
+  { key: 'teams', icon: Users, route: '/teams' },
 ];
 
-function itemsForMode(mode: AppMode): Item[] {
-  return mode === 'workspace' ? WORKSPACE_ITEMS : VAULT_ITEMS;
+function itemsForMode(mode: AppMode, isLocal: boolean): Item[] {
+  if (mode !== 'workspace') return VAULT_ITEMS;
+  // `/teams` is cloud-only; hide it when the user is in a local workspace.
+  return isLocal ? WORKSPACE_ITEMS.filter((it) => it.key !== 'teams') : WORKSPACE_ITEMS;
 }
 
 /**
@@ -89,7 +93,7 @@ export function SideNav() {
   const [creatingCloud, setCreatingCloud] = useState(false);
   const [newCloudName, setNewCloudName] = useState('');
   const [submittingCloud, setSubmittingCloud] = useState(false);
-  const items = itemsForMode(mode);
+  const items = itemsForMode(mode, local.mode === 'local');
 
   const submitNewCloud = async () => {
     const name = newCloudName.trim();

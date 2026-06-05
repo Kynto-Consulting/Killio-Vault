@@ -81,6 +81,9 @@ function AppStack() {
       <Stack.Screen name="rooms/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="b/index" options={{ title: t('boards'), ...withMenu }} />
       <Stack.Screen name="b/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="teams/index" options={{ title: t('teams'), ...withMenu }} />
+      <Stack.Screen name="teams/invite" options={{ title: t('inviteMember') }} />
+      <Stack.Screen name="teams/accept" options={{ headerShown: false }} />
     </Stack>
   );
 }

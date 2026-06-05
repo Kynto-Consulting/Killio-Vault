@@ -28,6 +28,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Phase 1+ adds RECORD_AUDIO + FOREGROUND_SERVICE_MICROPHONE (Android 14
     // typed FGS) here; requested at runtime on first launch in the dev-build APK.
     permissions: [],
+    // Universal links for workspace invite acceptance:
+    //   https://killio.dev/teams/accept?token=... → /teams/accept
+    // The custom scheme `killiovault://teams/accept?token=...` also works
+    // because expo-router maps it automatically off the `scheme` above.
+    intentFilters: [
+      {
+        action: 'VIEW',
+        autoVerify: true,
+        data: [
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/teams/accept' },
+        ],
+        category: ['BROWSABLE', 'DEFAULT'],
+      },
+    ],
   },
   ios: {
     bundleIdentifier: 'dev.killio.vault',
