@@ -23,6 +23,7 @@ import { useEntitlements } from '@/settings/useEntitlements';
 import { useAuth } from '@/core/auth/AuthContext';
 import { listDocuments, type DocSummary } from '@/core/api/documents.client';
 import { isCustomVoiceAvailable } from '@/tts/cartesia';
+import { speak } from '@/tts/Tts';
 import { useTranslations } from '@/i18n';
 import { colors, radius, spacing, typography } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
@@ -186,6 +187,16 @@ export default function AgentsScreen() {
                 </Text>
               </Pressable>
             ) : null}
+            <Pressable
+              onPress={() =>
+                void speak(`Hola, soy ${draft.name || 'Killio'}. ${draft.personality || ''}`.trim(), {
+                  language: draft.voice ?? 'es-ES',
+                })
+              }
+              style={styles.voiceChip}
+            >
+              <Text style={styles.voiceChipText}>🔊 {tAgents('testVoice')}</Text>
+            </Pressable>
           </View>
         </View>
         <Field label={t('wakePhrase')} value={draft.wakePhrase} onChange={(v) => setDraft({ ...draft, wakePhrase: v })} />

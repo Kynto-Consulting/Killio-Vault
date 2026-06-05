@@ -252,6 +252,11 @@ export const MESSAGES: Record<Locale, Messages> = {
       enabled: 'Activado',
       disabled: 'Apagado',
     },
+    screenCapture: {
+      title: 'Captura de pantalla',
+      sub: 'Toma una captura de la pantalla actual. El asistente puede leerla si lo permites.',
+      capture: '📸 Capturar pantalla',
+    },
     pushInbox: {
       title: 'Notificaciones',
       empty: 'Sin notificaciones recientes.',
@@ -285,6 +290,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       langEn: 'English (US)',
       untitled: 'Sin título',
       wakeHey: 'Hey',
+      testVoice: 'Probar voz',
     },
     homeScreen: {
       vaultTitle: 'Vault',
@@ -817,6 +823,11 @@ export const MESSAGES: Record<Locale, Messages> = {
       enabled: 'On',
       disabled: 'Off',
     },
+    screenCapture: {
+      title: 'Screen capture',
+      sub: 'Take a snapshot of the current screen. The assistant can read it when you allow it.',
+      capture: '📸 Capture screen',
+    },
     pushInbox: {
       title: 'Notifications',
       empty: 'No recent notifications.',
@@ -850,6 +861,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       langEn: 'English (US)',
       untitled: 'Untitled',
       wakeHey: 'Hey',
+      testVoice: 'Test voice',
     },
     homeScreen: {
       vaultTitle: 'Vault',

@@ -8,6 +8,7 @@ import { speak } from '../tts/Tts';
 import { listAgents } from '../agents/local-agent.model';
 import { LocalAgentRuntime } from '../agents/LocalAgentRuntime';
 import { recentTranscriptText } from '../db/outbox';
+import { isWakeWordEnabled } from '../settings/settings-store';
 import type { WakeMatch } from './WakeWord';
 
 /**
@@ -32,6 +33,8 @@ export function WakeListener() {
 
     const handler = async (m: WakeMatch) => {
       if (busy.current) return;
+      // Honor the user-controlled master toggle in /settings.
+      if (!(await isWakeWordEnabled())) return;
       const command = m.command.trim();
       if (!command || !activeTeam?.id) return; // wake with no command â†’ ignore
       busy.current = true;
