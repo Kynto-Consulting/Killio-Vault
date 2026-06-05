@@ -3,8 +3,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, usePathname } from 'expo-router';
 import {
   BarChart3,
+  Bell,
   Bot,
   Blocks,
+  Brain,
   CalendarClock,
   Check,
   ChevronsUpDown,
@@ -14,6 +16,7 @@ import {
   LogOut,
   Mic,
   MessageSquare,
+  Search,
   SlidersHorizontal,
   Settings,
   X,
@@ -32,7 +35,8 @@ import { fonts } from '../theme/fonts';
 type Route =
   | '/home' | '/diary' | '/assistant' | '/history' | '/agents'
   | '/integrations' | '/schedule' | '/usage' | '/settings'
-  | '/documents' | '/workspace' | '/local-workspaces';
+  | '/documents' | '/workspace' | '/local-workspaces'
+  | '/memories' | '/search' | '/notifications';
 
 interface Item {
   key: string;
@@ -45,6 +49,9 @@ const VAULT_ITEMS: Item[] = [
   { key: 'history', icon: History, route: '/history' },
   { key: 'diary', icon: Mic, route: '/diary' },
   { key: 'agents', icon: Bot, route: '/agents' },
+  { key: 'memories', icon: Brain, route: '/memories' },
+  { key: 'search', icon: Search, route: '/search' },
+  { key: 'notifications', icon: Bell, route: '/notifications' },
   { key: 'integrations', icon: Blocks, route: '/integrations' },
   { key: 'schedule', icon: CalendarClock, route: '/schedule' },
   { key: 'usage', icon: BarChart3, route: '/usage' },

@@ -73,6 +73,9 @@ function AppStack() {
       <Stack.Screen name="d/index" options={{ headerShown: false }} />
       <Stack.Screen name="d/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="local-workspaces" options={{ title: t('localWorkspaces'), ...withMenu }} />
+      <Stack.Screen name="memories" options={{ title: t('memories'), ...withMenu }} />
+      <Stack.Screen name="search" options={{ title: t('search'), ...withMenu }} />
+      <Stack.Screen name="notifications" options={{ title: t('notifications'), ...withMenu }} />
     </Stack>
   );
 }

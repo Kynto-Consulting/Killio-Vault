@@ -24,6 +24,7 @@ import {
   createRoom,
   findRoomByEntity,
   listRoomMessages,
+  reactRoomMessage,
   sendRoomMessage,
   type Room,
   type RoomMessage,
@@ -354,7 +355,13 @@ function CommentsPane({
           keyExtractor={(m) => m.id}
           contentContainerClassName="p-3 gap-2"
           renderItem={({ item }) => (
-            <RoomMessageRow message={item} ownUserId={activeTeam?.id ? undefined : undefined} />
+            <RoomMessageRow
+              message={item}
+              roomId={room?.id}
+              onUpdate={(updater) =>
+                setMessages((cur) => cur.map((m) => (m.id === item.id ? updater(m) : m)))
+              }
+            />
           )}
         />
       )}
@@ -363,7 +370,46 @@ function CommentsPane({
   );
 }
 
-function RoomMessageRow({ message }: { message: RoomMessage; ownUserId?: string }) {
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉', '🙏', '👀', '🔥'];
+
+function RoomMessageRow({
+  message,
+  roomId,
+  onUpdate,
+}: {
+  message: RoomMessage;
+  roomId?: string;
+  onUpdate(updater: (m: RoomMessage) => RoomMessage): void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const react = async (emoji: string) => {
+    if (!roomId) return;
+    setPickerOpen(false);
+    // Optimistically toggle the reaction in the local cache.
+    onUpdate((m) => {
+      const reactions = m.reactions ? [...m.reactions] : [];
+      const idx = reactions.findIndex((r) => r.emoji === emoji);
+      if (idx === -1) {
+        reactions.push({ emoji, userIds: ['me'] });
+      } else {
+        // Toggle "me" in/out of the bucket; consider userIds opaque.
+        const bucket = reactions[idx];
+        const has = bucket.userIds.includes('me');
+        reactions[idx] = {
+          emoji,
+          userIds: has ? bucket.userIds.filter((u) => u !== 'me') : [...bucket.userIds, 'me'],
+        };
+      }
+      return { ...m, reactions };
+    });
+    try {
+      await reactRoomMessage(roomId, message.id, emoji);
+    } catch {
+      /* swallow — pulse echo will reconcile */
+    }
+  };
+
   return (
     <View className="rounded-lg border border-border/40 bg-background px-3 py-2">
       <View className="flex-row items-center justify-between">
@@ -380,6 +426,49 @@ function RoomMessageRow({ message }: { message: RoomMessage; ownUserId?: string 
       </View>
       <View className="mt-1">
         <RichText content={message.content} size={13} />
+      </View>
+
+      {message.reactions && message.reactions.length > 0 ? (
+        <View className="mt-1 flex-row flex-wrap gap-1">
+          {message.reactions.map((r) => (
+            <Pressable
+              key={r.emoji}
+              onPress={() => void react(r.emoji)}
+              className="flex-row items-center gap-1 rounded-full bg-secondary px-2 py-0.5"
+            >
+              <Text style={{ fontSize: 11 }}>{r.emoji}</Text>
+              <Text className="text-[9px] text-muted-foreground">{r.userIds.length}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+
+      <View className="mt-1 flex-row gap-1">
+        {pickerOpen ? (
+          <>
+            {QUICK_REACTIONS.map((emoji) => (
+              <Pressable
+                key={emoji}
+                onPress={() => void react(emoji)}
+                hitSlop={4}
+                className="rounded-md border border-border/40 bg-background px-1.5"
+              >
+                <Text style={{ fontSize: 14 }}>{emoji}</Text>
+              </Pressable>
+            ))}
+            <Pressable onPress={() => setPickerOpen(false)} hitSlop={4} className="px-1.5">
+              <Text className="text-[10px] text-muted-foreground">×</Text>
+            </Pressable>
+          </>
+        ) : (
+          <Pressable
+            onPress={() => setPickerOpen(true)}
+            hitSlop={6}
+            className="rounded-md border border-border/40 bg-background px-1.5 py-0.5"
+          >
+            <Text className="text-[10px] text-muted-foreground">＋ 😀</Text>
+          </Pressable>
+        )}
       </View>
     </View>
   );
