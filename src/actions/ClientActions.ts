@@ -3,6 +3,9 @@ import { Linking, Platform } from 'react-native';
 import { uploadScreenshot } from '../screen/ScreenCapture';
 import * as Calendar from '../calendar/Calendar';
 import * as Device from '../integrations/device';
+import * as Spotify from '../integrations/spotify';
+import * as Clipboard from '../integrations/clipboard';
+import * as ShareInt from '../integrations/share';
 
 /**
  * Executes client-action tools on the device. The backend agent loop pauses the
@@ -130,6 +133,71 @@ export async function runClientAction(
       // Handled by the WakeListener / assistant itself (silences AI, returns to
       // wake mode). Treat as success here so the agent loop finalizes cleanly.
       return { success: true, output: { disconnected: true, reason: input.reason ?? null } };
+
+    // ─── Spotify (deep-link control) ───────────────────────────────────────
+    case 'spotify_play':
+      try {
+        const r = await Spotify.play({
+          uri: input.uri as string | undefined,
+          query: input.query as string | undefined,
+        });
+        return { success: true, output: r };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'spotify play failed' };
+      }
+    case 'spotify_pause':
+      try {
+        return { success: true, output: await Spotify.pause() };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'spotify pause failed' };
+      }
+    case 'spotify_next':
+      try {
+        return { success: true, output: await Spotify.next() };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'spotify next failed' };
+      }
+    case 'spotify_previous':
+      try {
+        return { success: true, output: await Spotify.previous() };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'spotify prev failed' };
+      }
+    case 'spotify_search':
+      try {
+        return { success: true, output: await Spotify.search(String(input.query ?? '')) };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'spotify search failed' };
+      }
+
+    // ─── Clipboard ────────────────────────────────────────────────────────
+    case 'clipboard_read':
+      try {
+        const text = await Clipboard.read();
+        return { success: true, output: { text } };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'clipboard read failed' };
+      }
+    case 'clipboard_write':
+      try {
+        await Clipboard.write(String(input.text ?? ''));
+        return { success: true, output: { written: true } };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'clipboard write failed' };
+      }
+
+    // ─── Share ────────────────────────────────────────────────────────────
+    case 'share_text':
+      try {
+        const r = await ShareInt.shareText({
+          title: input.title as string | undefined,
+          message: String(input.message ?? input.text ?? ''),
+        });
+        return { success: true, output: r };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'share failed' };
+      }
+
     default:
       return { success: false, error: `Unknown client action: ${tool}` };
   }
@@ -141,6 +209,9 @@ export const NEEDS_CONFIRM = new Set([
   'open_app',
   'calendar_create_event',
   'send_sms',
+  'spotify_play',
+  'clipboard_write',
+  'share_text',
 ]);
 
 /** Tools whose only effect is on the Vault app itself (no native side effect). */
