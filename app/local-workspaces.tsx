@@ -43,7 +43,7 @@ export default function LocalWorkspacesScreen() {
   );
 
   const openWorkspace = async (id: string) => {
-    await local.selectWorkspace(id);
+    await local.selectLocalWorkspace(id);
     await setMode('workspace');
     router.replace('/workspace');
   };
@@ -132,7 +132,7 @@ export default function LocalWorkspacesScreen() {
         onClose={() => setCreateOpen(false)}
         onCreate={async (name) => {
           try {
-            const ws = await local.createWorkspace(name);
+            const ws = await local.createLocalWorkspace(name);
             setCreateOpen(false);
             await setMode('workspace');
             router.replace('/workspace');
@@ -149,7 +149,7 @@ export default function LocalWorkspacesScreen() {
         onClose={() => setConfirmRemove(null)}
         onConfirm={async () => {
           if (!confirmRemove) return;
-          await local.removeWorkspace(confirmRemove.id);
+          await local.removeLocalWorkspace(confirmRemove.id);
           setConfirmRemove(null);
         }}
       />

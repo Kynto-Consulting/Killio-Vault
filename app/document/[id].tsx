@@ -3,9 +3,8 @@ import { ScrollView, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { Screen, Card, Body } from '@/ui';
-import { BrickList } from '@/ui/BrickRenderer';
+import { BrickList, type AddableKind } from '@/ui/BrickRenderer';
 import type { Brick } from '@/ui/BrickRenderer';
-import { BrickEditor, type BrickKind } from '@/ui/BrickEditor';
 import { useDocuments } from '@/documents/DocumentsProvider';
 import { DocumentHeader, type BreadcrumbSegment, shareDocumentText } from '@/documents/DocumentHeader';
 import { useAuth } from '@/core/auth/AuthContext';
@@ -28,8 +27,10 @@ import type { KillioFile } from '@/local-workspace/killio-file';
  *   2. id starts with "local:" → local workspace document, .kd file on disk
  *   3. fallback                → cloud (kept for legacy links)
  *
- * Either backend hits the same DocumentHeader + BrickList / BrickEditor pair,
- * so the user always sees the same UI regardless of where the doc lives.
+ * Either backend hits the same DocumentHeader + BrickList pair, so the user
+ * always sees the same UI regardless of where the doc lives. BrickList itself
+ * flips an individual brick into its inline editor when tapped (web parity),
+ * so there is no separate edit overlay component.
  */
 export default function DocumentDetailScreen() {
   const router = useRouter();
@@ -206,7 +207,7 @@ export default function DocumentDetailScreen() {
   };
 
   const handleAdd = async (
-    kind: BrickKind,
+    kind: AddableKind,
     afterBrickId?: string,
   ): Promise<string | void> => {
     const initial = defaultContentFor(kind);
@@ -312,18 +313,6 @@ export default function DocumentDetailScreen() {
           <Card>
             <Body muted>No se pudo cargar el documento.</Body>
           </Card>
-        ) : canEdit ? (
-          <BrickEditor
-            bricks={(doc.bricks ?? []).map((b) => ({
-              id: b.id,
-              kind: b.kind,
-              content: b.content,
-            }))}
-            onUpdateBrick={handleUpdate}
-            onAddBrick={handleAdd}
-            onDeleteBrick={handleDelete}
-            onReorderBricks={handleReorder}
-          />
         ) : (
           <BrickList
             bricks={(doc.bricks ?? []).map((b) => ({
@@ -331,7 +320,11 @@ export default function DocumentDetailScreen() {
               kind: b.kind,
               content: b.content,
             }))}
-            canEdit={false}
+            editable={canEdit}
+            onUpdate={handleUpdate}
+            onAdd={handleAdd}
+            onDelete={handleDelete}
+            onReorder={handleReorder}
           />
         )}
 
@@ -362,7 +355,7 @@ function localFileToDoc(path: string, file: KillioFile): DocFull {
   };
 }
 
-function defaultContentFor(kind: BrickKind): Record<string, any> {
+function defaultContentFor(kind: AddableKind): Record<string, any> {
   switch (kind) {
     case 'heading':
       return { text: '', level: 2 };
@@ -381,7 +374,7 @@ function defaultContentFor(kind: BrickKind): Record<string, any> {
   }
 }
 
-function kindForBackend(kind: BrickKind): string {
+function kindForBackend(kind: AddableKind): string {
   if (kind === 'heading') return 'text';
   return kind;
 }

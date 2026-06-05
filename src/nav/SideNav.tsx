@@ -24,6 +24,7 @@ import { useState } from 'react';
 import { useNav } from './NavContext';
 import { useAppMode, type AppMode } from './AppModeContext';
 import { useAuth } from '../core/auth/AuthContext';
+import { useLocalWorkspace } from '../local-workspace/LocalWorkspaceProvider';
 import { useTranslations } from '../i18n';
 import { colors } from '../theme/theme';
 import { fonts } from '../theme/fonts';
@@ -72,10 +73,14 @@ export function SideNav() {
   const t = useTranslations('nav');
   const { activeTeam, workspaces, setActiveTeam, signOut } = useAuth();
   const { mode, setMode } = useAppMode();
+  const local = useLocalWorkspace();
   const [pickerOpen, setPickerOpen] = useState(false);
   const items = itemsForMode(mode);
 
-  const workspaceName = activeTeam?.name ?? 'Workspace';
+  const isLocal = local.mode === 'local';
+  const workspaceName = isLocal
+    ? local.active?.name ?? 'Local'
+    : activeTeam?.name ?? 'Workspace';
   const initial = workspaceName.charAt(0).toUpperCase();
 
   const go = (route: Route) => {
@@ -124,7 +129,11 @@ export function SideNav() {
                     {workspaceName}
                   </Text>
                   <Text className="text-xs text-muted-foreground">
-                    {activeTeam?.isPersonal ? 'Personal · Killio' : (activeTeam?.planTier ?? 'Killio')}
+                    {isLocal
+                      ? '💾 Local · solo este dispositivo'
+                      : activeTeam?.isPersonal
+                        ? 'Personal · Killio'
+                        : activeTeam?.planTier ?? 'Killio'}
                   </Text>
                 </View>
                 <ChevronsUpDown size={14} color={colors.mutedForeground} />
@@ -134,34 +143,105 @@ export function SideNav() {
               </Pressable>
             </View>
 
-            {pickerOpen && workspaces.length > 0 && (
-              <View className="border-t border-border/40 px-2 py-2">
-                {workspaces.map((w) => {
-                  const isActive = w.id === activeTeam?.id;
-                  return (
-                    <Pressable
-                      key={w.id}
-                      onPress={async () => {
-                        await setActiveTeam(w.id);
-                        setPickerOpen(false);
-                      }}
-                      className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${isActive ? 'bg-secondary' : ''}`}
+            {pickerOpen && (
+              <View className="border-t border-border/40 px-2 py-2 gap-2">
+                {/* Cloud teams */}
+                {workspaces.length > 0 ? (
+                  <View>
+                    <Text
+                      style={{ fontFamily: fonts.semibold }}
+                      className="px-2 text-[9px] uppercase tracking-widest text-muted-foreground mb-1"
                     >
-                      <View className="h-6 w-6 items-center justify-center rounded border border-border bg-background">
-                        <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-foreground">
-                          {w.name.charAt(0).toUpperCase()}
-                        </Text>
-                      </View>
-                      <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground" numberOfLines={1}>
-                        {w.name}
-                      </Text>
-                      {w.isPersonal && (
-                        <Text className="text-[10px] uppercase tracking-wide text-muted-foreground">personal</Text>
-                      )}
-                      {isActive && <Check size={14} color={colors.cyan} />}
-                    </Pressable>
-                  );
-                })}
+                      Killio · Cloud
+                    </Text>
+                    {workspaces.map((w) => {
+                      const isActive = !isLocal && w.id === activeTeam?.id;
+                      return (
+                        <Pressable
+                          key={w.id}
+                          onPress={async () => {
+                            // Switching to a cloud team exits local mode if
+                            // we were in one, mirroring the web behaviour.
+                            if (isLocal) local.exitLocal();
+                            await setActiveTeam(w.id);
+                            setPickerOpen(false);
+                          }}
+                          className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${isActive ? 'bg-secondary' : ''}`}
+                        >
+                          <View className="h-6 w-6 items-center justify-center rounded border border-border bg-background">
+                            <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-foreground">
+                              {w.name.charAt(0).toUpperCase()}
+                            </Text>
+                          </View>
+                          <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                            {w.name}
+                          </Text>
+                          {w.isPersonal && (
+                            <Text className="text-[10px] uppercase tracking-wide text-muted-foreground">personal</Text>
+                          )}
+                          {isActive && <Check size={14} color={colors.cyan} />}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+
+                {/* Local workspaces */}
+                <View>
+                  <Text
+                    style={{ fontFamily: fonts.semibold }}
+                    className="px-2 text-[9px] uppercase tracking-widest text-muted-foreground mb-1"
+                  >
+                    Local · Este dispositivo
+                  </Text>
+                  {local.workspaces.length === 0 ? (
+                    <Text className="px-2 text-xs text-muted-foreground italic">
+                      Sin workspaces locales.
+                    </Text>
+                  ) : (
+                    local.workspaces.map((w) => {
+                      const isActive = isLocal && w.id === local.activeId;
+                      return (
+                        <Pressable
+                          key={w.id}
+                          onPress={async () => {
+                            await local.selectLocalWorkspace(w.id);
+                            setPickerOpen(false);
+                            closeNav();
+                            requestAnimationFrame(() => router.push('/documents'));
+                          }}
+                          className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${isActive ? 'bg-secondary' : ''}`}
+                        >
+                          <View className="h-6 w-6 items-center justify-center rounded border border-cyan/30 bg-cyan/10">
+                            <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-cyan">
+                              {w.name.charAt(0).toUpperCase()}
+                            </Text>
+                          </View>
+                          <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                            {w.name}
+                          </Text>
+                          <Text className="text-[10px] uppercase tracking-wide text-cyan">local</Text>
+                          {isActive && <Check size={14} color={colors.cyan} />}
+                        </Pressable>
+                      );
+                    })
+                  )}
+                  <Pressable
+                    onPress={() => {
+                      setPickerOpen(false);
+                      closeNav();
+                      requestAnimationFrame(() => router.push('/local-workspaces'));
+                    }}
+                    className="flex-row items-center gap-2 rounded-md px-3 py-2 mt-1"
+                  >
+                    <View className="h-6 w-6 items-center justify-center rounded border border-dashed border-border bg-background">
+                      <Text style={{ fontFamily: fonts.bold }} className="text-[14px] text-foreground">+</Text>
+                    </View>
+                    <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground">
+                      Nuevo workspace local
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
             )}
           </View>

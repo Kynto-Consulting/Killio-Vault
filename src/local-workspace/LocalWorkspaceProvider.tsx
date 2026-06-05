@@ -53,9 +53,17 @@ export interface LocalFolderEntry {
   color?: string | null;
 }
 
+/** Same shape the web LocalWorkspaceProvider exposes: 'cloud' when no local
+ *  workspace is active, 'local' when one is selected. Component code does
+ *  `localWs.mode === 'local'` to choose between the cloud API and the local
+ *  on-device store. */
+export type WorkspaceMode = 'cloud' | 'local';
+
 interface LocalWorkspaceApi {
   /** True when the platform exposes a writable document directory. */
   supported: boolean;
+  /** 'cloud' or 'local' — components switch their data source on this. */
+  mode: WorkspaceMode;
   workspaces: LocalWorkspaceMeta[];
   activeId: string | null;
   active: LocalWorkspaceMeta | null;
@@ -63,10 +71,11 @@ interface LocalWorkspaceApi {
   folders: LocalFolderEntry[];
   busy: boolean;
 
-  createWorkspace(name: string): Promise<LocalWorkspaceMeta>;
-  selectWorkspace(id: string): Promise<void>;
-  removeWorkspace(id: string): Promise<void>;
-  exit(): void;
+  /** Names match the web API 1:1 so the same call sites work in both apps. */
+  createLocalWorkspace(name: string): Promise<LocalWorkspaceMeta>;
+  selectLocalWorkspace(id: string): Promise<void>;
+  removeLocalWorkspace(id: string): Promise<void>;
+  exitLocal(): void;
 
   refresh(): Promise<void>;
   writeFile(relPath: string, contents: string): Promise<void>;
@@ -86,18 +95,19 @@ const Ctx = createContext<LocalWorkspaceApi | null>(null);
 
 const FALLBACK_API: LocalWorkspaceApi = {
   supported: false,
+  mode: 'cloud',
   workspaces: [],
   activeId: null,
   active: null,
   files: [],
   folders: [],
   busy: false,
-  createWorkspace: async () => {
+  createLocalWorkspace: async () => {
     throw new Error('Local workspaces not supported on this device.');
   },
-  selectWorkspace: async () => {},
-  removeWorkspace: async () => {},
-  exit: () => {},
+  selectLocalWorkspace: async () => {},
+  removeLocalWorkspace: async () => {},
+  exitLocal: () => {},
   refresh: async () => {},
   writeFile: async () => {
     throw new Error('No active local workspace');
@@ -129,6 +139,7 @@ export function LocalWorkspaceProvider({ children }: { children: React.ReactNode
     () => workspaces.find((w) => w.id === activeId) ?? null,
     [workspaces, activeId],
   );
+  const mode: WorkspaceMode = active ? 'local' : 'cloud';
 
   // Hydrate registry on mount.
   useEffect(() => {
@@ -175,7 +186,7 @@ export function LocalWorkspaceProvider({ children }: { children: React.ReactNode
     if (active) await refreshFiles(active);
   }, [active, refreshFiles]);
 
-  const createWorkspace = useCallback(
+  const createLocalWorkspace = useCallback(
     async (name: string): Promise<LocalWorkspaceMeta> => {
       if (!supported) throw new Error('FileSystem not available');
       setBusy(true);
@@ -202,7 +213,7 @@ export function LocalWorkspaceProvider({ children }: { children: React.ReactNode
     [supported, workspaces, persistRegistry],
   );
 
-  const selectWorkspace = useCallback(
+  const selectLocalWorkspace = useCallback(
     async (id: string): Promise<void> => {
       if (!workspaces.some((w) => w.id === id)) return;
       await SecureStore.setItemAsync(ACTIVE_KEY, id);
@@ -211,7 +222,7 @@ export function LocalWorkspaceProvider({ children }: { children: React.ReactNode
     [workspaces],
   );
 
-  const removeWorkspace = useCallback(
+  const removeLocalWorkspace = useCallback(
     async (id: string): Promise<void> => {
       setBusy(true);
       try {
@@ -233,7 +244,7 @@ export function LocalWorkspaceProvider({ children }: { children: React.ReactNode
     [workspaces, activeId, persistRegistry],
   );
 
-  const exit = useCallback(() => {
+  const exitLocal = useCallback(() => {
     setActiveId(null);
     void SecureStore.deleteItemAsync(ACTIVE_KEY);
   }, []);
@@ -353,16 +364,17 @@ export function LocalWorkspaceProvider({ children }: { children: React.ReactNode
   const value = useMemo<LocalWorkspaceApi>(
     () => ({
       supported,
+      mode,
       workspaces,
       activeId,
       active,
       files,
       folders,
       busy,
-      createWorkspace,
-      selectWorkspace,
-      removeWorkspace,
-      exit,
+      createLocalWorkspace,
+      selectLocalWorkspace,
+      removeLocalWorkspace,
+      exitLocal,
       refresh,
       writeFile,
       readFile,
@@ -375,16 +387,17 @@ export function LocalWorkspaceProvider({ children }: { children: React.ReactNode
     }),
     [
       supported,
+      mode,
       workspaces,
       activeId,
       active,
       files,
       folders,
       busy,
-      createWorkspace,
-      selectWorkspace,
-      removeWorkspace,
-      exit,
+      createLocalWorkspace,
+      selectLocalWorkspace,
+      removeLocalWorkspace,
+      exitLocal,
       refresh,
       writeFile,
       readFile,

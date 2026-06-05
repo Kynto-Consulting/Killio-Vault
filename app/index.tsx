@@ -4,6 +4,7 @@ import { ActivityIndicator, Image, View } from 'react-native';
 
 import { useAuth } from '@/core/auth/AuthContext';
 import { useAppMode } from '@/nav/AppModeContext';
+import { useLocalWorkspace } from '@/local-workspace/LocalWorkspaceProvider';
 
 /**
  * Auth gate. Uses an imperative `router.replace` instead of `<Redirect />` so
@@ -15,15 +16,22 @@ export default function Index() {
   const router = useRouter();
   const { status } = useAuth();
   const { mode } = useAppMode();
+  const local = useLocalWorkspace();
 
   useEffect(() => {
     if (status === 'loading') return;
+    // Local mode is sign-in-free — if the user previously selected a local
+    // workspace they land straight in /documents without needing the cloud.
+    if (local.mode === 'local') {
+      router.replace('/documents');
+      return;
+    }
     if (status !== 'signedIn') {
       router.replace('/login');
       return;
     }
     router.replace(mode === 'workspace' ? '/workspace' : '/assistant');
-  }, [router, status, mode]);
+  }, [router, status, mode, local.mode]);
 
   return (
     <View className="flex-1 items-center justify-center gap-6 bg-background">

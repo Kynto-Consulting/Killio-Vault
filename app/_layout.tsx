@@ -51,9 +51,9 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <I18nProvider>
+        <LocalWorkspaceProvider>
         <AuthProvider>
           <AppModeProvider>
-          <LocalWorkspaceProvider>
           <DocumentsProvider>
           <CaptureProvider>
             <NavProvider>
@@ -93,9 +93,9 @@ export default function RootLayout() {
             </NavProvider>
           </CaptureProvider>
           </DocumentsProvider>
-          </LocalWorkspaceProvider>
           </AppModeProvider>
         </AuthProvider>
+        </LocalWorkspaceProvider>
       </I18nProvider>
     </SafeAreaProvider>
   );

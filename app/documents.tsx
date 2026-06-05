@@ -51,7 +51,7 @@ export default function DocumentsScreen() {
   const local = useLocalWorkspace();
   const { status: netStatus, retry: retryNet } = useNetworkStatus();
 
-  const useLocal = !!local.active;
+  const useLocal = local.mode === 'local';
   const isOffline = netStatus === 'offline' && !useLocal;
 
   const [folderStack, setFolderStack] = useState<FolderSummary[]>([]);

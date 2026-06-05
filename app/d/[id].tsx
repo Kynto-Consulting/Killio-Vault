@@ -1,7 +1,7 @@
 import { useLocalSearchParams, Redirect } from 'expo-router';
 
 // /d/<id> mirrors the web doc URL. Forward to /document/<id> so the same UI
-// (BrickEditor + BrickRenderer) renders regardless of which path you reach.
+// (BrickList tap-to-edit + BrickRenderer) renders regardless of which path you reach.
 export default function DocDetailAlias() {
   const params = useLocalSearchParams<{ id: string; title?: string }>();
   return (

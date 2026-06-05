@@ -7,6 +7,7 @@ import { Screen, Card, H1, Body, Label } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useDocuments } from '@/documents/DocumentsProvider';
 import { getTeamCatalog, type TeamCatalog } from '@/core/api/teams.client';
+import { useTranslations } from '@/i18n';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
 
@@ -21,6 +22,7 @@ import { fonts } from '@/theme/fonts';
  */
 export default function WorkspaceHomeScreen() {
   const router = useRouter();
+  const t = useTranslations('workspaceScreen');
   const { activeTeam } = useAuth();
   const docsApi = useDocuments();
   const [data, setData] = useState<TeamCatalog | null>(null);

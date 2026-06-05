@@ -1,18 +1,30 @@
 import { useState } from 'react';
-import { Image, Linking, Pressable, Text, View } from 'react-native';
+import { Image, Linking, Modal, Pressable, Text, View } from 'react-native';
 import {
+  ArrowDown,
+  ArrowUp,
+  CheckSquare,
   ChevronDown,
   ChevronRight,
-  CheckSquare,
+  Code,
+  Copy,
   CreditCard,
   FileText,
+  Hash,
+  Heading1,
   Lightbulb,
+  Minus,
+  Plus,
+  Quote,
   Square,
+  Trash2,
+  Type,
   Video,
   Music,
 } from 'lucide-react-native';
 
 import { RichText } from './RichText';
+import { useTranslations } from '../i18n';
 import { colors } from '../theme/theme';
 import { fonts } from '../theme/fonts';
 
@@ -550,27 +562,266 @@ export function BrickRenderer(props: BrickProps) {
   }
 }
 
-/** Vertical stack of bricks, sorted by position. */
+/** All brick kinds the "+" menu can insert. Subset that has a meaningful
+ *  inline editor — composite / media bricks are added through the asset
+ *  pipelines. */
+export type AddableKind =
+  | 'text'
+  | 'heading'
+  | 'quote'
+  | 'callout'
+  | 'checklist'
+  | 'code'
+  | 'divider';
+
+/**
+ * Vertical stack of bricks. When `editable=true`, each brick switches to its
+ * inline editor on tap (same flow as the web — no separate edit overlay) and
+ * a "+" affordance appears between rows for inserting new bricks. Long-press a
+ * brick to open a context menu (move up/down, copy, delete). When
+ * `editable=false`, the list is read-only.
+ *
+ * Callers wire `onUpdate / onAdd / onDelete / onReorder` to their backend (the
+ * Vault cloud doc API or the local-workspace .kd writer). Returning a new id
+ * from `onAdd` lets the list move focus to the freshly-inserted brick.
+ */
 export function BrickList({
   bricks,
-  canEdit,
-  onChange,
+  editable = false,
+  onUpdate,
+  onAdd,
+  onDelete,
+  onReorder,
 }: {
   bricks: Brick[];
-  canEdit?: boolean;
-  onChange?: (id: string, next: Brick) => void;
+  editable?: boolean;
+  onUpdate?: (id: string, next: Brick) => void;
+  onAdd?: (kind: AddableKind, afterBrickId?: string) => Promise<string | void> | string | void;
+  onDelete?: (id: string) => void;
+  onReorder?: (orderedIds: string[]) => void;
 }) {
+  const t = useTranslations('brickEditor');
   const sorted = [...bricks].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [addMenuFor, setAddMenuFor] = useState<string | 'end' | null>(null);
+  const [contextFor, setContextFor] = useState<string | null>(null);
+
+  const moveBrick = (id: string, dir: 'up' | 'down') => {
+    if (!onReorder) return;
+    const ids = sorted.map((b) => b.id!).filter(Boolean);
+    const idx = ids.indexOf(id);
+    if (idx < 0) return;
+    const target = dir === 'up' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= ids.length) return;
+    const next = [...ids];
+    [next[idx], next[target]] = [next[target], next[idx]];
+    onReorder(next);
+  };
+
   return (
-    <View className="gap-2">
-      {sorted.map((b, i) => (
-        <BrickRenderer
-          key={b.id ?? i}
-          brick={b}
-          canEdit={canEdit}
-          onChange={onChange ? (next) => onChange(b.id ?? String(i), next) : undefined}
-        />
-      ))}
+    <View className="gap-1">
+      {sorted.length === 0 && editable && onAdd ? (
+        <Pressable
+          onPress={() => setAddMenuFor('end')}
+          className="items-center justify-center rounded-xl border border-dashed border-border bg-card/40 px-4 py-8"
+        >
+          <View className="mb-2 h-8 w-8 items-center justify-center rounded-full bg-cyan/10">
+            <Plus size={14} color={colors.cyan} />
+          </View>
+          <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-foreground">
+            {t('addBlock')}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      {sorted.map((b, i) => {
+        const id = b.id ?? String(i);
+        const isFocused = focusedId === id;
+        return (
+          <View key={id}>
+            <Pressable
+              onPress={() => {
+                if (!editable) return;
+                setFocusedId((cur) => (cur === id ? null : id));
+              }}
+              onLongPress={() => {
+                if (!editable) return;
+                setContextFor(id);
+              }}
+              className={`rounded-md ${
+                isFocused
+                  ? 'border border-cyan/30 bg-card px-1 py-1'
+                  : 'border border-transparent'
+              }`}
+            >
+              <BrickRenderer
+                brick={b}
+                canEdit={editable && isFocused}
+                onChange={
+                  onUpdate
+                    ? (next) => {
+                        if (!b.id) return;
+                        onUpdate(b.id, next);
+                      }
+                    : undefined
+                }
+              />
+            </Pressable>
+
+            {editable && onAdd && b.id ? (
+              <Pressable
+                onPress={() => setAddMenuFor(b.id!)}
+                className="my-0.5 flex-row items-center gap-1 self-center rounded-full bg-secondary/40 px-2 py-0.5 opacity-50"
+              >
+                <Plus size={9} color={colors.mutedForeground} />
+                <Text className="text-[9px] text-muted-foreground">{t('addInline')}</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        );
+      })}
+
+      {editable && onAdd && sorted.length > 0 ? (
+        <Pressable
+          onPress={() => setAddMenuFor('end')}
+          className="mt-1 flex-row items-center justify-center gap-1 rounded-lg border border-dashed border-border bg-card/40 py-2"
+        >
+          <Plus size={12} color={colors.mutedForeground} />
+          <Text style={{ fontFamily: fonts.medium }} className="text-xs text-muted-foreground">
+            {t('addAtEnd')}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      <AddKindModal
+        open={addMenuFor !== null}
+        onClose={() => setAddMenuFor(null)}
+        onPick={async (kind) => {
+          const after = addMenuFor === 'end' ? undefined : (addMenuFor as string);
+          setAddMenuFor(null);
+          const next = await onAdd?.(kind, after);
+          if (typeof next === 'string') setFocusedId(next);
+        }}
+      />
+
+      <ContextMenu
+        open={contextFor !== null}
+        onClose={() => setContextFor(null)}
+        onMoveUp={() => {
+          if (contextFor) moveBrick(contextFor, 'up');
+          setContextFor(null);
+        }}
+        onMoveDown={() => {
+          if (contextFor) moveBrick(contextFor, 'down');
+          setContextFor(null);
+        }}
+        onDelete={() => {
+          if (contextFor) onDelete?.(contextFor);
+          setContextFor(null);
+        }}
+      />
     </View>
   );
 }
+
+const ADD_OPTIONS: { kind: AddableKind; labelKey: string; icon: typeof Type }[] = [
+  { kind: 'text', labelKey: 'kind.text', icon: Type },
+  { kind: 'heading', labelKey: 'kind.heading', icon: Heading1 },
+  { kind: 'quote', labelKey: 'kind.quote', icon: Quote },
+  { kind: 'callout', labelKey: 'kind.callout', icon: Hash },
+  { kind: 'checklist', labelKey: 'kind.checklist', icon: CheckSquare },
+  { kind: 'code', labelKey: 'kind.code', icon: Code },
+  { kind: 'divider', labelKey: 'kind.divider', icon: Minus },
+];
+
+function AddKindModal({
+  open,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  onClose(): void;
+  onPick(kind: AddableKind): void;
+}) {
+  const t = useTranslations('brickEditor');
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable onPress={onClose} className="flex-1 items-center justify-end bg-background/80">
+        <View className="w-full rounded-t-2xl border-t border-border bg-card p-4 gap-2">
+          <Text style={{ fontFamily: fonts.bold }} className="text-base text-foreground">
+            {t('addBlock')}
+          </Text>
+          <View className="flex-row flex-wrap gap-2">
+            {ADD_OPTIONS.map(({ kind, labelKey, icon: Icon }) => (
+              <Pressable
+                key={kind}
+                onPress={() => onPick(kind)}
+                className="h-20 w-20 items-center justify-center gap-1 rounded-xl border border-border bg-background"
+              >
+                <Icon size={18} color={colors.foreground} />
+                <Text style={{ fontFamily: fonts.medium }} className="text-[10px] text-foreground">
+                  {t(labelKey)}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function ContextMenu({
+  open,
+  onClose,
+  onMoveUp,
+  onMoveDown,
+  onDelete,
+}: {
+  open: boolean;
+  onClose(): void;
+  onMoveUp(): void;
+  onMoveDown(): void;
+  onDelete(): void;
+}) {
+  const t = useTranslations('brickEditor');
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable onPress={onClose} className="flex-1 items-center justify-center bg-background/80 p-6">
+        <View className="w-full max-w-xs rounded-xl border border-border bg-card p-2 gap-1">
+          <ContextItem icon={ArrowUp} label={t('actions.up')} onPress={onMoveUp} />
+          <ContextItem icon={ArrowDown} label={t('actions.down')} onPress={onMoveDown} />
+          <View className="h-px bg-border/40 my-1" />
+          <ContextItem icon={Trash2} label={t('actions.delete')} onPress={onDelete} tone="danger" />
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function ContextItem({
+  icon: Icon,
+  label,
+  onPress,
+  tone,
+}: {
+  icon: typeof Type;
+  label: string;
+  onPress(): void;
+  tone?: 'danger';
+}) {
+  const color = tone === 'danger' ? colors.destructive : colors.foreground;
+  return (
+    <Pressable
+      onPress={onPress}
+      className="flex-row items-center gap-2 rounded-md px-3 py-2 active:bg-secondary"
+    >
+      <Icon size={14} color={color} />
+      <Text style={{ fontFamily: fonts.medium, color }} className="text-sm">
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+void Copy;

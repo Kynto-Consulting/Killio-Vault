@@ -24,6 +24,7 @@ import {
   type FolderSummary,
 } from '@/core/api/documents.client';
 import { useAuth } from '@/core/auth/AuthContext';
+import { useTranslations } from '@/i18n';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
 
@@ -185,9 +186,11 @@ function ModalHost({
 
           {modal.kind === 'delete_doc' && (
             <ConfirmDelete
-              title="Eliminar documento"
-              description={`Esta acción no se puede deshacer. "${modal.doc.title}" se perderá.`}
-              confirmLabel="Eliminar"
+              titleKey="deleteDoc.title"
+              descriptionKey="deleteDoc.description"
+              descriptionParams={{ title: modal.doc.title }}
+              confirmLabelKey="deleteDoc.confirm"
+              busyLabelKey="deleteDoc.deleting"
               busy={busy}
               onCancel={close}
               onConfirm={async () => {
@@ -205,7 +208,7 @@ function ModalHost({
 
           {modal.kind === 'create_folder' && (
             <FolderForm
-              title="Nueva carpeta"
+              titleKey="createFolder.title"
               onCancel={close}
               busy={busy}
               onSubmit={async ({ name, icon, color }) => {
@@ -230,7 +233,7 @@ function ModalHost({
 
           {modal.kind === 'edit_folder' && (
             <FolderForm
-              title="Editar carpeta"
+              titleKey="editFolder.title"
               initial={modal.folder}
               onCancel={close}
               busy={busy}
@@ -249,9 +252,11 @@ function ModalHost({
 
           {modal.kind === 'delete_folder' && (
             <ConfirmDelete
-              title="Eliminar carpeta"
-              description={`"${modal.folder.name}" y su contenido serán eliminados.`}
-              confirmLabel="Eliminar"
+              titleKey="deleteFolder.title"
+              descriptionKey="deleteFolder.description"
+              descriptionParams={{ name: modal.folder.name }}
+              confirmLabelKey="deleteDoc.confirm"
+              busyLabelKey="deleteDoc.deleting"
               busy={busy}
               onCancel={close}
               onConfirm={async () => {
@@ -287,20 +292,21 @@ function CreateDocForm({
   onSubmit: (title: string) => void;
   busy: boolean;
 }) {
+  const t = useTranslations('docs');
   const [title, setTitle] = useState('');
   const disabled = busy || !title.trim() || !teamId;
   return (
     <>
       <Text style={{ fontFamily: fonts.bold }} className="text-lg text-foreground">
-        Nuevo documento
+        {t('createDoc.title')}
       </Text>
       <Text className="text-xs text-muted-foreground">
-        {folderId ? 'Se creará dentro de la carpeta actual.' : 'Se creará en la raíz.'}
+        {folderId ? t('createDoc.helpFolder') : t('createDoc.helpRoot')}
       </Text>
       <TextInput
         value={title}
         onChangeText={setTitle}
-        placeholder="Título del documento"
+        placeholder={t('createDoc.placeholder')}
         placeholderTextColor="#6f6f78"
         autoFocus
         style={{ fontFamily: fonts.regular }}
@@ -309,7 +315,7 @@ function CreateDocForm({
       <ActionRow
         onCancel={onCancel}
         onSubmit={() => !disabled && onSubmit(title.trim())}
-        submitLabel={busy ? 'Creando…' : 'Crear'}
+        submitLabel={busy ? t('createDoc.creating') : t('createDoc.create')}
         disabled={disabled}
       />
     </>
@@ -327,12 +333,13 @@ function EditDocForm({
   onSubmit: (title: string) => void;
   busy: boolean;
 }) {
+  const t = useTranslations('docs');
   const [title, setTitle] = useState(doc.title);
   const disabled = busy || !title.trim() || title.trim() === doc.title;
   return (
     <>
       <Text style={{ fontFamily: fonts.bold }} className="text-lg text-foreground">
-        Editar documento
+        {t('editDoc.title')}
       </Text>
       <TextInput
         value={title}
@@ -344,7 +351,7 @@ function EditDocForm({
       <ActionRow
         onCancel={onCancel}
         onSubmit={() => !disabled && onSubmit(title.trim())}
-        submitLabel={busy ? 'Guardando…' : 'Guardar'}
+        submitLabel={busy ? t('editDoc.saving') : t('editDoc.save')}
         disabled={disabled}
       />
     </>
@@ -352,18 +359,19 @@ function EditDocForm({
 }
 
 function FolderForm({
-  title: header,
+  titleKey,
   initial,
   onCancel,
   onSubmit,
   busy,
 }: {
-  title: string;
+  titleKey: string;
   initial?: { name: string; icon?: string | null; color?: string | null };
   onCancel: () => void;
   onSubmit: (data: { name: string; icon?: string; color?: string }) => void;
   busy: boolean;
 }) {
+  const t = useTranslations('docs');
   const [name, setName] = useState(initial?.name ?? '');
   const [icon, setIcon] = useState<string>(initial?.icon ?? FOLDER_ICONS[0]);
   const [color, setColor] = useState<string>(initial?.color ?? FOLDER_COLORS[0]);
@@ -371,18 +379,20 @@ function FolderForm({
   return (
     <>
       <Text style={{ fontFamily: fonts.bold }} className="text-lg text-foreground">
-        {header}
+        {t(titleKey)}
       </Text>
       <TextInput
         value={name}
         onChangeText={setName}
-        placeholder="Nombre"
+        placeholder={t('createFolder.placeholder')}
         placeholderTextColor="#6f6f78"
         autoFocus
         style={{ fontFamily: fonts.regular }}
         className="h-12 rounded-xl border border-border bg-background px-3 text-foreground"
       />
-      <Text className="text-xs text-muted-foreground mt-1">Ícono</Text>
+      <Text className="text-xs text-muted-foreground mt-1">
+        {t('createFolder.icon')}
+      </Text>
       <View className="flex-row flex-wrap gap-2">
         {FOLDER_ICONS.map((emoji) => (
           <Pressable
@@ -394,7 +404,9 @@ function FolderForm({
           </Pressable>
         ))}
       </View>
-      <Text className="text-xs text-muted-foreground mt-1">Color</Text>
+      <Text className="text-xs text-muted-foreground mt-1">
+        {t('createFolder.color')}
+      </Text>
       <View className="flex-row flex-wrap gap-2">
         {FOLDER_COLORS.map((c) => (
           <Pressable
@@ -408,7 +420,7 @@ function FolderForm({
       <ActionRow
         onCancel={onCancel}
         onSubmit={() => !disabled && onSubmit({ name: name.trim(), icon, color })}
-        submitLabel={busy ? 'Guardando…' : 'Guardar'}
+        submitLabel={busy ? t('editDoc.saving') : t('createFolder.save')}
         disabled={disabled}
       />
     </>
@@ -416,30 +428,35 @@ function FolderForm({
 }
 
 function ConfirmDelete({
-  title,
-  description,
-  confirmLabel,
+  titleKey,
+  descriptionKey,
+  descriptionParams,
+  confirmLabelKey,
+  busyLabelKey,
   busy,
   onCancel,
   onConfirm,
 }: {
-  title: string;
-  description: string;
-  confirmLabel: string;
+  titleKey: string;
+  descriptionKey: string;
+  descriptionParams?: Record<string, string>;
+  confirmLabelKey: string;
+  busyLabelKey: string;
   busy: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const t = useTranslations('docs');
   return (
     <>
       <Text style={{ fontFamily: fonts.bold }} className="text-lg text-destructive">
-        {title}
+        {t(titleKey)}
       </Text>
-      <Text className="text-sm text-foreground/80">{description}</Text>
+      <Text className="text-sm text-foreground/80">{t(descriptionKey, descriptionParams)}</Text>
       <ActionRow
         onCancel={onCancel}
         onSubmit={onConfirm}
-        submitLabel={busy ? 'Eliminando…' : confirmLabel}
+        submitLabel={busy ? t(busyLabelKey) : t(confirmLabelKey)}
         submitVariant="destructive"
         disabled={busy}
       />
@@ -460,6 +477,7 @@ function ActionRow({
   submitVariant?: 'primary' | 'destructive';
   disabled?: boolean;
 }) {
+  const t = useTranslations('docs');
   return (
     <View className="flex-row justify-end gap-2 mt-2">
       <Pressable
@@ -467,7 +485,7 @@ function ActionRow({
         className="rounded-md border border-border bg-secondary px-4 py-2"
       >
         <Text style={{ fontFamily: fonts.medium, color: colors.foreground }} className="text-sm">
-          Cancelar
+          {t('cancel')}
         </Text>
       </Pressable>
       <Pressable

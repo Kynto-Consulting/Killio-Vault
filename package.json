@@ -51,7 +51,8 @@
     "react-native-sse": "^1.2.1",
     "react-native-svg": "15.8.0",
     "react-native-tts": "^4.1.1",
-    "react-native-web": "~0.19.13"
+    "react-native-web": "~0.19.13",
+    "react-native-webview": "~13.12.5"
   },
   "devDependencies": {
     "@expo/config-plugins": "~9.0.0",
