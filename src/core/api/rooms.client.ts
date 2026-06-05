@@ -77,3 +77,68 @@ export async function reactRoomMessage(
 ): Promise<void> {
   await api.post(`/rooms/${roomId}/messages/${messageId}/reactions`, { emoji });
 }
+
+export async function listTeamRooms(teamId: string): Promise<Room[]> {
+  const { data } = await api.get<Room[]>(`/teams/${teamId}/rooms`);
+  return data ?? [];
+}
+
+export async function findOrCreateDm(
+  teamId: string,
+  targetUserId: string,
+): Promise<Room> {
+  const { data } = await api.get<Room>(`/teams/${teamId}/rooms/dm`, {
+    params: { userId: targetUserId },
+  });
+  return data;
+}
+
+export type RoomNotificationPref = 'all' | 'mentions' | 'none';
+
+export async function getRoomNotificationPref(
+  roomId: string,
+): Promise<{ pref: RoomNotificationPref }> {
+  const { data } = await api.get<{ pref: RoomNotificationPref }>(
+    `/rooms/${roomId}/notification-pref`,
+  );
+  return data ?? { pref: 'all' };
+}
+
+export async function setRoomNotificationPref(
+  roomId: string,
+  pref: RoomNotificationPref,
+): Promise<void> {
+  await api.put(`/rooms/${roomId}/notification-pref`, { pref });
+}
+
+// ─── Calls ──────────────────────────────────────────────────────────────────
+
+export interface RoomCall {
+  id: string;
+  roomId: string;
+  startedAt: string;
+  endedAt?: string | null;
+  status: 'active' | 'ended' | 'transcribing' | 'failed';
+  audioS3Key?: string | null;
+  transcript?: string | null;
+  summary?: string | null;
+}
+
+export async function getActiveCall(roomId: string): Promise<RoomCall | null> {
+  const { data } = await api.get<RoomCall | null>(`/rooms/${roomId}/active-call`);
+  return data ?? null;
+}
+
+export async function listRoomCalls(roomId: string): Promise<RoomCall[]> {
+  const { data } = await api.get<RoomCall[]>(`/rooms/${roomId}/calls`);
+  return data ?? [];
+}
+
+export async function startRoomCall(roomId: string): Promise<RoomCall> {
+  const { data } = await api.post<RoomCall>(`/rooms/${roomId}/calls`);
+  return data;
+}
+
+export async function endRoomCall(roomId: string, callId: string): Promise<void> {
+  await api.patch(`/rooms/${roomId}/calls/${callId}`);
+}

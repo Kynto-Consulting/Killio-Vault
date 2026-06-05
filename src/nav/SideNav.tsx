@@ -36,7 +36,7 @@ type Route =
   | '/home' | '/diary' | '/assistant' | '/history' | '/agents'
   | '/integrations' | '/schedule' | '/usage' | '/settings'
   | '/documents' | '/workspace' | '/local-workspaces'
-  | '/memories' | '/search' | '/notifications';
+  | '/memories' | '/search' | '/notifications' | '/rooms';
 
 interface Item {
   key: string;
@@ -50,6 +50,7 @@ const VAULT_ITEMS: Item[] = [
   { key: 'diary', icon: Mic, route: '/diary' },
   { key: 'agents', icon: Bot, route: '/agents' },
   { key: 'memories', icon: Brain, route: '/memories' },
+  { key: 'rooms', icon: MessageSquare, route: '/rooms' },
   { key: 'search', icon: Search, route: '/search' },
   { key: 'notifications', icon: Bell, route: '/notifications' },
   { key: 'integrations', icon: Blocks, route: '/integrations' },
