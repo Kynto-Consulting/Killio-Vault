@@ -15,3 +15,7 @@ ios/
 *.log
 .DS_Store
 .env*.local
+
+# build logs
+eas-*.txt
+android/build*.log

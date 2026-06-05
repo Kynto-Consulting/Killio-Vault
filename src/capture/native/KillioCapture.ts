@@ -1,4 +1,4 @@
-import { NativeModulesProxy, EventEmitter } from 'expo-modules-core';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 
 /**
  * Thin TS wrapper over the native `KillioCapture` Expo module (Kotlin), which
@@ -11,7 +11,7 @@ import { NativeModulesProxy, EventEmitter } from 'expo-modules-core';
  *   Event 'onAudioFrame' { samples:number[], sampleRate:number, ts:number }
  *   Event 'onError'      { message:string }
  */
-const native = (NativeModulesProxy as any)?.KillioCapture ?? null;
+const native: any = requireOptionalNativeModule('KillioCapture');
 
 export interface AudioFrameEvent {
   /** 16-bit PCM samples (-32768..32767). */
@@ -32,8 +32,8 @@ export function isAvailable(): boolean {
   return !!native;
 }
 
-// expo-modules-core's EventEmitter generics vary across SDKs; use a loose type.
-const emitter: any = native ? new EventEmitter(native) : null;
+// In expo-modules-core 2.x the native module is itself the event emitter.
+const emitter: any = native;
 
 export function onAudioFrame(
   cb: (e: AudioFrameEvent) => void,

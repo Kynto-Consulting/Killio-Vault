@@ -4,6 +4,8 @@ import { CaptureMode, isWithinWindows } from './schedule';
 import { VadSegmenter } from '../stt/vad';
 import { getSttEngine } from '../stt/engines';
 import { enqueueSegment, flushOutbox, localDate } from '../db/outbox';
+import { matchWake, type WakeMatch } from '../wakeword/WakeWord';
+import { listAgents } from '../agents/local-agent.model';
 
 /**
  * Orchestrates the capture pipeline:
@@ -46,6 +48,8 @@ export class CaptureController {
   private readonly useSpeech: boolean;
   /** True while TTS is speaking — ducks capture to avoid self-recording. */
   private muted = false;
+  /** Fired when a wake phrase is detected in a transcript ("Hey Killio …"). */
+  private onWakeCb: ((m: WakeMatch) => void) | null = null;
 
   constructor(opts: CaptureControllerOptions) {
     this.mode = opts.mode;
@@ -148,11 +152,25 @@ export class CaptureController {
     }
   }
 
-  /** Native SpeechRecognizer transcript → straight to the diary outbox (local). */
+  /** Register a wake-phrase handler ("Hey Killio …"). */
+  setOnWake(cb: ((m: WakeMatch) => void) | null): void {
+    this.onWakeCb = cb;
+  }
+
+  /** Native SpeechRecognizer transcript → diary outbox + wake-phrase scan. */
   private handleTranscript(e: Speech.TranscriptEvent): void {
     if (this.muted) return;
-    if (e.text?.trim()) {
-      enqueueSegment({ text: e.text, ts: e.ts, source: 'android_speech' });
+    const text = e.text?.trim();
+    if (!text) return;
+    enqueueSegment({ text, ts: e.ts, source: 'android_speech' });
+
+    // Wake detection (JS, over the free local transcripts).
+    if (this.onWakeCb) {
+      const names = listAgents()
+        .map((a) => a.wakePhrase || a.name)
+        .filter(Boolean);
+      const m = matchWake(text, names);
+      if (m) this.onWakeCb(m);
     }
   }
 

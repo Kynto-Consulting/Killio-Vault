@@ -1,50 +1,70 @@
-import { NativeModulesProxy, EventEmitter } from 'expo-modules-core';
+/**
+ * Wake-word detection — JS matcher over the continuous on-device SpeechRecognizer
+ * transcripts (free, local, no Porcupine, no credits). The capture service already
+ * streams transcripts 24/7; we scan them for the wake phrases:
+ *   "Hey Killio", "Oye Killio", and per-agent "Hey|Oye {AgentName}".
+ */
+export const BUILTIN_WAKE_PHRASES = ['hey killio', 'oye killio', 'okay killio', 'ok killio'];
+
+export interface WakeMatch {
+  /** Matched wake phrase (lowercased). */
+  phrase: string;
+  /** Agent name if a custom-name phrase matched, else undefined (default agent). */
+  agentName?: string;
+  /** The rest of the utterance after the wake phrase (the command). */
+  command: string;
+}
+
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // strip accents
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /**
- * Wake-word detection. Production uses Porcupine running inside the capture
- * foreground service on the same low-rate stream (no STT/credit cost). Three
- * phrases (plan E): "Hey Killio", "Oye Killio", and a per-agent
- * "Hey|Oye {CustomAgentName}".
- *
- * Native contract (KillioWakeWord Expo module, dev-build):
- *   start({ keywords: string[] }): Promise<void>
- *   stop(): Promise<void>
- *   event 'onWake' { keyword: string }
- *
- * Absent in Expo Go → isAvailable() false; the assistant falls back to
- * push-to-talk.
+ * Returns a WakeMatch if `text` starts with (or contains near the start) a wake
+ * phrase. `agentNames` lets custom agents be invoked by name ("Hey Nova …").
  */
-const native = (NativeModulesProxy as any)?.KillioWakeWord ?? null;
-const emitter: any = native ? new EventEmitter(native) : null;
+export function matchWake(text: string, agentNames: string[] = []): WakeMatch | null {
+  const norm = normalize(text);
+  if (!norm) return null;
 
-export const BUILTIN_WAKE_PHRASES = ['Hey Killio', 'Oye Killio'];
+  const candidates: { phrase: string; agentName?: string }[] = [
+    ...BUILTIN_WAKE_PHRASES.map((p) => ({ phrase: p })),
+    ...agentNames.flatMap((name) => {
+      const n = normalize(name);
+      return n
+        ? [
+            { phrase: `hey ${n}`, agentName: name },
+            { phrase: `oye ${n}`, agentName: name },
+          ]
+        : [];
+    }),
+  ];
 
-/** Builds the phrase list for an optional custom agent name. */
-export function wakePhrasesFor(agentName?: string): string[] {
-  const phrases: string[] = [...BUILTIN_WAKE_PHRASES];
-  const name = agentName?.trim();
-  if (name) phrases.push(`Hey ${name}`, `Oye ${name}`);
-  return phrases;
+  for (const c of candidates) {
+    const idx = norm.indexOf(c.phrase);
+    // Only trigger when the phrase is at/near the start of the utterance.
+    if (idx >= 0 && idx <= 3) {
+      const command = norm.slice(idx + c.phrase.length).trim();
+      return { phrase: c.phrase, agentName: c.agentName, command };
+    }
+  }
+  return null;
 }
 
+/** Always false — no native Porcupine module; detection is JS over transcripts. */
 export function isAvailable(): boolean {
-  return !!native;
+  return false;
 }
 
-export function onWake(cb: (keyword: string) => void): { remove(): void } {
-  if (!emitter) return { remove() {} };
-  const sub = emitter.addListener('onWake', (e: { keyword: string }) =>
-    cb(e.keyword),
-  );
-  return { remove: () => sub.remove() };
-}
-
-export async function start(keywords: string[]): Promise<void> {
-  if (!native) return;
-  await native.start({ keywords });
-}
-
-export async function stop(): Promise<void> {
-  if (!native) return;
-  await native.stop();
+export function wakePhrasesFor(agentName?: string): string[] {
+  const phrases = [...BUILTIN_WAKE_PHRASES];
+  const name = agentName?.trim();
+  if (name) phrases.push(`hey ${name.toLowerCase()}`, `oye ${name.toLowerCase()}`);
+  return phrases;
 }

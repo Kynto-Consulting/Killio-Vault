@@ -1,4 +1,4 @@
-import { NativeModulesProxy, EventEmitter } from 'expo-modules-core';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 
 /**
  * Native Android on-device STT (SpeechRecognizer) via a foreground service.
@@ -6,9 +6,12 @@ import { NativeModulesProxy, EventEmitter } from 'expo-modules-core';
  * transcript segments with a UTC timestamp; no PCM/VAD/whisper needed.
  *
  * Absent in Expo Go → isAvailable() false (falls back to the AudioRecord path).
+ * Uses requireOptionalNativeModule (expo-modules-core 2.x) — NativeModulesProxy
+ * does NOT expose custom modules in SDK 52 (that caused the "demo mode" bug).
  */
-const native = (NativeModulesProxy as any)?.KillioSpeech ?? null;
-const emitter: any = native ? new EventEmitter(native) : null;
+const native: any = requireOptionalNativeModule('KillioSpeech');
+// In expo-modules-core 2.x the native module itself is the event emitter.
+const emitter: any = native;
 
 export interface TranscriptEvent {
   text: string;

@@ -13,6 +13,7 @@ import { fonts } from '../theme/fonts';
 
 export { RichText } from './RichText';
 export { RefPill } from './RefPill';
+export { AgentMessage } from './AgentMessage';
 
 /**
  * Vault UI kit — nativewind (tailwind for RN) using the same dark tokens as the

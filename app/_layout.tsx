@@ -13,6 +13,7 @@ import { CaptureProvider } from '@/capture/CaptureContext';
 import { I18nProvider } from '@/i18n';
 import { NavProvider, useNav } from '@/nav/NavContext';
 import { SideNav } from '@/nav/SideNav';
+import { WakeListener } from '@/wakeword/WakeListener';
 import { useAppFonts, fonts } from '@/theme/fonts';
 import { colors } from '@/theme/theme';
 
@@ -73,8 +74,10 @@ export default function RootLayout() {
                 <Stack.Screen name="agents" options={{ title: 'Agentes', ...withMenu }} />
                 <Stack.Screen name="integrations" options={{ title: 'Integraciones', ...withMenu }} />
                 <Stack.Screen name="usage" options={{ title: 'Uso', ...withMenu }} />
+                <Stack.Screen name="whatsapp-pair" options={{ title: 'WhatsApp' }} />
               </Stack>
               <SideNav />
+              <WakeListener />
             </NavProvider>
           </CaptureProvider>
         </AuthProvider>

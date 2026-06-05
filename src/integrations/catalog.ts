@@ -4,7 +4,7 @@
  * backend). `icon` is a lucide name (rendered via lucide-react-native, same set
  * the web app uses). `color` matches the web pills.
  */
-export type IntegrationKind = 'oauth' | 'manual' | 'device' | 'soon';
+export type IntegrationKind = 'oauth' | 'manual' | 'device' | 'pair' | 'soon';
 
 export interface ManualField {
   key: string;
@@ -52,13 +52,20 @@ export const CATALOG: VaultIntegration[] = [
     ],
   },
   {
-    id: 'whatsapp', provider: 'whatsapp', name: 'WhatsApp', icon: 'message-circle', color: '#25d366', category: 'communication', kind: 'manual',
+    id: 'whatsapp_business', provider: 'whatsapp', name: 'WhatsApp Business', icon: 'message-circle', color: '#25d366', category: 'communication', kind: 'manual',
     manualPath: 'whatsapp/credentials',
     manualFields: [
       { key: 'name', label: 'Nombre' },
       { key: 'phoneNumberId', label: 'Phone Number ID' },
       { key: 'accessToken', label: 'Access Token', secret: true },
     ],
+  },
+  // WhatsApp Personal: Baileys bridge with PAIRING CODE flow (8-digit code the
+  // user enters in WhatsApp → Linked devices → Link with phone number). The
+  // dedicated screen "/whatsapp-pair" handles input + polling — no QR scan
+  // needed, fully mobile-native.
+  {
+    id: 'whatsapp_personal', provider: 'whatsapp_personal', name: 'WhatsApp (personal)', icon: 'message-circle', color: '#128c7e', category: 'communication', kind: 'pair',
   },
   {
     id: 'stripe', provider: 'stripe', name: 'Stripe', icon: 'credit-card', color: '#635bff', category: 'payments', kind: 'manual',

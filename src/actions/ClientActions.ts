@@ -126,6 +126,10 @@ export async function runClientAction(
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'sms failed' };
       }
+    case 'vault_disconnect':
+      // Handled by the WakeListener / assistant itself (silences AI, returns to
+      // wake mode). Treat as success here so the agent loop finalizes cleanly.
+      return { success: true, output: { disconnected: true, reason: input.reason ?? null } };
     default:
       return { success: false, error: `Unknown client action: ${tool}` };
   }
@@ -138,3 +142,6 @@ export const NEEDS_CONFIRM = new Set([
   'calendar_create_event',
   'send_sms',
 ]);
+
+/** Tools whose only effect is on the Vault app itself (no native side effect). */
+export const APP_LOCAL_TOOLS = new Set(['vault_disconnect']);

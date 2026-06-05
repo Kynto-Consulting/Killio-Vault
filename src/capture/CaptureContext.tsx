@@ -23,12 +23,15 @@ interface CaptureState {
   setMuted(muted: boolean): void;
   /** Upload pending transcripts now (call before an agent turn). */
   flushNow(): Promise<void>;
+  /** Register a wake-phrase handler ("Hey Killio …"). */
+  setOnWake(cb: ((m: import('../wakeword/WakeWord').WakeMatch) => void) | null): void;
 }
 
 const Ctx = createContext<CaptureState | null>(null);
 
 export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const controllerRef = useRef<CaptureController | null>(null);
+  const wakeCbRef = useRef<((m: any) => void) | null>(null);
   const [status, setStatus] = useState<CaptureStatus>('idle');
   const [mode, setModeState] = useState<CaptureMode>({ kind: 'off' });
   const [pending, setPending] = useState(0);
@@ -43,6 +46,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
         onStatus: setStatus,
       });
       controllerRef.current = controller;
+      controller.setOnWake(wakeCbRef.current); // apply handler registered before creation
       if (saved.kind !== 'off' && nativeAvailable) {
         try {
           await controller.start();
@@ -93,6 +97,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           await flushOutbox();
         }
         setPending(safePending());
+      },
+      setOnWake: (cb) => {
+        wakeCbRef.current = cb;
+        controllerRef.current?.setOnWake(cb);
       },
     }),
     [status, mode, nativeAvailable, pending],

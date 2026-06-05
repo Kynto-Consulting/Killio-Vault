@@ -67,8 +67,8 @@ export interface ClientActionEvent {
 
 export interface AgentStreamHandlers {
   onDelta?(text: string): void;
-  onToolStart?(e: { tool: string; input: unknown }): void;
-  onToolDone?(e: { tool: string; success: boolean; output: unknown }): void;
+  onToolStart?(e: { id?: string; tool: string; input: unknown }): void;
+  onToolDone?(e: { id?: string; tool: string; success: boolean; output: unknown }): void;
   onClientAction?(e: ClientActionEvent): void;
   onDone?(e: { conversationId: string; messageId: string; text: string }): void;
   onError?(message: string): void;

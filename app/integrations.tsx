@@ -11,7 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 
 import { Screen, H1, Body, Button } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
@@ -24,11 +24,14 @@ import {
 } from '@/core/api/integrations.client';
 import { requestPermission as requestCalendar } from '@/calendar/Calendar';
 import { requestContacts, requestLocation } from '@/integrations/device';
+import { getConnectedDeviceProviders } from '@/integrations/device-state';
+import { getStatus as getWaStatus } from '@/core/api/whatsapp.client';
 import { useTranslations } from '@/i18n';
 import { colors, radius, spacing, typography } from '@/theme/theme';
 
 export default function IntegrationsScreen() {
   const t = useTranslations('integrations');
+  const router = useRouter();
   const { personalTeam } = useAuth();
   const [connected, setConnected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -38,8 +41,16 @@ export default function IntegrationsScreen() {
     if (!personalTeam?.id) return;
     setLoading(true);
     try {
-      const providers = await getConnectedProviders(personalTeam.id);
-      setConnected(new Set(providers));
+      // Server-side OAuth/manual connectors + device-side permissions +
+      // pair-based bridges (WhatsApp Personal).
+      const [serverProviders, devProviders, wa] = await Promise.all([
+        getConnectedProviders(personalTeam.id).catch(() => [] as string[]),
+        getConnectedDeviceProviders(),
+        getWaStatus(personalTeam.id).catch(() => ({ connected: false, phone: null })),
+      ]);
+      const pairProviders: string[] = [];
+      if (wa.connected) pairProviders.push('whatsapp_personal');
+      setConnected(new Set([...serverProviders, ...devProviders, ...pairProviders]));
     } catch {
       // keep previous
     } finally {
@@ -77,6 +88,7 @@ export default function IntegrationsScreen() {
               ? await requestLocation()
               : false;
       Alert.alert(it.name, granted ? t('saved') : t('error'));
+      if (granted) void load(); // refresh "Connected" badge immediately
     } catch {
       Alert.alert(it.name, t('error'));
     }
@@ -86,6 +98,10 @@ export default function IntegrationsScreen() {
     if (it.kind === 'oauth') return connectOAuth(it);
     if (it.kind === 'manual') return setManual(it);
     if (it.kind === 'device') return connectDevice(it);
+    if (it.kind === 'pair' && it.id === 'whatsapp_personal') {
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      router.push('/whatsapp-pair');
+    }
   };
 
   const available = CATALOG.filter((i) => i.kind !== 'soon');

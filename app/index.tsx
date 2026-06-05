@@ -20,5 +20,5 @@ export default function Index() {
     );
   }
 
-  return <Redirect href={status === 'signedIn' ? '/home' : '/login'} />;
+  return <Redirect href={status === 'signedIn' ? '/assistant' : '/login'} />;
 }

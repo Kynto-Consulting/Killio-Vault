@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,10 +11,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLayoutEffect } from 'react';
+import { useLocalSearchParams, useNavigation } from 'expo-router';
 
-import { Screen, Button, Input, RichText } from '@/ui';
-import { Mic, Paperclip, X } from 'lucide-react-native';
+import { Screen, Button, Input, RichText, AgentMessage } from '@/ui';
+import { Mic, Paperclip, X, SquarePen } from 'lucide-react-native';
+import { fonts } from '@/theme/fonts';
 import * as DocumentPicker from 'expo-document-picker';
 import { uploadFile } from '@/core/api/uploads.client';
 import { useAuth } from '@/core/auth/AuthContext';
@@ -28,7 +31,7 @@ import { logConversation } from '@/core/api/vault.client';
 import { runClientAction, NEEDS_CONFIRM } from '@/actions/ClientActions';
 import { recognizeOnce, isAvailable as sttAvailable } from '@/stt/native/KillioSpeech';
 import { recentTranscriptText } from '@/db/outbox';
-import { speak } from '@/tts/Tts';
+import { speak, stopSpeaking } from '@/tts/Tts';
 import { getAgent, type LocalAgent } from '@/agents/local-agent.model';
 import { LocalAgentRuntime } from '@/agents/LocalAgentRuntime';
 import { useTranslations } from '@/i18n';
@@ -43,6 +46,7 @@ interface Msg {
 export default function AssistantScreen() {
   const t = useTranslations('assistant');
   const tc = useTranslations('common');
+  const navigation = useNavigation();
   const { personalTeam } = useAuth();
   const { setMuted, flushNow } = useCapture();
   const { agentId, conversationId } = useLocalSearchParams<{
@@ -64,6 +68,8 @@ export default function AssistantScreen() {
   // Prior ~1 min of transcript captured when the user speaks (voice/wake), so
   // the agent has context of what was being said before the command.
   const recentCtx = useRef<string>('');
+  // True when the pending turn was started by voice (push-to-talk) → speak reply.
+  const voiceTurn = useRef<boolean>(false);
 
   useEffect(() => {
     if (!agentId) return;
@@ -73,6 +79,28 @@ export default function AssistantScreen() {
       runtime.current = new LocalAgentRuntime(a);
     }
   }, [agentId]);
+
+  const newChat = () => {
+    setMessages([]);
+    setInput('');
+    setAttachments([]);
+    convId.current = undefined;
+    firstMsg.current = '';
+    lastUserMsg.current = '';
+  };
+
+  // GPT-style header: agent/Killio title + a "new chat" button on the right.
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTitle: agent?.name ?? 'Killio',
+      headerRight: () => (
+        <Pressable onPress={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
+          <SquarePen size={20} color={colors.foreground} />
+        </Pressable>
+      ),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, agent?.name]);
 
   // Resume an existing conversation from history.
   useEffect(() => {
@@ -108,12 +136,14 @@ export default function AssistantScreen() {
       clientActionResult?: AgentChatBody['clientActionResult'];
       remember?: boolean;
       userTurn?: boolean;
+      speakReply?: boolean;
     } = {},
   ) => {
     if (!personalTeam?.id) return;
     setBusy(true);
     draftId.current = `a-${Date.now()}`;
     let finalText = '';
+    const toolInputById = new Map<string, { tool: string; input: unknown }>();
     await streamAgentChat(
       {
         teamId: personalTeam.id,
@@ -126,6 +156,23 @@ export default function AssistantScreen() {
         onDelta: (t) => {
           finalText += t;
           appendAssistantDelta(t);
+        },
+        onToolStart: (e) => {
+          const id = e.id ?? `tc-${toolInputById.size}`;
+          toolInputById.set(id, { tool: e.tool, input: e.input });
+          // Synthesize inline markup so AgentMessage renders a live tool chip.
+          const invoke = `\n<invoke id="${id}" name="${e.tool}"><parameters>${
+            renderParams(e.input)
+          }</parameters></invoke>\n<tool_status id="${id}" status="running" />`;
+          finalText += invoke;
+          appendAssistantDelta(invoke);
+        },
+        onToolDone: (e) => {
+          const id = e.id ?? findIdFor(e.tool, toolInputById);
+          if (!id) return;
+          const tag = `\n<tool_status id="${id}" status="done" success="${e.success}" />`;
+          finalText += tag;
+          appendAssistantDelta(tag);
         },
         onClientAction: (e) => void handleClientAction(e),
         onDone: ({ conversationId: cid }) => {
@@ -145,11 +192,15 @@ export default function AssistantScreen() {
                 assistantText: finalText,
               });
             }
-            setMuted(true);
-            void speak(finalText, {
-              language: agent?.voice ?? 'es-ES',
-              onFinish: () => setMuted(false),
-            });
+            // Speak ONLY for voice-initiated turns (push-to-talk / wake), not
+            // typed messages.
+            if (opts.speakReply) {
+              setMuted(true);
+              void speak(finalText, {
+                language: agent?.voice ?? 'es-ES',
+                onFinish: () => setMuted(false),
+              });
+            }
           }
         },
         onError: (m) => {
@@ -163,6 +214,21 @@ export default function AssistantScreen() {
   const handleClientAction = async (e: ClientActionEvent) => {
     const resumeWith = (result: AgentChatBody['clientActionResult']) =>
       runTurn('(continúa)', { clientActionResult: result });
+
+    // vault_disconnect: AI explicitly ends the voice conversation. Silence the
+    // assistant, clear voice state, and stop the turn. Background wake listener
+    // keeps running and will pick up the next "Hey Killio".
+    if (e.tool === 'vault_disconnect') {
+      try {
+        stopSpeaking();
+      } catch {
+        /* ignore */
+      }
+      setMuted(false);
+      voiceTurn.current = false;
+      await resumeWith({ id: e.id, tool: e.tool, success: true, output: { disconnected: true } });
+      return;
+    }
 
     const execute = async () => {
       const result = await runClientAction(e.tool, e.input);
@@ -260,8 +326,10 @@ export default function AssistantScreen() {
       ? `Contexto reciente (último minuto de lo que el usuario decía): "${recentCtx.current}"\n\n`
       : '';
     recentCtx.current = '';
+    const speakReply = voiceTurn.current;
+    voiceTurn.current = false;
     const toSend = ctx + base + (assetTags ? `\n\n${assetTags}` : '');
-    await runTurn(toSend, { remember: !!runtime.current, userTurn: true });
+    await runTurn(toSend, { remember: !!runtime.current, userTurn: true, speakReply });
   };
 
   // Push-to-talk: one-shot native recognition → fills the input.
@@ -277,6 +345,7 @@ export default function AssistantScreen() {
       if (text.trim()) {
         setInput(text.trim());
         recentCtx.current = recentTranscriptText(60_000); // last minute of diary
+        voiceTurn.current = true; // voice → speak the reply
       }
     } catch {
       // ignore — user can type
@@ -290,7 +359,30 @@ export default function AssistantScreen() {
       <FlatList
         data={messages}
         keyExtractor={(m) => m.id}
-        contentContainerClassName="p-4 gap-3"
+        contentContainerClassName="p-4 gap-3 flex-grow"
+        ListEmptyComponent={
+          <View className="flex-1 items-center justify-center gap-4 px-6 py-16">
+            <Image
+              source={require('../assets/killio_white.webp')}
+              style={{ width: 64, height: 64, resizeMode: 'contain', opacity: 0.9 }}
+            />
+            <Text style={{ fontFamily: fonts.bold }} className="text-xl text-foreground">
+              {t('greeting')}
+            </Text>
+            <Text className="text-center text-sm text-muted-foreground">{t('greetingSub')}</Text>
+            <View className="mt-2 w-full gap-2">
+              {[t('s1'), t('s2'), t('s3')].map((s, i) => (
+                <Pressable
+                  key={i}
+                  onPress={() => setInput(s)}
+                  className="rounded-xl border border-border bg-card px-4 py-3 active:opacity-80"
+                >
+                  <Text className="text-sm text-foreground">{s}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        }
         renderItem={({ item }) =>
           item.role === 'user' ? (
             <View className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-secondary px-4 py-2.5">
@@ -298,7 +390,7 @@ export default function AssistantScreen() {
             </View>
           ) : (
             <View className="self-start max-w-[88%] rounded-2xl rounded-bl-md border border-border bg-card px-4 py-2.5">
-              <RichText content={item.text} />
+              <AgentMessage content={item.text} />
             </View>
           )
         }
@@ -354,6 +446,21 @@ function stripTags(s: string): string {
     .replace(/<batch_invoke>[\s\S]*?<\/batch_invoke>/g, '')
     .replace(/<[^>]+>/g, '')
     .trim();
+}
+
+function renderParams(input: unknown): string {
+  if (!input || typeof input !== 'object') return '';
+  return Object.entries(input as Record<string, unknown>)
+    .map(([k, v]) => `<${k}>${typeof v === 'string' ? v : JSON.stringify(v)}</${k}>`)
+    .join('');
+}
+
+function findIdFor(
+  tool: string,
+  map: Map<string, { tool: string; input: unknown }>,
+): string | undefined {
+  for (const [id, v] of map) if (v.tool === tool) return id;
+  return undefined;
 }
 
 function describeAction(
