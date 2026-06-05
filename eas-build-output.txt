@@ -1,0 +1,5 @@
+(node:33852) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+It looks like you haven't initialized the git repository yet.
+EAS requires you to use a git repository for your project.
+[?25l[2K[1G[36m?[39m [1mWould you like us to run 'git init' in D:\Github\Kynto\Killio\Killio-Vault for you?[22m [90m»[39m [90m(Y/n)[39m
