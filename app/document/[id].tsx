@@ -9,6 +9,7 @@ import type { Brick } from '@/ui/BrickRenderer';
 import { useDocuments } from '@/documents/DocumentsProvider';
 import { DocumentHeader, type BreadcrumbSegment, shareDocumentText } from '@/documents/DocumentHeader';
 import { DocumentSidebar } from '@/documents/DocumentSidebar';
+import { useRealtimeChannel } from '@/realtime/useRealtimeChannel';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useLocalWorkspace } from '@/local-workspace/LocalWorkspaceProvider';
 import {
@@ -74,6 +75,60 @@ export default function DocumentDetailScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Real-time collaborative editing: subscribe to the document channel and
+  // apply broadcasted brick mutations from other clients (web or another
+  // Vault). Local mutations skip the wire — they are already applied
+  // optimistically before we POST to the backend.
+  useRealtimeChannel(!isLocal && cloudId ? `document:${cloudId}` : null, {
+    events: {
+      'brick.created': (payload) => {
+        const p = payload as { id?: string; kind?: string; content?: any; position?: number };
+        const newId = p?.id;
+        if (!newId) return;
+        setDoc((prev) => {
+          if (!prev || prev.bricks.some((b) => b.id === newId)) return prev;
+          const next = [...prev.bricks];
+          const at = Math.max(0, Math.min(next.length, p.position ?? next.length));
+          next.splice(at, 0, { id: newId, kind: p.kind ?? 'text', content: p.content ?? {} });
+          return { ...prev, bricks: next };
+        });
+      },
+      'brick.updated': (payload) => {
+        const p = payload as { id?: string; brickId?: string; content?: any };
+        const id = p?.id ?? p?.brickId;
+        if (!id) return;
+        setDoc((prev) =>
+          prev
+            ? { ...prev, bricks: prev.bricks.map((b) => (b.id === id ? { ...b, content: p.content ?? b.content } : b)) }
+            : prev,
+        );
+      },
+      'brick.deleted': (payload) => {
+        const id = (payload as { id?: string; brickId?: string })?.id ?? (payload as any)?.brickId;
+        if (!id) return;
+        setDoc((prev) => (prev ? { ...prev, bricks: prev.bricks.filter((b) => b.id !== id) } : prev));
+      },
+      'brick.reordered': (payload) => {
+        const ids = (payload as { brickIds?: string[] })?.brickIds;
+        if (!Array.isArray(ids)) return;
+        setDoc((prev) => {
+          if (!prev) return prev;
+          const byId = new Map(prev.bricks.map((b) => [b.id, b]));
+          const sorted = ids.map((id) => byId.get(id)).filter((b): b is NonNullable<typeof b> => !!b);
+          // Append any locally-known bricks the broadcast didn't mention.
+          for (const b of prev.bricks) if (b.id && !ids.includes(b.id)) sorted.push(b);
+          return { ...prev, bricks: sorted };
+        });
+      },
+      'document.updated': (payload) => {
+        const nextTitle = (payload as { title?: string })?.title;
+        if (typeof nextTitle === 'string') {
+          setDoc((prev) => (prev ? { ...prev, title: nextTitle } : prev));
+        }
+      },
+    },
+  });
 
   const breadcrumb = useMemo<BreadcrumbSegment[]>(() => {
     const segs: BreadcrumbSegment[] = [];

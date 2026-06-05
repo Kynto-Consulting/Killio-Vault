@@ -33,6 +33,7 @@ import {
   type ActivityLogEntry,
 } from '@/core/api/activity.client';
 import { streamAgentChat } from '@/core/api/agent.client';
+import { useRealtimeChannel } from '@/realtime/useRealtimeChannel';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
 
@@ -298,6 +299,19 @@ function CommentsPane({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Live updates over Pulse — server emits `room.message` whenever anyone
+  // (web or another Vault) sends to this room. We append to the local list
+  // and de-dupe by id.
+  useRealtimeChannel(room ? `room:${room.id}` : null, {
+    events: {
+      'room.message': (payload) => {
+        const m = payload as RoomMessage | undefined;
+        if (!m?.id) return;
+        setMessages((cur) => (cur.some((x) => x.id === m.id) ? cur : [...cur, m]));
+      },
+    },
+  });
 
   const send = async () => {
     const text = input.trim();
