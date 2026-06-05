@@ -47,7 +47,7 @@ export interface AgentChatBody {
   teamId: string;
   message: string;
   conversationId?: string;
-  entityType?: 'vault';
+  entityType?: 'vault' | 'document' | 'board' | 'mesh' | 'card' | 'script' | 'team';
   entityId?: string;
   enabledToolIds?: string[];
   clientActionResult?: {

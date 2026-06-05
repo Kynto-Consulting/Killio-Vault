@@ -11,7 +11,9 @@ import {
   ArrowLeft,
   Copy as CopyIcon,
   Eye,
+  History,
   Lock,
+  MessageSquare,
   MoreVertical,
   Pencil,
   Save,
@@ -52,6 +54,8 @@ export interface DocumentHeaderProps {
   onChangeVisibility?(next: 'private' | 'team' | 'public'): Promise<void> | void;
   /** Shown next to the title (e.g. "guardado hace 1m"). */
   statusLabel?: string;
+  /** Opens the sidebar (copilot / chat / activity). */
+  onOpenSidebar?(tab: 'copilot' | 'comments' | 'activity'): void;
 }
 
 export interface BreadcrumbSegment {
@@ -74,6 +78,7 @@ export function DocumentHeader({
   onDelete,
   onChangeVisibility,
   statusLabel,
+  onOpenSidebar,
 }: DocumentHeaderProps) {
   const t = useTranslations('docHeader');
   const [renaming, setRenaming] = useState(false);
@@ -161,6 +166,15 @@ export function DocumentHeader({
           </Text>
         </Pressable>
 
+        {onOpenSidebar ? (
+          <Pressable
+            onPress={() => onOpenSidebar('comments')}
+            className="h-9 w-9 items-center justify-center rounded-md border border-border bg-card"
+          >
+            <MessageSquare size={14} color={colors.foreground} />
+          </Pressable>
+        ) : null}
+
         <Pressable
           onPress={() => setMenuOpen(true)}
           className="h-9 w-9 items-center justify-center rounded-md border border-border bg-card"
@@ -224,6 +238,26 @@ export function DocumentHeader({
                 setRenaming(true);
               }}
             />
+            {onOpenSidebar ? (
+              <>
+                <MenuItem
+                  icon={CopyIcon}
+                  label={t('openCopilot')}
+                  onPress={() => {
+                    setMenuOpen(false);
+                    onOpenSidebar('copilot');
+                  }}
+                />
+                <MenuItem
+                  icon={History}
+                  label={t('openActivity')}
+                  onPress={() => {
+                    setMenuOpen(false);
+                    onOpenSidebar('activity');
+                  }}
+                />
+              </>
+            ) : null}
             {onDuplicate ? (
               <MenuItem
                 icon={CopyIcon}

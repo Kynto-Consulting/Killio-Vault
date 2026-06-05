@@ -8,6 +8,7 @@ import { BrickList, type AddableKind } from '@/ui/BrickRenderer';
 import type { Brick } from '@/ui/BrickRenderer';
 import { useDocuments } from '@/documents/DocumentsProvider';
 import { DocumentHeader, type BreadcrumbSegment, shareDocumentText } from '@/documents/DocumentHeader';
+import { DocumentSidebar } from '@/documents/DocumentSidebar';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useLocalWorkspace } from '@/local-workspace/LocalWorkspaceProvider';
 import {
@@ -51,6 +52,7 @@ export default function DocumentDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [canEdit, setCanEdit] = useState(false);
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved' | 'offline'>('idle');
+  const [sidebarTab, setSidebarTab] = useState<'copilot' | 'comments' | 'activity' | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -302,6 +304,7 @@ export default function DocumentDetailScreen() {
             : undefined
         }
         statusLabel={statusLabelFor(saving, tDetail)}
+        onOpenSidebar={isLocal ? undefined : (tab) => setSidebarTab(tab)}
       />
 
       <ScrollView
@@ -338,6 +341,18 @@ export default function DocumentDetailScreen() {
           </View>
         ) : null}
       </ScrollView>
+
+      {/* Copilot / Chat / Activity drawer — cloud docs only (the linked-room
+          and activity-log endpoints only exist on the cloud). */}
+      {!isLocal && cloudId ? (
+        <DocumentSidebar
+          open={sidebarTab !== null}
+          onClose={() => setSidebarTab(null)}
+          documentId={cloudId}
+          documentTitle={doc?.title ?? tFallback('document')}
+          initialTab={sidebarTab ?? 'comments'}
+        />
+      ) : null}
     </Screen>
   );
 }
