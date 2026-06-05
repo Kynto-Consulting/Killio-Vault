@@ -49,6 +49,21 @@ export async function listTeamBoards(teamId: string): Promise<BoardSummary[]> {
   return data ?? [];
 }
 
+export async function createCloudBoard(
+  teamId: string,
+  input: { name: string; boardType: 'kanban' | 'mesh'; description?: string },
+): Promise<BoardSummary> {
+  // Backend endpoint: POST /teams/:teamId/boards
+  // (Killio-Backend/src/modules/teams/teams.controller.ts:96 — already wired
+  // to teamsService.createBoard.)
+  const { data } = await api.post<BoardSummary>(`/teams/${teamId}/boards`, {
+    name: input.name,
+    boardType: input.boardType,
+    description: input.description ?? null,
+  });
+  return data;
+}
+
 export async function getBoard(boardId: string): Promise<BoardDetail> {
   const { data } = await api.get<BoardDetail>(`/boards/${boardId}`);
   return data;
@@ -123,9 +138,34 @@ export async function getCard(cardId: string): Promise<BoardCard> {
 }
 
 export async function addCardAssignee(cardId: string, userId: string): Promise<void> {
-  await api.post(`/cards/${cardId}/assignees`, { userId });
+  // Backend route: POST /cards/:cardId/assignees/:assigneeId
+  await api.post(`/cards/${cardId}/assignees/${userId}`);
 }
 
 export async function removeCardAssignee(cardId: string, userId: string): Promise<void> {
   await api.delete(`/cards/${cardId}/assignees/${userId}`);
+}
+
+// ─── Tags ───────────────────────────────────────────────────────────────────
+
+export interface BoardTag {
+  id: string;
+  name: string;
+  slug?: string;
+  color?: string;
+  tagKind?: string;
+}
+
+/** Lists tags scoped to a board. Backend route: `GET /tags/scope/board/:boardId`. */
+export async function listBoardTags(boardId: string): Promise<BoardTag[]> {
+  const { data } = await api.get<BoardTag[]>(`/tags/scope/board/${boardId}`);
+  return data ?? [];
+}
+
+export async function addCardTag(cardId: string, tagId: string): Promise<void> {
+  await api.post(`/cards/${cardId}/tags/${tagId}`);
+}
+
+export async function removeCardTag(cardId: string, tagId: string): Promise<void> {
+  await api.delete(`/cards/${cardId}/tags/${tagId}`);
 }

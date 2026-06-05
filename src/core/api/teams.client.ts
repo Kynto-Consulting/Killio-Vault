@@ -24,10 +24,40 @@ export async function getTeamCatalog(teamId: string): Promise<TeamCatalog> {
   };
 }
 
+export interface TeamMember {
+  /** users.id — pass this to addCardAssignee. */
+  id: string;
+  /** team_memberships.id — only useful for membership-level mutations. */
+  membershipId?: string;
+  role?: string;
+  name?: string;
+  displayName?: string;
+  baseDisplayName?: string;
+  email?: string;
+  avatarUrl?: string | null;
+}
+
+/** Lists active members of a team. Backend route: `GET /teams/:teamId/members`. */
+export async function listTeamMembers(teamId: string): Promise<TeamMember[]> {
+  const { data } = await api.get<TeamMember[]>(`/teams/${teamId}/members`);
+  return data ?? [];
+}
+
 /** Lists the workspaces the current user belongs to. */
 export async function listTeams(): Promise<Team[]> {
   const { data } = await api.get<Team[]>('/teams');
   return data.filter((t) => !t.isArchived);
+}
+
+/** Creates a new cloud workspace owned by the current user. */
+export async function createTeam(input: {
+  name: string;
+  slug?: string;
+  description?: string;
+  icon?: string;
+}): Promise<Team> {
+  const { data } = await api.post<Team>('/teams', input);
+  return data;
 }
 
 /**

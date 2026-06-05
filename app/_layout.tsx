@@ -5,6 +5,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Pressable, Text } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as SplashScreen from 'expo-splash-screen';
 import { Menu } from 'lucide-react-native';
 
@@ -94,25 +95,27 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
 
   return (
-    <SafeAreaProvider>
-      <I18nProvider>
-        <LocalWorkspaceProvider>
-        <AuthProvider>
-          <AppModeProvider>
-          <DocumentsProvider>
-          <CaptureProvider>
-            <NavProvider>
-              <StatusBar style="light" />
-              <AppStack />
-              <SideNav />
-              <WakeListener />
-            </NavProvider>
-          </CaptureProvider>
-          </DocumentsProvider>
-          </AppModeProvider>
-        </AuthProvider>
-        </LocalWorkspaceProvider>
-      </I18nProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <I18nProvider>
+          <LocalWorkspaceProvider>
+          <AuthProvider>
+            <AppModeProvider>
+            <DocumentsProvider>
+            <CaptureProvider>
+              <NavProvider>
+                <StatusBar style="light" />
+                <AppStack />
+                <SideNav />
+                <WakeListener />
+              </NavProvider>
+            </CaptureProvider>
+            </DocumentsProvider>
+            </AppModeProvider>
+          </AuthProvider>
+          </LocalWorkspaceProvider>
+        </I18nProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

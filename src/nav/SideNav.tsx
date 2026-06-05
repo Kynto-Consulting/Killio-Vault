@@ -1,4 +1,4 @@
-﻿import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+﻿import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, usePathname } from 'expo-router';
 import {
@@ -11,7 +11,6 @@ import {
   Check,
   ChevronsUpDown,
   FileText,
-  HardDriveDownload,
   History,
   Kanban as KanbanIcon,
   LogOut,
@@ -29,6 +28,7 @@ import { useNav } from './NavContext';
 import { useAppMode, type AppMode } from './AppModeContext';
 import { useAuth } from '../core/auth/AuthContext';
 import { useLocalWorkspace } from '../local-workspace/LocalWorkspaceProvider';
+import { createTeam } from '../core/api/teams.client';
 import { useTranslations } from '../i18n';
 import { colors } from '../theme/theme';
 import { fonts } from '../theme/fonts';
@@ -64,7 +64,6 @@ const WORKSPACE_ITEMS: Item[] = [
   { key: 'documents', icon: FileText, route: '/documents' },
   { key: 'boards', icon: KanbanIcon, route: '/b' },
   { key: 'rooms', icon: MessageSquare, route: '/rooms' },
-  { key: 'localWorkspaces', icon: HardDriveDownload, route: '/local-workspaces' },
 ];
 
 function itemsForMode(mode: AppMode): Item[] {
@@ -83,11 +82,34 @@ export function SideNav() {
   const t = useTranslations('nav');
   const tSide = useTranslations('sidenav');
   const tFallback = useTranslations('fallback');
-  const { activeTeam, workspaces, setActiveTeam, signOut } = useAuth();
+  const { activeTeam, workspaces, setActiveTeam, signOut, refreshWorkspaces } = useAuth();
   const { mode, setMode } = useAppMode();
   const local = useLocalWorkspace();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [creatingCloud, setCreatingCloud] = useState(false);
+  const [newCloudName, setNewCloudName] = useState('');
+  const [submittingCloud, setSubmittingCloud] = useState(false);
   const items = itemsForMode(mode);
+
+  const submitNewCloud = async () => {
+    const name = newCloudName.trim();
+    if (!name || submittingCloud) return;
+    setSubmittingCloud(true);
+    try {
+      const team = await createTeam({ name });
+      if (refreshWorkspaces) await refreshWorkspaces();
+      await setActiveTeam(team.id);
+      setNewCloudName('');
+      setCreatingCloud(false);
+      setPickerOpen(false);
+      closeNav();
+      requestAnimationFrame(() => router.push('/workspace'));
+    } catch (e: any) {
+      Alert.alert('Error', String(e?.response?.data?.message ?? e?.message ?? e));
+    } finally {
+      setSubmittingCloud(false);
+    }
+  };
 
   const isLocal = local.mode === 'local';
   const workspaceName = isLocal
@@ -197,6 +219,63 @@ export function SideNav() {
                     })}
                   </View>
                 ) : null}
+
+                {/* + New (cloud) workspace — inline name form */}
+                {creatingCloud ? (
+                  <View className="rounded-md border border-cyan/40 bg-background p-2 gap-2">
+                    <Text
+                      style={{ fontFamily: fonts.semibold }}
+                      className="text-[10px] uppercase tracking-widest text-muted-foreground"
+                    >
+                      {tSide('newCloud')}
+                    </Text>
+                    <TextInput
+                      value={newCloudName}
+                      onChangeText={setNewCloudName}
+                      placeholder={tSide('newCloudPlaceholder')}
+                      placeholderTextColor={colors.mutedForeground}
+                      autoFocus
+                      onSubmitEditing={submitNewCloud}
+                      style={{ fontFamily: fonts.regular, color: colors.foreground }}
+                      className="rounded-md border border-border bg-card px-3 py-2 text-sm"
+                    />
+                    <View className="flex-row justify-end gap-2">
+                      <Pressable
+                        onPress={() => {
+                          setCreatingCloud(false);
+                          setNewCloudName('');
+                        }}
+                        className="rounded-md border border-border bg-secondary px-3 py-1.5"
+                      >
+                        <Text style={{ fontFamily: fonts.medium }} className="text-xs text-foreground">
+                          {tSide('cancel')}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={submitNewCloud}
+                        disabled={!newCloudName.trim() || submittingCloud}
+                        style={{ opacity: !newCloudName.trim() || submittingCloud ? 0.5 : 1 }}
+                        className="rounded-md bg-cyan px-3 py-1.5"
+                      >
+                        <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-background">
+                          {submittingCloud ? '…' : tSide('create')}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : (
+                  <Pressable
+                    onPress={() => setCreatingCloud(true)}
+                    className="flex-row items-center gap-2 rounded-md px-3 py-2"
+                  >
+                    <View className="h-6 w-6 items-center justify-center rounded border border-dashed border-border bg-background">
+                      <Text style={{ fontFamily: fonts.bold }} className="text-[14px] text-foreground">+</Text>
+                    </View>
+                    <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground">
+                      {tSide('newCloud')}
+                    </Text>
+                  </Pressable>
+                )}
 
                 {/* Local workspaces */}
                 <View>

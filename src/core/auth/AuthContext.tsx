@@ -35,6 +35,8 @@ interface AuthState {
   workspaces: Team[];
   /** Switch the active workspace. Persists the choice across launches. */
   setActiveTeam(teamId: string): Promise<void>;
+  /** Re-fetches workspaces from backend (after creating a new team). */
+  refreshWorkspaces(): Promise<void>;
   /** Returns true if signed in, false if the account requires OTP. */
   loginWithPassword(email: string, password: string): Promise<boolean>;
   verifyOtp(email: string, code: string, token: string): Promise<void>;
@@ -177,6 +179,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [completeSignIn],
   );
 
+  const refreshWorkspaces = useCallback(async () => {
+    await hydrateWorkspaces();
+  }, [hydrateWorkspaces]);
+
   const value = useMemo<AuthState>(
     () => ({
       status,
@@ -184,6 +190,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       activeTeam,
       workspaces,
       setActiveTeam,
+      refreshWorkspaces,
       loginWithPassword,
       verifyOtp,
       registerAccount,
@@ -195,6 +202,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       activeTeam,
       workspaces,
       setActiveTeam,
+      refreshWorkspaces,
       loginWithPassword,
       verifyOtp,
       registerAccount,
