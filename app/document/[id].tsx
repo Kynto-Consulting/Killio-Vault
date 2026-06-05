@@ -3,6 +3,7 @@ import { ScrollView, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { Screen, Card, Body } from '@/ui';
+import { useTranslations } from '@/i18n';
 import { BrickList, type AddableKind } from '@/ui/BrickRenderer';
 import type { Brick } from '@/ui/BrickRenderer';
 import { useDocuments } from '@/documents/DocumentsProvider';
@@ -34,6 +35,9 @@ import type { KillioFile } from '@/local-workspace/killio-file';
  */
 export default function DocumentDetailScreen() {
   const router = useRouter();
+  const tDocs = useTranslations('docs');
+  const tDetail = useTranslations('docDetail');
+  const tFallback = useTranslations('fallback');
   const docsApi = useDocuments();
   const { activeTeam } = useAuth();
   const local = useLocalWorkspace();
@@ -53,7 +57,7 @@ export default function DocumentDetailScreen() {
     try {
       if (isLocal) {
         const file = await local.readKillioFile(localPath);
-        setDoc(localFileToDoc(localPath, file));
+        setDoc(localFileToDoc(localPath, file, tFallback('document')));
       } else if (cloudId) {
         const d = await getDocument(cloudId);
         setDoc(d);
@@ -63,7 +67,7 @@ export default function DocumentDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [isLocal, localPath, cloudId, local]);
+  }, [isLocal, localPath, cloudId, local, tFallback]);
 
   useEffect(() => {
     void load();
@@ -74,7 +78,7 @@ export default function DocumentDetailScreen() {
     if (isLocal) {
       segs.push({
         key: 'local',
-        label: local.active?.name ?? 'Local',
+        label: local.active?.name ?? tFallback('local'),
         icon: '💾',
         onPress: () => router.replace('/documents'),
       });
@@ -91,21 +95,21 @@ export default function DocumentDetailScreen() {
     } else {
       segs.push({
         key: 'ws',
-        label: activeTeam?.name ?? 'Workspace',
+        label: activeTeam?.name ?? tFallback('workspace'),
         onPress: () => router.replace('/workspace'),
       });
       segs.push({
         key: 'docs',
-        label: 'Documentos',
+        label: tFallback('breadcrumbDocs'),
         onPress: () => router.replace('/documents'),
       });
     }
     segs.push({
       key: 'doc',
-      label: doc?.title ?? params.title ?? 'Documento',
+      label: doc?.title ?? params.title ?? tFallback('document'),
     });
     return segs;
-  }, [isLocal, local.active?.name, localPath, activeTeam?.name, doc?.title, params.title, router]);
+  }, [isLocal, local.active?.name, localPath, activeTeam?.name, doc?.title, params.title, router, tFallback]);
 
   const persistLocal = useCallback(
     async (nextDoc: DocFull) => {
@@ -283,7 +287,7 @@ export default function DocumentDetailScreen() {
         onRename={rename}
         onShare={() =>
           shareDocumentText({
-            title: doc?.title ?? 'Documento',
+            title: doc?.title ?? tFallback('document'),
             body: flattenText(doc?.bricks ?? []),
           })
         }
@@ -297,7 +301,7 @@ export default function DocumentDetailScreen() {
               }
             : undefined
         }
-        statusLabel={statusLabelFor(saving)}
+        statusLabel={statusLabelFor(saving, tDetail)}
       />
 
       <ScrollView
@@ -307,11 +311,11 @@ export default function DocumentDetailScreen() {
       >
         {loading ? (
           <Card>
-            <Body muted>Cargando…</Body>
+            <Body muted>{tDocs('loading')}</Body>
           </Card>
         ) : !doc ? (
           <Card>
-            <Body muted>No se pudo cargar el documento.</Body>
+            <Body muted>{tDetail('loadError')}</Body>
           </Card>
         ) : (
           <BrickList
@@ -330,7 +334,7 @@ export default function DocumentDetailScreen() {
 
         {isLocal ? (
           <View className="mt-2 rounded-xl border border-cyan/30 bg-cyan/5 px-3 py-2">
-            <Body muted>📂 Documento local — vive en este dispositivo.</Body>
+            <Body muted>{tDetail('localBadge')}</Body>
           </View>
         ) : null}
       </ScrollView>
@@ -338,14 +342,18 @@ export default function DocumentDetailScreen() {
   );
 }
 
-function localFileToDoc(path: string, file: KillioFile): DocFull {
+function localFileToDoc(
+  path: string,
+  file: KillioFile,
+  fallbackTitle: string,
+): DocFull {
   const payload = (file.payload && typeof file.payload === 'object'
     ? file.payload
     : {}) as Record<string, unknown>;
   const rawBricks = Array.isArray(payload.bricks) ? (payload.bricks as Array<any>) : [];
   return {
     id: `local:${path}`,
-    title: typeof payload.title === 'string' ? payload.title : path.split('/').pop() ?? 'Documento',
+    title: typeof payload.title === 'string' ? payload.title : path.split('/').pop() ?? fallbackTitle,
     bricks: rawBricks.map((b, i) => ({
       id: String(b?.id ?? `b${i}`),
       kind: typeof b?.kind === 'string' ? b.kind : 'text',
@@ -389,9 +397,12 @@ function flattenText(bricks: Array<{ kind: string; content: Record<string, any> 
     .join('\n');
 }
 
-function statusLabelFor(s: 'idle' | 'saving' | 'saved' | 'offline'): string | undefined {
-  if (s === 'saving') return 'Guardando…';
-  if (s === 'saved') return 'Guardado';
-  if (s === 'offline') return 'Sin conexión';
+function statusLabelFor(
+  s: 'idle' | 'saving' | 'saved' | 'offline',
+  t: ReturnType<typeof useTranslations>,
+): string | undefined {
+  if (s === 'saving') return t('savingShort');
+  if (s === 'saved') return t('savedShort');
+  if (s === 'offline') return t('offlineShort');
   return undefined;
 }

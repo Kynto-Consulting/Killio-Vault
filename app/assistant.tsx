@@ -46,6 +46,7 @@ interface Msg {
 export default function AssistantScreen() {
   const t = useTranslations('assistant');
   const tc = useTranslations('common');
+  const tFallback = useTranslations('fallback');
   const navigation = useNavigation();
   const { activeTeam } = useAuth();
   const { setMuted, flushNow } = useCapture();
@@ -92,7 +93,7 @@ export default function AssistantScreen() {
   // GPT-style header: agent/Killio title + a "new chat" button on the right.
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerTitle: agent?.name ?? 'Killio',
+      headerTitle: agent?.name ?? tFallback('agent'),
       headerRight: () => (
         <Pressable onPress={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
           <SquarePen size={20} color={colors.foreground} />
@@ -254,7 +255,7 @@ export default function AssistantScreen() {
                 id: e.id,
                 tool: e.tool,
                 success: false,
-                error: 'User cancelled the action.',
+                error: tFallback('userCancelledAction'),
               }),
           },
           { text: t('allow'), onPress: () => void execute() },
@@ -312,7 +313,7 @@ export default function AssistantScreen() {
     const assetTags = buildAssetTags();
     const displayText = text + (assetTags ? `\n${assetTags}` : '');
     lastUserMsg.current = text;
-    if (!firstMsg.current) firstMsg.current = (text || 'Adjunto').slice(0, 60);
+    if (!firstMsg.current) firstMsg.current = (text || tFallback('attachment')).slice(0, 60);
     setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', text: displayText }]);
     setInput('');
     setAttachments([]);

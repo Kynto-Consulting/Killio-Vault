@@ -10,7 +10,7 @@ import { Menu } from 'lucide-react-native';
 
 import { AuthProvider } from '@/core/auth/AuthContext';
 import { CaptureProvider } from '@/capture/CaptureContext';
-import { I18nProvider } from '@/i18n';
+import { I18nProvider, useTranslations } from '@/i18n';
 import { NavProvider, useNav } from '@/nav/NavContext';
 import { AppModeProvider } from '@/nav/AppModeContext';
 import { DocumentsProvider } from '@/documents/DocumentsProvider';
@@ -39,6 +39,44 @@ function MenuButton() {
 
 const withMenu = { headerLeft: () => <MenuButton /> } as const;
 
+/** Renders the actual Stack — split out so it can use useTranslations() under
+ *  the I18nProvider that the outer RootLayout mounts. */
+function AppStack() {
+  const t = useTranslations('stack');
+  return (
+    <Stack
+      screenOptions={{
+        headerStyle: { backgroundColor: colors.background },
+        headerTintColor: colors.foreground,
+        headerTitleStyle: { fontFamily: fonts.semibold },
+        headerShadowVisible: false,
+        contentStyle: { backgroundColor: colors.background },
+      }}
+    >
+      <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="login" options={{ headerShown: false }} />
+      <Stack.Screen name="register" options={{ headerShown: false }} />
+      <Stack.Screen name="home" options={{ title: t('home'), ...withMenu }} />
+      <Stack.Screen name="consent" options={{ title: t('consent') }} />
+      <Stack.Screen name="diary" options={{ title: t('diary'), ...withMenu }} />
+      <Stack.Screen name="settings" options={{ title: t('settings'), ...withMenu }} />
+      <Stack.Screen name="schedule" options={{ title: t('schedule'), ...withMenu }} />
+      <Stack.Screen name="assistant" options={{ title: t('assistant'), ...withMenu }} />
+      <Stack.Screen name="history" options={{ title: t('history'), ...withMenu }} />
+      <Stack.Screen name="agents" options={{ title: t('agents'), ...withMenu }} />
+      <Stack.Screen name="integrations" options={{ title: t('integrations'), ...withMenu }} />
+      <Stack.Screen name="usage" options={{ title: t('usage'), ...withMenu }} />
+      <Stack.Screen name="whatsapp-pair" options={{ title: t('whatsappPair') }} />
+      <Stack.Screen name="documents" options={{ title: t('documents'), ...withMenu }} />
+      <Stack.Screen name="document/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="workspace" options={{ title: t('workspace'), ...withMenu }} />
+      <Stack.Screen name="d/index" options={{ headerShown: false }} />
+      <Stack.Screen name="d/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="local-workspaces" options={{ title: t('localWorkspaces'), ...withMenu }} />
+    </Stack>
+  );
+}
+
 export default function RootLayout() {
   const fontsLoaded = useAppFonts();
 
@@ -58,36 +96,7 @@ export default function RootLayout() {
           <CaptureProvider>
             <NavProvider>
               <StatusBar style="light" />
-              <Stack
-                screenOptions={{
-                  headerStyle: { backgroundColor: colors.background },
-                  headerTintColor: colors.foreground,
-                  headerTitleStyle: { fontFamily: fonts.semibold },
-                  headerShadowVisible: false,
-                  contentStyle: { backgroundColor: colors.background },
-                }}
-              >
-                <Stack.Screen name="index" options={{ headerShown: false }} />
-                <Stack.Screen name="login" options={{ headerShown: false }} />
-                <Stack.Screen name="register" options={{ headerShown: false }} />
-                <Stack.Screen name="home" options={{ title: 'Vault', ...withMenu }} />
-                <Stack.Screen name="consent" options={{ title: 'Privacidad' }} />
-                <Stack.Screen name="diary" options={{ title: 'Diario', ...withMenu }} />
-                <Stack.Screen name="settings" options={{ title: 'Captura', ...withMenu }} />
-                <Stack.Screen name="schedule" options={{ title: 'Horarios', ...withMenu }} />
-                <Stack.Screen name="assistant" options={{ title: 'Asistente', ...withMenu }} />
-                <Stack.Screen name="history" options={{ title: 'Historial', ...withMenu }} />
-                <Stack.Screen name="agents" options={{ title: 'Agentes', ...withMenu }} />
-                <Stack.Screen name="integrations" options={{ title: 'Integraciones', ...withMenu }} />
-                <Stack.Screen name="usage" options={{ title: 'Uso', ...withMenu }} />
-                <Stack.Screen name="whatsapp-pair" options={{ title: 'WhatsApp' }} />
-                <Stack.Screen name="documents" options={{ title: 'Documentos', ...withMenu }} />
-                <Stack.Screen name="document/[id]" options={{ headerShown: false }} />
-                <Stack.Screen name="workspace" options={{ title: 'Workspace', ...withMenu }} />
-                <Stack.Screen name="d/index" options={{ headerShown: false }} />
-                <Stack.Screen name="d/[id]" options={{ headerShown: false }} />
-                <Stack.Screen name="local-workspaces" options={{ title: 'Workspaces locales', ...withMenu }} />
-              </Stack>
+              <AppStack />
               <SideNav />
               <WakeListener />
             </NavProvider>

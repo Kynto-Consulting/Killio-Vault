@@ -62,9 +62,11 @@ export default function WorkspaceHomeScreen() {
       >
         <View className="flex-row items-start justify-between">
           <View className="flex-1">
-            <H1>{activeTeam?.name ?? 'Workspace'}</H1>
+            <H1>{activeTeam?.name ?? t('workspaceFallback')}</H1>
             <Body muted>
-              {activeTeam?.isPersonal ? 'Personal workspace' : (activeTeam?.planTier ?? 'workspace')}
+              {activeTeam?.isPersonal
+                ? t('personal')
+                : activeTeam?.planTier ?? t('workspaceLabel')}
             </Body>
           </View>
           <Pressable
@@ -84,7 +86,7 @@ export default function WorkspaceHomeScreen() {
               style={{ fontFamily: fonts.semibold, color: colors.primaryForeground ?? '#171717' }}
               className="text-xs"
             >
-              Doc
+              {t('docButton')}
             </Text>
           </Pressable>
         </View>
@@ -92,7 +94,7 @@ export default function WorkspaceHomeScreen() {
         {/* Documents — primary entry point in workspace mode */}
         <Card>
           <View className="flex-row items-center justify-between">
-            <Label>Documentos recientes</Label>
+            <Label>{t('recentDocs')}</Label>
             <Pressable
               hitSlop={6}
               onPress={() => router.push('/documents')}
@@ -102,13 +104,13 @@ export default function WorkspaceHomeScreen() {
                 style={{ fontFamily: fonts.semibold }}
                 className="text-xs text-cyan"
               >
-                Ver todos
+                {t('viewAll')}
               </Text>
               <ChevronRight size={12} color={colors.cyan} />
             </Pressable>
           </View>
           {docs.length === 0 ? (
-            <Body muted>No hay documentos aún.</Body>
+            <Body muted>{t('noDocs')}</Body>
           ) : (
             <View className="gap-1">
               {docs.map((d) => (
@@ -141,10 +143,10 @@ export default function WorkspaceHomeScreen() {
         <Card>
           <View className="flex-row items-center gap-2">
             <Kanban size={14} color={colors.cyan} />
-            <Label>Tableros Kanban</Label>
+            <Label>{t('kanban')}</Label>
           </View>
           {kanban.length === 0 ? (
-            <Body muted>Sin tableros Kanban.</Body>
+            <Body muted>{t('noKanban')}</Body>
           ) : (
             <View className="gap-1">
               {kanban.slice(0, 6).map((b) => (
@@ -170,10 +172,10 @@ export default function WorkspaceHomeScreen() {
         <Card>
           <View className="flex-row items-center gap-2">
             <Orbit size={14} color={colors.cyan} />
-            <Label>Mesh canvases</Label>
+            <Label>{t('mesh')}</Label>
           </View>
           {meshes.length === 0 ? (
-            <Body muted>Sin canvases Mesh.</Body>
+            <Body muted>{t('noMesh')}</Body>
           ) : (
             <View className="gap-1">
               {meshes.slice(0, 6).map((b) => (
@@ -198,12 +200,9 @@ export default function WorkspaceHomeScreen() {
         <Card>
           <View className="flex-row items-center gap-2">
             <Workflow size={14} color={colors.mutedForeground} />
-            <Label>Próximamente en Workspace mode</Label>
+            <Label>{t('comingSoon')}</Label>
           </View>
-          <Body muted>
-            Edición Kanban, Mesh y Scripts llegarán adaptadas a móvil. Por ahora puedes
-            navegar los documentos y editar bricks con el modo experimental.
-          </Body>
+          <Body muted>{t('comingSoonBody')}</Body>
         </Card>
       </ScrollView>
     </Screen>

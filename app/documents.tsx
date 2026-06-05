@@ -46,6 +46,7 @@ export default function DocumentsScreen() {
   const router = useRouter();
   const t = useTranslations('documentsScreen');
   const tNet = useTranslations('network');
+  const tFallback = useTranslations('fallback');
   const { activeTeam } = useAuth();
   const docs = useDocuments();
   const local = useLocalWorkspace();
@@ -200,11 +201,11 @@ export default function DocumentsScreen() {
                   await local.writeKillioFile(relPath, {
                     kind: 'kd',
                     schemaVersion: '2026-v1',
-                    payload: { id: relPath, title: 'Sin título', bricks: [] },
+                    payload: { id: relPath, title: tFallback('untitled'), bricks: [] },
                   });
                   router.push({
                     pathname: '/document/[id]',
-                    params: { id: `local:${encodeURIComponent(relPath)}`, title: 'Sin título' },
+                    params: { id: `local:${encodeURIComponent(relPath)}`, title: tFallback('untitled') },
                   });
                 } catch {
                   /* ignore — provider will surface errors via Body */
@@ -291,7 +292,7 @@ export default function DocumentsScreen() {
               style={{ fontFamily: fonts.medium }}
               className="text-xs text-muted-foreground"
             >
-              {activeTeam?.name ?? 'Workspace'}
+              {activeTeam?.name ?? tFallback('workspace')}
             </Text>
           </Pressable>
           {folderStack.map((f, i) => (

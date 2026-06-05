@@ -71,6 +71,8 @@ export function SideNav() {
   const router = useRouter();
   const pathname = usePathname();
   const t = useTranslations('nav');
+  const tSide = useTranslations('sidenav');
+  const tFallback = useTranslations('fallback');
   const { activeTeam, workspaces, setActiveTeam, signOut } = useAuth();
   const { mode, setMode } = useAppMode();
   const local = useLocalWorkspace();
@@ -79,8 +81,8 @@ export function SideNav() {
 
   const isLocal = local.mode === 'local';
   const workspaceName = isLocal
-    ? local.active?.name ?? 'Local'
-    : activeTeam?.name ?? 'Workspace';
+    ? local.active?.name ?? tFallback('local')
+    : activeTeam?.name ?? tFallback('workspace');
   const initial = workspaceName.charAt(0).toUpperCase();
 
   const go = (route: Route) => {
@@ -130,10 +132,10 @@ export function SideNav() {
                   </Text>
                   <Text className="text-xs text-muted-foreground">
                     {isLocal
-                      ? '💾 Local · solo este dispositivo'
+                      ? tSide('localOnDevice')
                       : activeTeam?.isPersonal
-                        ? 'Personal · Killio'
-                        : activeTeam?.planTier ?? 'Killio'}
+                        ? tSide('personalKillio')
+                        : activeTeam?.planTier ?? tSide('killio')}
                   </Text>
                 </View>
                 <ChevronsUpDown size={14} color={colors.mutedForeground} />
@@ -152,7 +154,7 @@ export function SideNav() {
                       style={{ fontFamily: fonts.semibold }}
                       className="px-2 text-[9px] uppercase tracking-widest text-muted-foreground mb-1"
                     >
-                      Killio · Cloud
+                      {tSide('cloudHeading')}
                     </Text>
                     {workspaces.map((w) => {
                       const isActive = !isLocal && w.id === activeTeam?.id;
@@ -177,7 +179,7 @@ export function SideNav() {
                             {w.name}
                           </Text>
                           {w.isPersonal && (
-                            <Text className="text-[10px] uppercase tracking-wide text-muted-foreground">personal</Text>
+                            <Text className="text-[10px] uppercase tracking-wide text-muted-foreground">{tSide('personalBadge')}</Text>
                           )}
                           {isActive && <Check size={14} color={colors.cyan} />}
                         </Pressable>
@@ -192,11 +194,11 @@ export function SideNav() {
                     style={{ fontFamily: fonts.semibold }}
                     className="px-2 text-[9px] uppercase tracking-widest text-muted-foreground mb-1"
                   >
-                    Local · Este dispositivo
+                    {tSide('localHeading')}
                   </Text>
                   {local.workspaces.length === 0 ? (
                     <Text className="px-2 text-xs text-muted-foreground italic">
-                      Sin workspaces locales.
+                      {tSide('noLocal')}
                     </Text>
                   ) : (
                     local.workspaces.map((w) => {
@@ -220,7 +222,7 @@ export function SideNav() {
                           <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground" numberOfLines={1}>
                             {w.name}
                           </Text>
-                          <Text className="text-[10px] uppercase tracking-wide text-cyan">local</Text>
+                          <Text className="text-[10px] uppercase tracking-wide text-cyan">{tSide('localBadge')}</Text>
                           {isActive && <Check size={14} color={colors.cyan} />}
                         </Pressable>
                       );
@@ -238,7 +240,7 @@ export function SideNav() {
                       <Text style={{ fontFamily: fonts.bold }} className="text-[14px] text-foreground">+</Text>
                     </View>
                     <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground">
-                      Nuevo workspace local
+                      {tSide('newLocal')}
                     </Text>
                   </Pressable>
                 </View>
@@ -268,7 +270,7 @@ export function SideNav() {
                       style={{ fontFamily: active ? fonts.semibold : fonts.medium }}
                       className={`text-xs ${active ? 'text-foreground' : 'text-muted-foreground'}`}
                     >
-                      {m === 'vault' ? 'Vault' : 'Workspace'}
+                      {m === 'vault' ? tSide('modeVault') : tSide('modeWorkspace')}
                     </Text>
                   </Pressable>
                 );
