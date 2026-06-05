@@ -233,6 +233,20 @@ export default function AssistantScreen() {
 
     const execute = async () => {
       const result = await runClientAction(e.tool, e.input);
+      // The AI can opt into ending the conversation when a tool naturally
+      // closes the chat (e.g. call_number, spotify_play). Mirror what
+      // vault_disconnect does: silence TTS, drop voice mode, then resume the
+      // turn so the agent loop can wrap up cleanly. Background wake-word
+      // listener stays running for the next "Hey Killio".
+      if (result.endConversation) {
+        try {
+          stopSpeaking();
+        } catch {
+          /* ignore */
+        }
+        setMuted(false);
+        voiceTurn.current = false;
+      }
       await resumeWith({
         id: e.id,
         tool: e.tool,

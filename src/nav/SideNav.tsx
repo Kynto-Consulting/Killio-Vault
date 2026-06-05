@@ -13,6 +13,7 @@ import {
   FileText,
   HardDriveDownload,
   History,
+  Kanban as KanbanIcon,
   LogOut,
   Mic,
   MessageSquare,
@@ -36,7 +37,7 @@ type Route =
   | '/home' | '/diary' | '/assistant' | '/history' | '/agents'
   | '/integrations' | '/schedule' | '/usage' | '/settings'
   | '/documents' | '/workspace' | '/local-workspaces'
-  | '/memories' | '/search' | '/notifications' | '/rooms';
+  | '/memories' | '/search' | '/notifications' | '/rooms' | '/b';
 
 interface Item {
   key: string;
@@ -61,6 +62,7 @@ const VAULT_ITEMS: Item[] = [
 const WORKSPACE_ITEMS: Item[] = [
   { key: 'workspace', icon: BarChart3, route: '/workspace' },
   { key: 'documents', icon: FileText, route: '/documents' },
+  { key: 'boards', icon: KanbanIcon, route: '/b' },
   { key: 'rooms', icon: MessageSquare, route: '/rooms' },
   { key: 'localWorkspaces', icon: HardDriveDownload, route: '/local-workspaces' },
 ];

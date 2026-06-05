@@ -19,6 +19,11 @@ export interface ClientActionResult {
   success: boolean;
   output?: any;
   error?: string;
+  /** When true, the assistant has flagged this as the last tool call of the
+   *  turn — Vault should silence the AI and return to wake-word mode after
+   *  delivering the result. Set by the dispatcher when the AI emits the
+   *  tool with `endConversation: true` on the input. */
+  endConversation?: boolean;
 }
 
 export async function callNumber(number: string): Promise<ClientActionResult> {
@@ -69,13 +74,16 @@ export async function runClientAction(
   tool: string,
   input: Record<string, unknown>,
 ): Promise<ClientActionResult> {
+  const endConversation = input.endConversation === true;
+  const tag = (r: ClientActionResult): ClientActionResult =>
+    endConversation ? { ...r, endConversation: true } : r;
   switch (tool) {
     case 'call_number':
-      return callNumber(String(input.number ?? ''));
+      return tag(await callNumber(String(input.number ?? '')));
     case 'open_browser':
-      return openBrowser(String(input.url ?? ''));
+      return tag(await openBrowser(String(input.url ?? '')));
     case 'open_app':
-      return openApp({ package: input.package as string, url: input.url as string });
+      return tag(await openApp({ package: input.package as string, url: input.url as string }));
     case 'vault_upload_screenshot':
       try {
         const r = await uploadScreenshot(input.screenshotId as string | undefined);
@@ -102,7 +110,7 @@ export async function runClientAction(
           location: input.location as string | undefined,
           notes: input.notes as string | undefined,
         });
-        return { success: true, output: created };
+        return tag({ success: true, output: created });
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'calendar create failed' };
       }
@@ -125,7 +133,7 @@ export async function runClientAction(
           ? (input.numbers as string[])
           : [String(input.number ?? '')].filter(Boolean);
         const r = await Device.sendSms(numbers, String(input.body ?? ''));
-        return { success: true, output: r };
+        return tag({ success: true, output: r });
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'sms failed' };
       }
@@ -141,7 +149,7 @@ export async function runClientAction(
           uri: input.uri as string | undefined,
           query: input.query as string | undefined,
         });
-        return { success: true, output: r };
+        return tag({ success: true, output: r });
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'spotify play failed' };
       }
@@ -193,7 +201,7 @@ export async function runClientAction(
           title: input.title as string | undefined,
           message: String(input.message ?? input.text ?? ''),
         });
-        return { success: true, output: r };
+        return tag({ success: true, output: r });
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'share failed' };
       }

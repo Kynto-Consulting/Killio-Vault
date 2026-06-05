@@ -78,6 +78,8 @@ function AppStack() {
       <Stack.Screen name="notifications" options={{ title: t('notifications'), ...withMenu }} />
       <Stack.Screen name="rooms" options={{ title: t('rooms'), ...withMenu }} />
       <Stack.Screen name="rooms/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="b/index" options={{ title: t('boards'), ...withMenu }} />
+      <Stack.Screen name="b/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }
