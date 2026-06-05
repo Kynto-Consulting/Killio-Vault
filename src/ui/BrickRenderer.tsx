@@ -25,6 +25,8 @@ import {
 
 import { RichText } from './RichText';
 import { InlineFormatToolbar } from './InlineFormatToolbar';
+import { LatexEditor } from './LatexEditor';
+import { MathRenderer } from './MathRenderer';
 import {
   BountifulTable,
   type BountifulCell,
@@ -308,6 +310,98 @@ function FileBrick({ brick, canEdit, onChange }: BrickProps) {
         ) : null}
       </View>
     </Pressable>
+  );
+}
+
+// ─── Bookmark + Math ────────────────────────────────────────────────────────
+
+function BookmarkBrick({ brick, canEdit, onChange }: BrickProps) {
+  const url = String(brick.content?.url ?? brick.content?.href ?? '');
+  const title = String(brick.content?.title ?? brick.content?.name ?? url ?? '');
+  const description = String(brick.content?.description ?? brick.content?.summary ?? '');
+  const favicon = String(brick.content?.favicon ?? '');
+  if (canEdit && onChange) {
+    return (
+      <View className="my-1 rounded-xl border border-cyan/40 bg-secondary p-3 gap-2">
+        <TextInput
+          value={url}
+          onChangeText={(v) => onChange({ ...brick, content: { ...brick.content, url: v, href: v } })}
+          placeholder="https://… (URL)"
+          placeholderTextColor={colors.mutedForeground}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={{ fontFamily: fonts.mono, fontSize: 11, color: colors.foreground, padding: 0 }}
+        />
+        <TextInput
+          value={title}
+          onChangeText={(v) => onChange({ ...brick, content: { ...brick.content, title: v } })}
+          placeholder="Título"
+          placeholderTextColor={colors.mutedForeground}
+          style={{ fontFamily: fonts.semibold, fontSize: 14, color: colors.foreground, padding: 0 }}
+        />
+        <TextInput
+          value={description}
+          onChangeText={(v) => onChange({ ...brick, content: { ...brick.content, description: v } })}
+          placeholder="Descripción"
+          placeholderTextColor={colors.mutedForeground}
+          multiline
+          style={{ fontFamily: fonts.regular, fontSize: 12, color: colors.foreground, padding: 0 }}
+        />
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      onPress={() => url && void Linking.openURL(url)}
+      className="my-1 rounded-xl border border-border bg-secondary p-3 gap-1"
+    >
+      <View className="flex-row items-center gap-2">
+        {favicon ? (
+          <Image source={{ uri: favicon }} style={{ width: 14, height: 14 }} />
+        ) : (
+          <FileText size={12} color={colors.indigo} />
+        )}
+        <Text
+          style={{ fontFamily: fonts.semibold }}
+          className="flex-1 text-sm text-foreground"
+          numberOfLines={1}
+        >
+          {title}
+        </Text>
+      </View>
+      {description ? (
+        <Text className="text-xs text-muted-foreground" numberOfLines={2}>
+          {description}
+        </Text>
+      ) : null}
+      <Text className="text-[10px] text-cyan" numberOfLines={1}>
+        {url}
+      </Text>
+    </Pressable>
+  );
+}
+
+function MathBrick({ brick, canEdit, onChange }: BrickProps) {
+  const formula = String(brick.content?.formula ?? brick.content?.latex ?? brick.content?.math ?? '');
+  const display = brick.content?.display !== false;
+  if (canEdit && onChange) {
+    return (
+      <View className="my-1">
+        <LatexEditor
+          value={formula}
+          onChange={(v) => onChange({ ...brick, content: { ...brick.content, formula: v, latex: v } })}
+          display={display}
+          onToggleDisplay={(next) =>
+            onChange({ ...brick, content: { ...brick.content, display: next } })
+          }
+        />
+      </View>
+    );
+  }
+  return (
+    <View className="my-1 rounded-md border border-border bg-card p-2">
+      <MathRenderer formula={formula} display={display} />
+    </View>
   );
 }
 
@@ -908,7 +1002,12 @@ export function BrickRenderer(props: BrickProps) {
       return <TableBrick {...props} />;
     case 'beautiful_table':
     case 'bountiful_table':
+    case 'database':
       return <BountifulTableAdapter {...props} />;
+    case 'bookmark':
+      return <BookmarkBrick {...props} />;
+    case 'math':
+      return <MathBrick {...props} />;
     case 'accordion':
       return <AccordionBrick {...props} />;
     case 'tabs':
