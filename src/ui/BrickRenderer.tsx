@@ -27,6 +27,7 @@ import { RichText } from './RichText';
 import { InlineFormatToolbar } from './InlineFormatToolbar';
 import { LatexEditor } from './LatexEditor';
 import { MathRenderer } from './MathRenderer';
+import { UnifiedTableBrick } from './UnifiedTableBrick';
 import {
   BountifulTable,
   type BountifulCell,
@@ -889,6 +890,39 @@ function EmbedBrick({ brick }: BrickProps) {
  * round-trips. A future pass can swap this for the cell-patch endpoint to
  * skip the brick-wide PUT.
  */
+/**
+ * Adapter from the BrickRenderer onChange surface to the spreadsheet-style
+ * UnifiedTableBrick. Preserves the simple-table content shape (rows: string[][]).
+ */
+function UnifiedTableAdapter({ brick, canEdit, onChange }: BrickProps) {
+  const rows: string[][] = Array.isArray(brick.content?.rows)
+    ? (brick.content.rows as any[]).map((row) =>
+        Array.isArray(row) ? row.map((c) => String(c ?? '')) : [],
+      )
+    : Array.isArray(brick.content?.cells)
+      ? (brick.content.cells as any[]).map((row) =>
+          Array.isArray(row) ? row.map((c) => String(c ?? '')) : [],
+        )
+      : [];
+  return (
+    <UnifiedTableBrick
+      id={brick.id ?? `table-${brick.position ?? 0}`}
+      title={brick.content?.title}
+      data={rows}
+      readonly={!canEdit || !onChange}
+      onUpdate={(next) => {
+        if (!onChange) return;
+        onChange({ ...brick, content: { ...brick.content, rows: next } });
+      }}
+      onUpdateTitle={
+        onChange
+          ? (nextTitle) => onChange({ ...brick, content: { ...brick.content, title: nextTitle } })
+          : undefined
+      }
+    />
+  );
+}
+
 function BountifulTableAdapter({ brick, canEdit, onChange }: BrickProps) {
   const columns: BountifulColumn[] = Array.isArray(brick.content?.columns)
     ? (brick.content.columns as BountifulColumn[])
@@ -999,7 +1033,7 @@ export function BrickRenderer(props: BrickProps) {
     case 'checklist':
       return <ChecklistBrick {...props} />;
     case 'table':
-      return <TableBrick {...props} />;
+      return <UnifiedTableAdapter {...props} />;
     case 'beautiful_table':
     case 'bountiful_table':
     case 'database':

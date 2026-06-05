@@ -236,6 +236,16 @@ export const MESSAGES: Record<Locale, Messages> = {
       empty: 'Vacío',
       toggle: 'Activar',
     },
+    tableBrick: {
+      defaultTitle: 'Tabla',
+      titlePlaceholder: 'Título de la tabla',
+      defaultColA: 'Columna A',
+      defaultColB: 'Columna B',
+      addRow: 'Añadir fila',
+      addColumn: 'Añadir columna',
+      addRowCompact: 'Fila',
+      addColumnCompact: 'Columna',
+    },
     inlineFormat: {
       color: 'Color',
       highlight: 'Resaltar',
@@ -849,6 +859,16 @@ export const MESSAGES: Record<Locale, Messages> = {
       newColumn: 'New column',
       empty: 'Empty',
       toggle: 'Toggle',
+    },
+    tableBrick: {
+      defaultTitle: 'Table',
+      titlePlaceholder: 'Table title',
+      defaultColA: 'Column A',
+      defaultColB: 'Column B',
+      addRow: 'Add row',
+      addColumn: 'Add column',
+      addRowCompact: 'Row',
+      addColumnCompact: 'Column',
     },
     inlineFormat: {
       color: 'Color',
