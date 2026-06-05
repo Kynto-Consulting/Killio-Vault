@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { ChevronRight, FileText, Kanban, Orbit, Workflow } from 'lucide-react-native';
+import { ChevronRight, FileText, Kanban, Orbit, Plus, Workflow } from 'lucide-react-native';
 
 import { Screen, Card, H1, Body, Label } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
+import { useDocuments } from '@/documents/DocumentsProvider';
 import { getTeamCatalog, type TeamCatalog } from '@/core/api/teams.client';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
@@ -21,6 +22,7 @@ import { fonts } from '@/theme/fonts';
 export default function WorkspaceHomeScreen() {
   const router = useRouter();
   const { activeTeam } = useAuth();
+  const docsApi = useDocuments();
   const [data, setData] = useState<TeamCatalog | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -56,11 +58,33 @@ export default function WorkspaceHomeScreen() {
           />
         }
       >
-        <View>
-          <H1>{activeTeam?.name ?? 'Workspace'}</H1>
-          <Body muted>
-            {activeTeam?.isPersonal ? 'Personal workspace' : (activeTeam?.planTier ?? 'workspace')}
-          </Body>
+        <View className="flex-row items-start justify-between">
+          <View className="flex-1">
+            <H1>{activeTeam?.name ?? 'Workspace'}</H1>
+            <Body muted>
+              {activeTeam?.isPersonal ? 'Personal workspace' : (activeTeam?.planTier ?? 'workspace')}
+            </Body>
+          </View>
+          <Pressable
+            onPress={() =>
+              docsApi.openCreateDocument({
+                onCreated: (doc) =>
+                  router.push({
+                    pathname: '/document/[id]',
+                    params: { id: doc.id, title: doc.title },
+                  }),
+              })
+            }
+            className="h-9 flex-row items-center gap-1 rounded-md bg-primary px-3"
+          >
+            <Plus size={13} color={colors.primaryForeground ?? '#171717'} />
+            <Text
+              style={{ fontFamily: fonts.semibold, color: colors.primaryForeground ?? '#171717' }}
+              className="text-xs"
+            >
+              Doc
+            </Text>
+          </Pressable>
         </View>
 
         {/* Documents — primary entry point in workspace mode */}

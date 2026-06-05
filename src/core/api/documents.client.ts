@@ -62,6 +62,84 @@ export async function updateBrickContent(
   await api.put(`/documents/${documentId}/bricks/${brickId}`, { content });
 }
 
+export async function createDocument(input: {
+  teamId: string;
+  title: string;
+  folderId?: string | null;
+}): Promise<{ id: string; title: string }> {
+  const { data } = await api.post<{ id: string; title: string }>('/documents', {
+    teamId: input.teamId,
+    title: input.title,
+    folderId: input.folderId ?? undefined,
+  });
+  return data;
+}
+
+export async function updateDocument(
+  documentId: string,
+  patch: { title?: string; folderId?: string | null },
+): Promise<void> {
+  await api.put(`/documents/${documentId}`, patch);
+}
+
+export async function deleteDocument(documentId: string): Promise<void> {
+  await api.delete(`/documents/${documentId}`);
+}
+
+export async function createFolder(input: {
+  teamId: string;
+  name: string;
+  parentFolderId?: string | null;
+  icon?: string;
+  color?: string;
+}): Promise<FolderSummary> {
+  const { data } = await api.post<FolderSummary>('/folders', {
+    teamId: input.teamId,
+    name: input.name,
+    parentFolderId: input.parentFolderId ?? undefined,
+    icon: input.icon,
+    color: input.color,
+  });
+  return data;
+}
+
+export async function updateFolder(
+  folderId: string,
+  patch: { name?: string; icon?: string; color?: string },
+): Promise<void> {
+  await api.put(`/folders/${folderId}`, patch);
+}
+
+export async function deleteFolder(folderId: string): Promise<void> {
+  await api.delete(`/folders/${folderId}`);
+}
+
+export async function appendDocumentBlock(
+  documentId: string,
+  blockKind: string,
+  initial?: Record<string, any>,
+): Promise<{ id: string }> {
+  const { data } = await api.post<{ id: string }>(`/documents/${documentId}/bricks`, {
+    kind: blockKind,
+    content: initial ?? {},
+  });
+  return data;
+}
+
+export async function reorderBricks(
+  documentId: string,
+  brickIds: string[],
+): Promise<void> {
+  await api.put(`/documents/${documentId}/bricks/reorder`, { brickIds });
+}
+
+export async function removeBrick(
+  documentId: string,
+  brickId: string,
+): Promise<void> {
+  await api.delete(`/documents/${documentId}/bricks/${brickId}`);
+}
+
 /** Flattens a document's text-bearing bricks into a single plain-text blob. */
 export function documentToText(doc: DocFull, maxChars = 4000): string {
   const parts: string[] = [];

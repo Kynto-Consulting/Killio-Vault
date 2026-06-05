@@ -1,0 +1,11 @@
+{
+  "name": "killio-capture",
+  "version": "0.0.1",
+  "description": "Killio Vault local Expo module — Android foreground service + AudioRecord PCM streaming.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "expo": {
+    "platforms": ["android"]
+  }
+}

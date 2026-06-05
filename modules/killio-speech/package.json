@@ -1,0 +1,11 @@
+{
+  "name": "killio-speech",
+  "version": "0.0.1",
+  "description": "Killio Vault local Expo module — Android SpeechRecognizer continuous transcripts.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "expo": {
+    "platforms": ["android"]
+  }
+}

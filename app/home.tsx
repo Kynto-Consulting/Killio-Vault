@@ -1,13 +1,24 @@
 ﻿import { Image, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 
 import { Screen, Card, H1, Body, Button } from '@/ui';
 import { colors } from '@/theme/theme';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useCapture } from '@/capture/CaptureContext';
+import { useAppMode } from '@/nav/AppModeContext';
 import { useTranslations } from '@/i18n';
 
 export default function HomeScreen() {
+  // Legacy "/home" route — kept for any deep link still pointing here.
+  // Bounce immediately to the canonical landing screen for the active mode
+  // so users never see this list-of-buttons view.
+  const { mode } = useAppMode();
+  return <Redirect href={mode === 'workspace' ? '/workspace' : '/assistant'} />;
+}
+
+// Kept around in case we ever want to resurface a true home page. Not rendered
+// today — the function above short-circuits to the mode-specific landing.
+function HomeScreenLegacy() {
   const router = useRouter();
   const t = useTranslations('home');
   const tc = useTranslations('common');

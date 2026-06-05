@@ -13,6 +13,7 @@ import { CaptureProvider } from '@/capture/CaptureContext';
 import { I18nProvider } from '@/i18n';
 import { NavProvider, useNav } from '@/nav/NavContext';
 import { AppModeProvider } from '@/nav/AppModeContext';
+import { DocumentsProvider } from '@/documents/DocumentsProvider';
 import { SideNav } from '@/nav/SideNav';
 import { WakeListener } from '@/wakeword/WakeListener';
 import { useAppFonts, fonts } from '@/theme/fonts';
@@ -51,6 +52,7 @@ export default function RootLayout() {
       <I18nProvider>
         <AuthProvider>
           <AppModeProvider>
+          <DocumentsProvider>
           <CaptureProvider>
             <NavProvider>
               <StatusBar style="light" />
@@ -80,11 +82,14 @@ export default function RootLayout() {
                 <Stack.Screen name="documents" options={{ title: 'Documentos', ...withMenu }} />
                 <Stack.Screen name="document/[id]" options={{ headerShown: false }} />
                 <Stack.Screen name="workspace" options={{ title: 'Workspace', ...withMenu }} />
+                <Stack.Screen name="d/index" options={{ headerShown: false }} />
+                <Stack.Screen name="d/[id]" options={{ headerShown: false }} />
               </Stack>
               <SideNav />
               <WakeListener />
             </NavProvider>
           </CaptureProvider>
+          </DocumentsProvider>
           </AppModeProvider>
         </AuthProvider>
       </I18nProvider>
