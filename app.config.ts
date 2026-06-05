@@ -1,11 +1,11 @@
-import { ExpoConfig, ConfigContext } from 'expo/config';
+﻿import { ExpoConfig, ConfigContext } from 'expo/config';
 
 /**
- * Killio Vault — Android-first companion app.
+ * Killio Vault â€” Android-first companion app.
  *
  * Phase 0 only declares the base app + the API base URL. The native bits that
  * require a custom dev-build (typed foreground service, MediaProjection screen
- * capture, wake word) are added as config plugins in later phases — Expo Go is
+ * capture, wake word) are added as config plugins in later phases â€” Expo Go is
  * used purely for JS/UI iteration until then.
  */
 export default ({ config }: ConfigContext): ExpoConfig => ({
@@ -51,7 +51,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'expo-location',
       {
         locationAlwaysAndWhenInUsePermission:
-          'Killio Vault usa tu ubicación para dar contexto al asistente.',
+          'Killio Vault usa tu ubicaciÃ³n para dar contexto al asistente.',
       },
     ],
     'expo-notifications',
@@ -64,5 +64,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // emulator alias http://10.0.2.2:4000).
     apiBaseUrl:
       process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://backend.killio.dev',
+    eas: {
+      projectId: 'cf180796-0bbb-4bb0-89b7-f102e5c96345',
+    },
   },
 });
+
