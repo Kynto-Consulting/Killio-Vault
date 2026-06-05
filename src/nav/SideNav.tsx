@@ -9,6 +9,7 @@ import {
   Check,
   ChevronsUpDown,
   FileText,
+  HardDriveDownload,
   History,
   LogOut,
   Mic,
@@ -30,7 +31,7 @@ import { fonts } from '../theme/fonts';
 type Route =
   | '/home' | '/diary' | '/assistant' | '/history' | '/agents'
   | '/integrations' | '/schedule' | '/usage' | '/settings'
-  | '/documents' | '/workspace';
+  | '/documents' | '/workspace' | '/local-workspaces';
 
 interface Item {
   key: string;
@@ -52,6 +53,7 @@ const VAULT_ITEMS: Item[] = [
 const WORKSPACE_ITEMS: Item[] = [
   { key: 'workspace', icon: BarChart3, route: '/workspace' },
   { key: 'documents', icon: FileText, route: '/documents' },
+  { key: 'localWorkspaces', icon: HardDriveDownload, route: '/local-workspaces' },
 ];
 
 function itemsForMode(mode: AppMode): Item[] {

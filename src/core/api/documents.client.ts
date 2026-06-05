@@ -10,6 +10,10 @@ export interface DocFull {
   id: string;
   title: string;
   bricks: DocBrick[];
+  folderId?: string | null;
+  updatedAt?: string;
+  createdAt?: string;
+  visibility?: 'private' | 'team' | 'public';
 }
 
 export interface DocSummary {

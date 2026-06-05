@@ -23,12 +23,15 @@ import {
 import { Screen, Body } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useDocuments } from '@/documents/DocumentsProvider';
+import { useLocalWorkspace } from '@/local-workspace/LocalWorkspaceProvider';
+import { useNetworkStatus } from '@/local-workspace/useNetworkStatus';
 import {
   listDocuments,
   listFolders,
   type DocSummary,
   type FolderSummary,
 } from '@/core/api/documents.client';
+import { useTranslations } from '@/i18n';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
 
@@ -41,8 +44,15 @@ import { fonts } from '@/theme/fonts';
  */
 export default function DocumentsScreen() {
   const router = useRouter();
+  const t = useTranslations('documentsScreen');
+  const tNet = useTranslations('network');
   const { activeTeam } = useAuth();
   const docs = useDocuments();
+  const local = useLocalWorkspace();
+  const { status: netStatus, retry: retryNet } = useNetworkStatus();
+
+  const useLocal = !!local.active;
+  const isOffline = netStatus === 'offline' && !useLocal;
 
   const [folderStack, setFolderStack] = useState<FolderSummary[]>([]);
   const [folders, setFolders] = useState<FolderSummary[]>([]);
@@ -54,6 +64,31 @@ export default function DocumentsScreen() {
   const activeFolderId = currentFolder?.id ?? null;
 
   const load = useCallback(async () => {
+    if (useLocal) {
+      // Local: derive folders + docs from the on-device file list.
+      const parentPath = currentFolder?.id ?? '';
+      const localFolders: FolderSummary[] = local.folders
+        .filter((f) => (f.parent ?? '') === parentPath)
+        .map((f) => ({
+          id: f.path,
+          name: f.name,
+          parentFolderId: f.parent || null,
+          icon: f.icon ?? '📁',
+          color: f.color ?? null,
+        }));
+      const localDocs: DocSummary[] = local.files
+        .filter((f) => f.kind === 'kd' && (f.folder ?? '') === parentPath)
+        .map((f) => ({
+          id: `local:${encodeURIComponent(f.path)}`,
+          title: f.name.replace(/\.kd$/, ''),
+          folderId: f.folder || null,
+          updatedAt: new Date(f.lastModified || Date.now()).toISOString(),
+        }));
+      setFolders(localFolders);
+      setDocuments(localDocs);
+      setLoading(false);
+      return;
+    }
     if (!activeTeam?.id) return;
     setLoading(true);
     try {
@@ -69,7 +104,7 @@ export default function DocumentsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [activeTeam?.id, activeFolderId]);
+  }, [activeTeam?.id, activeFolderId, useLocal, currentFolder?.id, local.folders, local.files]);
 
   useEffect(() => {
     void load();
@@ -102,12 +137,45 @@ export default function DocumentsScreen() {
             style={{ fontFamily: fonts.bold }}
             className="text-3xl tracking-tight text-foreground"
           >
-            Documentos
+            {t('title')}
           </Text>
-          <Body muted>
-            Tu workspace en formato móvil. Crea documentos, organiza carpetas y edita bricks.
-          </Body>
+          <Body muted>{t('subtitle')}</Body>
+          {useLocal ? (
+            <View className="flex-row items-center gap-2 rounded-lg border border-cyan/30 bg-cyan/10 px-3 py-1.5">
+              <Text style={{ fontFamily: fonts.semibold }} className="text-[11px] text-cyan">
+                💾 {local.active?.name} · local
+              </Text>
+            </View>
+          ) : null}
         </View>
+
+        {/* Offline banner */}
+        {isOffline ? (
+          <View className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-3 gap-2">
+            <Text style={{ fontFamily: fonts.bold }} className="text-sm text-destructive">
+              {tNet('offline')}
+            </Text>
+            <Body muted>{tNet('offlineDesc')}</Body>
+            <View className="flex-row gap-2 mt-1">
+              <Pressable
+                onPress={() => void retryNet()}
+                className="rounded-md border border-border bg-card px-3 py-1.5"
+              >
+                <Text style={{ fontFamily: fonts.semibold }} className="text-[11px] text-foreground">
+                  {tNet('offlineRetry')}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => router.push('/local-workspaces')}
+                className="rounded-md bg-cyan px-3 py-1.5"
+              >
+                <Text style={{ fontFamily: fonts.semibold }} className="text-[11px] text-background">
+                  {tNet('offlineUseLocal')}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
 
         {/* Search + actions */}
         <View className="flex-row items-center gap-2">
@@ -116,14 +184,33 @@ export default function DocumentsScreen() {
             <TextInput
               value={query}
               onChangeText={setQuery}
-              placeholder="Buscar documentos…"
+              placeholder={t('searchPlaceholder')}
               placeholderTextColor="#6f6f78"
               style={{ fontFamily: fonts.regular }}
               className="h-10 flex-1 text-sm text-foreground"
             />
           </View>
           <Pressable
-            onPress={() =>
+            onPress={async () => {
+              if (useLocal) {
+                // Inline-create a default .kd under the current folder.
+                const slug = `doc-${Date.now().toString(36)}`;
+                const relPath = currentFolder?.id ? `${currentFolder.id}/${slug}.kd` : `${slug}.kd`;
+                try {
+                  await local.writeKillioFile(relPath, {
+                    kind: 'kd',
+                    schemaVersion: '2026-v1',
+                    payload: { id: relPath, title: 'Sin título', bricks: [] },
+                  });
+                  router.push({
+                    pathname: '/document/[id]',
+                    params: { id: `local:${encodeURIComponent(relPath)}`, title: 'Sin título' },
+                  });
+                } catch {
+                  /* ignore — provider will surface errors via Body */
+                }
+                return;
+              }
               docs.openCreateDocument({
                 folderId: activeFolderId,
                 onCreated: (doc) => {
@@ -132,8 +219,8 @@ export default function DocumentsScreen() {
                     params: { id: doc.id, title: doc.title },
                   });
                 },
-              })
-            }
+              });
+            }}
             className="h-10 flex-row items-center justify-center gap-1 rounded-xl bg-primary px-3"
           >
             <Plus size={14} color={colors.primaryForeground ?? '#171717'} />
@@ -141,7 +228,7 @@ export default function DocumentsScreen() {
               style={{ fontFamily: fonts.semibold, color: colors.primaryForeground ?? '#171717' }}
               className="text-xs"
             >
-              Doc
+              {t('newDoc')}
             </Text>
           </Pressable>
         </View>
@@ -149,17 +236,24 @@ export default function DocumentsScreen() {
         {/* Folder toolbar */}
         <View className="flex-row items-center gap-2">
           <Pressable
-            onPress={() =>
+            onPress={async () => {
+              if (useLocal) {
+                await local.createFolder(currentFolder?.id ?? '', {
+                  name: `Carpeta ${local.folders.length + 1}`,
+                  icon: '📁',
+                });
+                return;
+              }
               docs.openCreateFolder({
                 parentFolderId: activeFolderId,
                 onCreated: () => void load(),
-              })
-            }
+              });
+            }}
             className="h-9 flex-row items-center gap-1 rounded-md border border-border bg-secondary px-3"
           >
             <FolderPlus size={14} color={colors.foreground} />
             <Text style={{ fontFamily: fonts.medium }} className="text-xs text-foreground">
-              Nueva carpeta
+              {t('newFolder')}
             </Text>
           </Pressable>
           {currentFolder ? (
@@ -223,7 +317,7 @@ export default function DocumentsScreen() {
               style={{ fontFamily: fonts.semibold }}
               className="text-[11px] uppercase tracking-widest text-muted-foreground"
             >
-              Carpetas
+              {t('folders')}
             </Text>
             <View className="flex-row flex-wrap gap-2">
               {folders.map((f) => (
@@ -260,7 +354,7 @@ export default function DocumentsScreen() {
             style={{ fontFamily: fonts.semibold }}
             className="text-[11px] uppercase tracking-widest text-muted-foreground"
           >
-            Archivos
+            {t('files')}
           </Text>
 
           {filteredDocs.length === 0 && !loading ? (
@@ -272,12 +366,10 @@ export default function DocumentsScreen() {
                 style={{ fontFamily: fonts.semibold }}
                 className="text-base text-foreground"
               >
-                {query ? 'Sin resultados' : 'Sin documentos'}
+                {query ? t('noResults') : t('empty')}
               </Text>
               <Text className="mt-1 text-center text-xs text-muted-foreground">
-                {query
-                  ? `Nada coincide con "${query}".`
-                  : 'Crea tu primer documento para empezar.'}
+                {query ? t('noResultsHint', { query }) : t('emptyHint')}
               </Text>
               <Pressable
                 onPress={() =>

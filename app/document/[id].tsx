@@ -1,57 +1,135 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ScrollView, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Eye, MoreVertical, Pencil } from 'lucide-react-native';
 
 import { Screen, Card, Body } from '@/ui';
 import { BrickList } from '@/ui/BrickRenderer';
 import type { Brick } from '@/ui/BrickRenderer';
 import { BrickEditor, type BrickKind } from '@/ui/BrickEditor';
 import { useDocuments } from '@/documents/DocumentsProvider';
+import { DocumentHeader, type BreadcrumbSegment, shareDocumentText } from '@/documents/DocumentHeader';
+import { useAuth } from '@/core/auth/AuthContext';
+import { useLocalWorkspace } from '@/local-workspace/LocalWorkspaceProvider';
 import {
   appendDocumentBlock,
   getDocument,
   removeBrick,
   reorderBricks,
   updateBrickContent,
+  updateDocument,
   type DocFull,
 } from '@/core/api/documents.client';
-import { colors } from '@/theme/theme';
-import { fonts } from '@/theme/fonts';
+import type { KillioFile } from '@/local-workspace/killio-file';
 
 /**
- * Single-document viewer + editor. Read-only by default; the pencil flips on
- * `BrickEditor` which adds the full toolkit (add / move / copy / paste /
- * delete / multi-select). Edits are persisted brick-by-brick so a partial
- * failure leaves the rest of the doc consistent.
+ * Document detail screen. Routes one of three storages depending on the id:
+ *
+ *   1. UUID-looking id        → cloud document (uses /documents API)
+ *   2. id starts with "local:" → local workspace document, .kd file on disk
+ *   3. fallback                → cloud (kept for legacy links)
+ *
+ * Either backend hits the same DocumentHeader + BrickList / BrickEditor pair,
+ * so the user always sees the same UI regardless of where the doc lives.
  */
 export default function DocumentDetailScreen() {
   const router = useRouter();
-  const docs = useDocuments();
+  const docsApi = useDocuments();
+  const { activeTeam } = useAuth();
+  const local = useLocalWorkspace();
   const params = useLocalSearchParams<{ id: string; title?: string }>();
-  const docId = String(params.id);
+  const rawId = String(params.id ?? '');
+  const isLocal = rawId.startsWith('local:');
+  const localPath = isLocal ? decodeURIComponent(rawId.slice('local:'.length)) : '';
+  const cloudId = isLocal ? null : rawId;
+
   const [doc, setDoc] = useState<DocFull | null>(null);
   const [loading, setLoading] = useState(true);
   const [canEdit, setCanEdit] = useState(false);
+  const [saving, setSaving] = useState<'idle' | 'saving' | 'saved' | 'offline'>('idle');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await getDocument(docId);
-      setDoc(d);
+      if (isLocal) {
+        const file = await local.readKillioFile(localPath);
+        setDoc(localFileToDoc(localPath, file));
+      } else if (cloudId) {
+        const d = await getDocument(cloudId);
+        setDoc(d);
+      }
     } catch {
       setDoc(null);
     } finally {
       setLoading(false);
     }
-  }, [docId]);
+  }, [isLocal, localPath, cloudId, local]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  const breadcrumb = useMemo<BreadcrumbSegment[]>(() => {
+    const segs: BreadcrumbSegment[] = [];
+    if (isLocal) {
+      segs.push({
+        key: 'local',
+        label: local.active?.name ?? 'Local',
+        icon: '💾',
+        onPress: () => router.replace('/documents'),
+      });
+      const parts = localPath.split('/').slice(0, -1);
+      let cursor = '';
+      for (const p of parts) {
+        cursor = cursor ? `${cursor}/${p}` : p;
+        segs.push({
+          key: `local:${cursor}`,
+          label: p,
+          onPress: () => router.replace('/documents'),
+        });
+      }
+    } else {
+      segs.push({
+        key: 'ws',
+        label: activeTeam?.name ?? 'Workspace',
+        onPress: () => router.replace('/workspace'),
+      });
+      segs.push({
+        key: 'docs',
+        label: 'Documentos',
+        onPress: () => router.replace('/documents'),
+      });
+    }
+    segs.push({
+      key: 'doc',
+      label: doc?.title ?? params.title ?? 'Documento',
+    });
+    return segs;
+  }, [isLocal, local.active?.name, localPath, activeTeam?.name, doc?.title, params.title, router]);
+
+  const persistLocal = useCallback(
+    async (nextDoc: DocFull) => {
+      if (!isLocal) return;
+      const file: KillioFile = {
+        kind: 'kd',
+        schemaVersion: '2026-v1',
+        payload: {
+          id: nextDoc.id,
+          title: nextDoc.title,
+          bricks: nextDoc.bricks.map((b, i) => ({
+            id: b.id,
+            kind: b.kind,
+            position: i,
+            content: b.content,
+          })),
+        },
+      };
+      await local.writeKillioFile(localPath, file);
+    },
+    [isLocal, local, localPath],
+  );
+
   const handleUpdate = async (brickId: string, next: Brick) => {
-    // Optimistic local update so the typing experience stays snappy
+    setSaving('saving');
     setDoc((prev) =>
       prev
         ? {
@@ -63,10 +141,23 @@ export default function DocumentDetailScreen() {
         : prev,
     );
     try {
-      await updateBrickContent(docId, brickId, next.content);
+      if (isLocal) {
+        // Locally we re-write the whole .kd file — small, no API.
+        const after = doc
+          ? {
+              ...doc,
+              bricks: doc.bricks.map((b) =>
+                b.id === brickId ? { ...b, content: next.content } : b,
+              ),
+            }
+          : doc;
+        if (after) await persistLocal(after);
+      } else if (cloudId) {
+        await updateBrickContent(cloudId, brickId, next.content);
+      }
+      setSaving('saved');
     } catch {
-      // Silent — the next typed keystroke will retry. A toast layer would
-      // surface this once we wire one up.
+      setSaving('offline');
     }
   };
 
@@ -77,7 +168,16 @@ export default function DocumentDetailScreen() {
         : prev,
     );
     try {
-      await removeBrick(docId, brickId);
+      if (isLocal) {
+        if (doc) {
+          await persistLocal({
+            ...doc,
+            bricks: doc.bricks.filter((b) => b.id !== brickId),
+          });
+        }
+      } else if (cloudId) {
+        await removeBrick(cloudId, brickId);
+      }
     } catch {
       void load();
     }
@@ -87,13 +187,19 @@ export default function DocumentDetailScreen() {
     setDoc((prev) => {
       if (!prev) return prev;
       const byId = new Map(prev.bricks.map((b) => [b.id, b]));
-      const sorted = orderedIds
-        .map((id) => byId.get(id))
-        .filter((b): b is NonNullable<typeof b> => !!b);
+      const sorted = orderedIds.map((id) => byId.get(id)).filter((b): b is NonNullable<typeof b> => !!b);
       return { ...prev, bricks: sorted };
     });
     try {
-      await reorderBricks(docId, orderedIds);
+      if (isLocal) {
+        if (doc) {
+          const byId = new Map(doc.bricks.map((b) => [b.id, b]));
+          const sorted = orderedIds.map((id) => byId.get(id)).filter((b): b is NonNullable<typeof b> => !!b);
+          await persistLocal({ ...doc, bricks: sorted });
+        }
+      } else if (cloudId) {
+        await reorderBricks(cloudId, orderedIds);
+      }
     } catch {
       void load();
     }
@@ -103,103 +209,98 @@ export default function DocumentDetailScreen() {
     kind: BrickKind,
     afterBrickId?: string,
   ): Promise<string | void> => {
+    const initial = defaultContentFor(kind);
+    const backendKind = kindForBackend(kind);
+    let newId: string | undefined;
     try {
-      const initial = defaultContentFor(kind);
-      const created = await appendDocumentBlock(docId, kindForBackend(kind), initial);
-      // Insert locally next to the anchor; backend ordering is fixed via a
-      // reorder call so the new brick lands in the right slot.
-      setDoc((prev) => {
-        if (!prev) return prev;
-        const next = [...prev.bricks];
-        const anchorIdx = afterBrickId
-          ? next.findIndex((b) => b.id === afterBrickId)
-          : next.length - 1;
-        const insertAt = anchorIdx + 1;
-        next.splice(insertAt, 0, {
-          id: created.id,
-          kind: kindForBackend(kind),
-          content: initial,
+      if (isLocal) {
+        newId = `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        setDoc((prev) => {
+          if (!prev) return prev;
+          const next = [...prev.bricks];
+          const idx = afterBrickId
+            ? next.findIndex((b) => b.id === afterBrickId)
+            : next.length - 1;
+          next.splice(idx + 1, 0, { id: newId!, kind: backendKind, content: initial });
+          void persistLocal({ ...prev, bricks: next });
+          return { ...prev, bricks: next };
         });
-        return { ...prev, bricks: next };
-      });
-      if (afterBrickId) {
-        // Persist the order so the brick stays right after its anchor.
-        const orderedIds = (doc?.bricks ?? []).map((b) => b.id).filter(Boolean) as string[];
-        const idx = orderedIds.indexOf(afterBrickId);
-        if (idx >= 0) {
-          orderedIds.splice(idx + 1, 0, created.id);
-          try {
-            await reorderBricks(docId, orderedIds);
-          } catch {
-            /* ignore — UI already shows it in the right place */
+      } else if (cloudId) {
+        const created = await appendDocumentBlock(cloudId, backendKind, initial);
+        newId = created.id;
+        setDoc((prev) => {
+          if (!prev) return prev;
+          const next = [...prev.bricks];
+          const idx = afterBrickId
+            ? next.findIndex((b) => b.id === afterBrickId)
+            : next.length - 1;
+          next.splice(idx + 1, 0, { id: created.id, kind: backendKind, content: initial });
+          return { ...prev, bricks: next };
+        });
+        if (afterBrickId) {
+          const orderedIds = (doc?.bricks ?? []).map((b) => b.id).filter(Boolean) as string[];
+          const idx = orderedIds.indexOf(afterBrickId);
+          if (idx >= 0) {
+            orderedIds.splice(idx + 1, 0, created.id);
+            try {
+              await reorderBricks(cloudId, orderedIds);
+            } catch {
+              /* ignore */
+            }
           }
         }
       }
-      return created.id;
     } catch {
-      return undefined;
+      newId = undefined;
+    }
+    return newId;
+  };
+
+  const rename = async (next: string) => {
+    if (!doc) return;
+    setDoc({ ...doc, title: next });
+    try {
+      if (isLocal) {
+        await persistLocal({ ...doc, title: next });
+      } else if (cloudId) {
+        await updateDocument(cloudId, { title: next });
+      }
+    } catch {
+      /* ignore */
     }
   };
 
   return (
     <Screen padded={false}>
-      <View className="flex-row items-center justify-between px-4 pt-4">
-        <Pressable
-          hitSlop={10}
-          onPress={() => router.back()}
-          className="rounded-md p-1"
-        >
-          <ArrowLeft size={20} color={colors.foreground} />
-        </Pressable>
-        <View className="flex-1 px-3">
-          <Text
-            style={{ fontFamily: fonts.bold }}
-            className="text-lg text-foreground"
-            numberOfLines={1}
-          >
-            {doc?.title ?? params.title ?? 'Documento'}
-          </Text>
-        </View>
-        <View className="flex-row items-center gap-1">
-          <Pressable
-            onPress={() => setCanEdit((v) => !v)}
-            className="flex-row items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1.5"
-          >
-            {canEdit ? (
-              <Eye size={13} color={colors.foreground} />
-            ) : (
-              <Pencil size={13} color={colors.foreground} />
-            )}
-            <Text
-              style={{ fontFamily: fonts.semibold }}
-              className="text-xs text-foreground"
-            >
-              {canEdit ? 'Ver' : 'Editar'}
-            </Text>
-          </Pressable>
-          {doc ? (
-            <Pressable
-              onPress={() =>
-                docs.openEditDocument(
+      <DocumentHeader
+        title={doc?.title ?? String(params.title ?? '')}
+        breadcrumb={breadcrumb}
+        visibility={doc?.visibility}
+        canEdit={canEdit}
+        onBack={() => router.back()}
+        onToggleEdit={() => setCanEdit((v) => !v)}
+        onRename={rename}
+        onShare={() =>
+          shareDocumentText({
+            title: doc?.title ?? 'Documento',
+            body: flattenText(doc?.bricks ?? []),
+          })
+        }
+        onDelete={
+          doc
+            ? () => {
+                docsApi.openDeleteDocument(
                   { id: doc.id, title: doc.title },
-                  {
-                    onSaved: (saved) =>
-                      setDoc((prev) =>
-                        prev ? { ...prev, title: saved.title } : prev,
-                      ),
-                  },
-                )
+                  { onDeleted: () => router.back() },
+                );
               }
-              className="rounded-md border border-border bg-card p-2"
-            >
-              <MoreVertical size={14} color={colors.foreground} />
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
+            : undefined
+        }
+        statusLabel={statusLabelFor(saving)}
+      />
 
       <ScrollView
-        className="flex-1 mt-3"
+        className="flex-1 mt-2"
         contentContainerClassName="px-4 pb-10 gap-3"
         keyboardShouldPersistTaps="handled"
       >
@@ -233,9 +334,32 @@ export default function DocumentDetailScreen() {
             canEdit={false}
           />
         )}
+
+        {isLocal ? (
+          <View className="mt-2 rounded-xl border border-cyan/30 bg-cyan/5 px-3 py-2">
+            <Body muted>📂 Documento local — vive en este dispositivo.</Body>
+          </View>
+        ) : null}
       </ScrollView>
     </Screen>
   );
+}
+
+function localFileToDoc(path: string, file: KillioFile): DocFull {
+  const payload = (file.payload && typeof file.payload === 'object'
+    ? file.payload
+    : {}) as Record<string, unknown>;
+  const rawBricks = Array.isArray(payload.bricks) ? (payload.bricks as Array<any>) : [];
+  return {
+    id: `local:${path}`,
+    title: typeof payload.title === 'string' ? payload.title : path.split('/').pop() ?? 'Documento',
+    bricks: rawBricks.map((b, i) => ({
+      id: String(b?.id ?? `b${i}`),
+      kind: typeof b?.kind === 'string' ? b.kind : 'text',
+      content: (b?.content && typeof b.content === 'object' ? b.content : {}) as Record<string, any>,
+    })),
+    visibility: 'private',
+  };
 }
 
 function defaultContentFor(kind: BrickKind): Record<string, any> {
@@ -258,8 +382,23 @@ function defaultContentFor(kind: BrickKind): Record<string, any> {
 }
 
 function kindForBackend(kind: BrickKind): string {
-  // Vault BrickRenderer treats 'heading' as a Text brick variant; the backend
-  // stores it as 'text' with a leading "#"…"######". Other kinds map 1:1.
   if (kind === 'heading') return 'text';
   return kind;
+}
+
+function flattenText(bricks: Array<{ kind: string; content: Record<string, any> }>): string {
+  return bricks
+    .map((b) => {
+      const t = b.content?.text ?? b.content?.value ?? '';
+      return typeof t === 'string' ? t : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function statusLabelFor(s: 'idle' | 'saving' | 'saved' | 'offline'): string | undefined {
+  if (s === 'saving') return 'Guardando…';
+  if (s === 'saved') return 'Guardado';
+  if (s === 'offline') return 'Sin conexión';
+  return undefined;
 }
