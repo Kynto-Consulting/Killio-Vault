@@ -144,6 +144,28 @@ export async function removeBrick(
   await api.delete(`/documents/${documentId}/bricks/${brickId}`);
 }
 
+/** Targeted cell patch — backend emits the `brick.cell_patched` Pulse delta. */
+export async function patchBrickCell(
+  documentId: string,
+  brickId: string,
+  patch:
+    | {
+        kind: 'bountiful_table_cell';
+        rowId: string;
+        colId: string;
+        cell: Record<string, unknown>;
+        rowMeta?: { _lastEditedAt: string; _lastEditedBy: string };
+      }
+    | {
+        kind: 'table_cell';
+        rowIndex: number;
+        colIndex: number;
+        value: string;
+      },
+): Promise<void> {
+  await api.patch(`/documents/${documentId}/bricks/${brickId}/cell`, patch);
+}
+
 /** Flattens a document's text-bearing bricks into a single plain-text blob. */
 export function documentToText(doc: DocFull, maxChars = 4000): string {
   const parts: string[] = [];

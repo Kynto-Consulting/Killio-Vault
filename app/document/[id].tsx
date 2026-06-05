@@ -127,6 +127,55 @@ export default function DocumentDetailScreen() {
           setDoc((prev) => (prev ? { ...prev, title: nextTitle } : prev));
         }
       },
+      // Bountiful + simple table cell patches arrive as targeted deltas so
+      // other clients don't reload the whole brick to see one cell change.
+      'brick.cell_patched': (payload) => {
+        const p = payload as {
+          id?: string;
+          kind?: string;
+          cellPatch?: {
+            rowId?: string;
+            colId?: string;
+            cell?: any;
+            rowMeta?: any;
+            rowIndex?: number;
+            colIndex?: number;
+            value?: string;
+          };
+        };
+        const id = p?.id;
+        const patch = p?.cellPatch;
+        if (!id || !patch) return;
+        setDoc((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            bricks: prev.bricks.map((b) => {
+              if (b.id !== id) return b;
+              return { ...b, content: applyCellPatch(b.content, patch) };
+            }),
+          };
+        });
+      },
+      'brick.column_patched': (payload) => {
+        const p = payload as {
+          id?: string;
+          columnPatch?: { colId?: string; updates?: Record<string, any> };
+        };
+        const id = p?.id;
+        const patch = p?.columnPatch;
+        if (!id || !patch?.colId || !patch?.updates) return;
+        setDoc((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            bricks: prev.bricks.map((b) => {
+              if (b.id !== id) return b;
+              return { ...b, content: applyColumnPatch(b.content, patch.colId!, patch.updates!) };
+            }),
+          };
+        });
+      },
     },
   });
 
@@ -465,6 +514,68 @@ function flattenText(bricks: Array<{ kind: string; content: Record<string, any> 
     })
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Apply a `brick.cell_patched` delta to a table brick's content in place.
+ * Handles both the bountiful (rowId/colId/cell+rowMeta) and the legacy
+ * simple (rowIndex/colIndex/value) shapes the backend emits.
+ */
+function applyCellPatch(
+  content: Record<string, any>,
+  patch: {
+    rowId?: string;
+    colId?: string;
+    cell?: any;
+    rowMeta?: any;
+    rowIndex?: number;
+    colIndex?: number;
+    value?: string;
+  },
+): Record<string, any> {
+  const next: Record<string, any> = { ...content };
+  // Bountiful table: cells: { [rowId]: { [colId]: cell } }, rows: [{ id, meta }, …]
+  if (patch.rowId && patch.colId && patch.cell) {
+    const cells = { ...(next.cells ?? {}) };
+    cells[patch.rowId] = { ...(cells[patch.rowId] ?? {}), [patch.colId]: patch.cell };
+    next.cells = cells;
+    if (patch.rowMeta && Array.isArray(next.rows)) {
+      next.rows = next.rows.map((r: any) =>
+        r?.id === patch.rowId ? { ...r, ...patch.rowMeta } : r,
+      );
+    }
+    return next;
+  }
+  // Simple table: rows[rowIndex][colIndex] = value
+  if (
+    typeof patch.rowIndex === 'number' &&
+    typeof patch.colIndex === 'number' &&
+    Array.isArray(next.rows)
+  ) {
+    const rows = next.rows.map((row: any, i: number) => {
+      if (i !== patch.rowIndex) return row;
+      const arr = Array.isArray(row) ? [...row] : [];
+      arr[patch.colIndex!] = patch.value ?? '';
+      return arr;
+    });
+    next.rows = rows;
+    return next;
+  }
+  return next;
+}
+
+/** Apply a `brick.column_patched` delta to a bountiful table's columns. */
+function applyColumnPatch(
+  content: Record<string, any>,
+  colId: string,
+  updates: Record<string, any>,
+): Record<string, any> {
+  const next: Record<string, any> = { ...content };
+  if (!Array.isArray(next.columns)) return next;
+  next.columns = next.columns.map((c: any) =>
+    c?.id === colId ? { ...c, ...updates } : c,
+  );
+  return next;
 }
 
 function statusLabelFor(

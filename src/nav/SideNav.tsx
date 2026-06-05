@@ -50,7 +50,6 @@ const VAULT_ITEMS: Item[] = [
   { key: 'diary', icon: Mic, route: '/diary' },
   { key: 'agents', icon: Bot, route: '/agents' },
   { key: 'memories', icon: Brain, route: '/memories' },
-  { key: 'rooms', icon: MessageSquare, route: '/rooms' },
   { key: 'search', icon: Search, route: '/search' },
   { key: 'notifications', icon: Bell, route: '/notifications' },
   { key: 'integrations', icon: Blocks, route: '/integrations' },
@@ -62,6 +61,7 @@ const VAULT_ITEMS: Item[] = [
 const WORKSPACE_ITEMS: Item[] = [
   { key: 'workspace', icon: BarChart3, route: '/workspace' },
   { key: 'documents', icon: FileText, route: '/documents' },
+  { key: 'rooms', icon: MessageSquare, route: '/rooms' },
   { key: 'localWorkspaces', icon: HardDriveDownload, route: '/local-workspaces' },
 ];
 

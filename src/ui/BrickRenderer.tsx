@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Image, Linking, Modal, Pressable, Text, View } from 'react-native';
+import { Image, Linking, Modal, Pressable, Text, TextInput, View } from 'react-native';
 import {
   ArrowDown,
   ArrowUp,
@@ -24,6 +24,13 @@ import {
 } from 'lucide-react-native';
 
 import { RichText } from './RichText';
+import { InlineFormatToolbar } from './InlineFormatToolbar';
+import {
+  BountifulTable,
+  type BountifulCell,
+  type BountifulColumn,
+  type BountifulRow,
+} from './BountifulTable';
 import { useTranslations } from '../i18n';
 import { colors } from '../theme/theme';
 import { fonts } from '../theme/fonts';
@@ -129,11 +136,38 @@ function DividerBrick() {
   return <View className="my-2 h-px rounded-full bg-border" />;
 }
 
-function CodeBrick({ brick }: BrickProps) {
+function CodeBrick({ brick, canEdit, onChange }: BrickProps) {
   const code = String(
     brick.content?.code ?? brick.content?.text ?? brick.content?.markdown ?? '',
   );
   const lang = brick.content?.lang || brick.content?.language;
+  if (canEdit && onChange) {
+    return (
+      <View className="my-1 rounded-md border border-cyan/40 bg-secondary p-3 gap-2">
+        <TextInput
+          value={String(lang ?? '')}
+          onChangeText={(v) =>
+            onChange({ ...brick, content: { ...brick.content, language: v, lang: v } })
+          }
+          placeholder="language"
+          placeholderTextColor={colors.mutedForeground}
+          style={{ fontFamily: fonts.mono, fontSize: 10, color: colors.mutedForeground, padding: 0 }}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <TextInput
+          value={code}
+          onChangeText={(v) =>
+            onChange({ ...brick, content: { ...brick.content, code: v, text: v } })
+          }
+          multiline
+          style={{ fontFamily: fonts.mono, fontSize: 12, color: colors.foreground, padding: 0, minHeight: 60 }}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+      </View>
+    );
+  }
   return (
     <View className="my-1 rounded-md border border-border bg-secondary p-3">
       {lang ? (
@@ -151,8 +185,37 @@ function CodeBrick({ brick }: BrickProps) {
   );
 }
 
-function MediaBrick({ brick }: BrickProps) {
+function MediaBrick({ brick, canEdit, onChange }: BrickProps) {
   const url = String(brick.content?.url ?? brick.content?.src ?? '');
+  if (canEdit && onChange) {
+    return (
+      <View className="my-1 rounded-xl border border-cyan/40 bg-card p-3 gap-2">
+        <TextInput
+          value={url}
+          onChangeText={(v) => onChange({ ...brick, content: { ...brick.content, url: v, src: v } })}
+          placeholder="https://… (URL del medio)"
+          placeholderTextColor={colors.mutedForeground}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={{ fontFamily: fonts.mono, fontSize: 11, color: colors.foreground, padding: 0 }}
+        />
+        <TextInput
+          value={String(brick.content?.title ?? brick.content?.alt ?? '')}
+          onChangeText={(v) => onChange({ ...brick, content: { ...brick.content, title: v, alt: v } })}
+          placeholder="Título (opcional)"
+          placeholderTextColor={colors.mutedForeground}
+          style={{ fontFamily: fonts.regular, fontSize: 12, color: colors.foreground, padding: 0 }}
+        />
+        {url ? (
+          <Image
+            source={{ uri: url }}
+            style={{ width: '100%', aspectRatio: 16 / 10, borderRadius: 8 }}
+            resizeMode="cover"
+          />
+        ) : null}
+      </View>
+    );
+  }
   if (!url) return null;
   const title = brick.content?.title || brick.content?.alt;
   const isVideo = brick.kind === 'video' || /\.(mp4|mov|webm)$/i.test(url);
@@ -199,9 +262,31 @@ function MediaBrick({ brick }: BrickProps) {
   );
 }
 
-function FileBrick({ brick }: BrickProps) {
+function FileBrick({ brick, canEdit, onChange }: BrickProps) {
   const url = String(brick.content?.url ?? '');
   const title = String(brick.content?.title ?? brick.content?.name ?? 'archivo');
+  if (canEdit && onChange) {
+    return (
+      <View className="my-1 rounded-xl border border-cyan/40 bg-secondary p-3 gap-2">
+        <TextInput
+          value={url}
+          onChangeText={(v) => onChange({ ...brick, content: { ...brick.content, url: v } })}
+          placeholder="https://… (URL)"
+          placeholderTextColor={colors.mutedForeground}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={{ fontFamily: fonts.mono, fontSize: 11, color: colors.foreground, padding: 0 }}
+        />
+        <TextInput
+          value={title}
+          onChangeText={(v) => onChange({ ...brick, content: { ...brick.content, title: v, name: v } })}
+          placeholder="Nombre"
+          placeholderTextColor={colors.mutedForeground}
+          style={{ fontFamily: fonts.medium, fontSize: 13, color: colors.foreground, padding: 0 }}
+        />
+      </View>
+    );
+  }
   return (
     <Pressable
       onPress={() => url && void Linking.openURL(url)}
@@ -267,12 +352,105 @@ function ChecklistBrick({ brick, canEdit, onChange }: BrickProps) {
 
 // ─── Table ──────────────────────────────────────────────────────────────────
 
-function TableBrick({ brick }: BrickProps) {
+function TableBrick({ brick, canEdit, onChange }: BrickProps) {
+  // Bountiful tables (rich cell objects, named columns/rows) are not yet
+  // editable inline — they ship through patch-cell / patch-column APIs the
+  // web surface owns. Simple tables get a tap-to-edit cell grid.
+  const isBountiful = brick.kind === 'bountiful_table' || brick.kind === 'beautiful_table';
   const rows: any[][] = Array.isArray(brick.content?.rows)
     ? brick.content.rows
     : Array.isArray(brick.content?.cells)
       ? brick.content.cells
       : [];
+
+  if (canEdit && onChange && !isBountiful) {
+    const setCell = (ri: number, ci: number, val: string) => {
+      const next = rows.map((r) => (Array.isArray(r) ? [...r] : []));
+      while (next.length <= ri) next.push([]);
+      while (next[ri].length <= ci) next[ri].push('');
+      next[ri][ci] = val;
+      onChange({ ...brick, content: { ...brick.content, rows: next } });
+    };
+    const addRow = () => {
+      const cols = rows[0]?.length ?? 1;
+      onChange({
+        ...brick,
+        content: {
+          ...brick.content,
+          rows: [...rows, Array.from({ length: cols }, () => '')],
+        },
+      });
+    };
+    const addCol = () => {
+      onChange({
+        ...brick,
+        content: {
+          ...brick.content,
+          rows: rows.map((r) => (Array.isArray(r) ? [...r, ''] : [''])),
+        },
+      });
+    };
+    const removeRow = (ri: number) => {
+      onChange({ ...brick, content: { ...brick.content, rows: rows.filter((_, i) => i !== ri) } });
+    };
+    const removeCol = (ci: number) => {
+      onChange({
+        ...brick,
+        content: {
+          ...brick.content,
+          rows: rows.map((r) => (Array.isArray(r) ? r.filter((_, i) => i !== ci) : r)),
+        },
+      });
+    };
+    return (
+      <View className="my-1 overflow-hidden rounded-lg border border-cyan/40">
+        {rows.map((row, ri) => (
+          <View
+            key={ri}
+            className={`flex-row ${ri === 0 ? 'bg-secondary' : 'bg-background'} ${
+              ri > 0 ? 'border-t border-border' : ''
+            }`}
+          >
+            {row.map((cell: any, ci: number) => (
+              <View
+                key={ci}
+                className={`flex-1 px-2 py-1 ${ci > 0 ? 'border-l border-border' : ''}`}
+              >
+                <TextInput
+                  value={String(cell ?? '')}
+                  onChangeText={(v) => setCell(ri, ci, v)}
+                  style={{
+                    fontFamily: ri === 0 ? fonts.semibold : fonts.regular,
+                    fontSize: 12,
+                    color: colors.foreground,
+                    padding: 0,
+                  }}
+                />
+              </View>
+            ))}
+            <Pressable onPress={() => removeRow(ri)} hitSlop={4} className="px-1 justify-center">
+              <Text className="text-[10px] text-destructive">×</Text>
+            </Pressable>
+          </View>
+        ))}
+        <View className="flex-row border-t border-border bg-background">
+          <Pressable onPress={addRow} className="flex-1 items-center py-1 border-r border-border">
+            <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-cyan">+ row</Text>
+          </Pressable>
+          <Pressable onPress={addCol} className="flex-1 items-center py-1 border-r border-border">
+            <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-cyan">+ col</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => removeCol((rows[0]?.length ?? 1) - 1)}
+            className="flex-1 items-center py-1"
+          >
+            <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-muted-foreground">− col</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   if (rows.length === 0) return null;
   return (
     <View className="my-1 overflow-hidden rounded-lg border border-border">
@@ -304,7 +482,7 @@ function TableBrick({ brick }: BrickProps) {
 
 // ─── Composite bricks (recursive) ───────────────────────────────────────────
 
-function AccordionBrick({ brick }: BrickProps) {
+function AccordionBrick({ brick, canEdit, onChange }: BrickProps) {
   const [open, setOpen] = useState(!!brick.content?.defaultOpen);
   const title = String(brick.content?.title ?? 'Sección');
   const children: Brick[] = Array.isArray(brick.content?.children) ? brick.content.children : [];
@@ -320,15 +498,57 @@ function AccordionBrick({ brick }: BrickProps) {
         ) : (
           <ChevronRight size={14} color={colors.foreground} />
         )}
-        <Text style={{ fontFamily: fonts.semibold }} className="flex-1 text-sm text-foreground">
-          {title}
-        </Text>
+        {canEdit && onChange ? (
+          <TextInput
+            value={title}
+            onChangeText={(v) =>
+              onChange({ ...brick, content: { ...brick.content, title: v } })
+            }
+            style={{
+              fontFamily: fonts.semibold,
+              color: colors.foreground,
+              flex: 1,
+              padding: 0,
+              fontSize: 14,
+            }}
+          />
+        ) : (
+          <Text style={{ fontFamily: fonts.semibold }} className="flex-1 text-sm text-foreground">
+            {title}
+          </Text>
+        )}
       </Pressable>
       {open ? (
         <View className="gap-2 px-3 py-2">
-          {body ? <RichText content={String(body)} /> : null}
+          {canEdit && onChange ? (
+            <TextInput
+              value={String(body ?? '')}
+              onChangeText={(v) =>
+                onChange({ ...brick, content: { ...brick.content, body: v, text: v } })
+              }
+              multiline
+              placeholder="Texto de la sección…"
+              placeholderTextColor={colors.mutedForeground}
+              style={{ fontFamily: fonts.regular, color: colors.foreground, padding: 0, fontSize: 14 }}
+            />
+          ) : body ? (
+            <RichText content={String(body)} />
+          ) : null}
           {children.map((c, i) => (
-            <BrickRenderer key={c.id ?? i} brick={c} />
+            <BrickRenderer
+              key={c.id ?? i}
+              brick={c}
+              canEdit={canEdit}
+              onChange={
+                canEdit && onChange
+                  ? (next) => {
+                      const arr = [...children];
+                      arr[i] = next;
+                      onChange({ ...brick, content: { ...brick.content, children: arr } });
+                    }
+                  : undefined
+              }
+            />
           ))}
         </View>
       ) : null}
@@ -336,55 +556,135 @@ function AccordionBrick({ brick }: BrickProps) {
   );
 }
 
-function TabsBrick({ brick }: BrickProps) {
+function TabsBrick({ brick, canEdit, onChange }: BrickProps) {
   const tabs: { id?: string; label?: string; children?: Brick[] }[] = Array.isArray(
     brick.content?.tabs,
   )
     ? brick.content.tabs
     : [];
   const [active, setActive] = useState(0);
-  if (tabs.length === 0) return null;
-  const cur = tabs[active] ?? tabs[0];
+  if (tabs.length === 0 && !canEdit) return null;
+
+  const updateTabs = (next: typeof tabs) => {
+    if (!onChange) return;
+    onChange({ ...brick, content: { ...brick.content, tabs: next } });
+  };
+
+  const cur = tabs[active] ?? tabs[0] ?? { label: '', children: [] };
   return (
     <View className="my-1 overflow-hidden rounded-lg border border-border">
       <View className="flex-row gap-1 border-b border-border bg-secondary px-2 py-1">
-        {tabs.map((t, i) => (
+        {tabs.map((tab, i) => (
           <Pressable
-            key={t.id ?? i}
+            key={tab.id ?? i}
             onPress={() => setActive(i)}
             className={`rounded-md px-3 py-1.5 ${i === active ? 'bg-background' : ''}`}
           >
-            <Text
-              style={{ fontFamily: i === active ? fonts.semibold : fonts.regular }}
-              className={`text-xs ${i === active ? 'text-foreground' : 'text-muted-foreground'}`}
-            >
-              {String(t.label ?? `Tab ${i + 1}`)}
-            </Text>
+            {canEdit && onChange ? (
+              <TextInput
+                value={String(tab.label ?? `Tab ${i + 1}`)}
+                onChangeText={(v) => {
+                  const next = [...tabs];
+                  next[i] = { ...next[i], label: v };
+                  updateTabs(next);
+                }}
+                style={{
+                  fontFamily: i === active ? fonts.semibold : fonts.regular,
+                  color: i === active ? colors.foreground : colors.mutedForeground,
+                  fontSize: 12,
+                  padding: 0,
+                  minWidth: 50,
+                }}
+              />
+            ) : (
+              <Text
+                style={{ fontFamily: i === active ? fonts.semibold : fonts.regular }}
+                className={`text-xs ${i === active ? 'text-foreground' : 'text-muted-foreground'}`}
+              >
+                {String(tab.label ?? `Tab ${i + 1}`)}
+              </Text>
+            )}
           </Pressable>
         ))}
+        {canEdit && onChange ? (
+          <Pressable
+            onPress={() => {
+              const next = [...tabs, { label: `Tab ${tabs.length + 1}`, children: [] }];
+              updateTabs(next);
+              setActive(next.length - 1);
+            }}
+            className="rounded-md px-2 py-1"
+          >
+            <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-cyan">＋</Text>
+          </Pressable>
+        ) : null}
       </View>
       <View className="gap-2 p-3">
         {(cur.children ?? []).map((c, i) => (
-          <BrickRenderer key={c.id ?? i} brick={c} />
+          <BrickRenderer
+            key={c.id ?? i}
+            brick={c}
+            canEdit={canEdit}
+            onChange={
+              canEdit && onChange
+                ? (next) => {
+                    const tabsCopy = [...tabs];
+                    const tabCopy = { ...tabsCopy[active] };
+                    const ch = [...(tabCopy.children ?? [])];
+                    ch[i] = next;
+                    tabCopy.children = ch;
+                    tabsCopy[active] = tabCopy;
+                    updateTabs(tabsCopy);
+                  }
+                : undefined
+            }
+          />
         ))}
       </View>
     </View>
   );
 }
 
-function ColumnsBrick({ brick }: BrickProps) {
+function ColumnsBrick({ brick, canEdit, onChange }: BrickProps) {
   const cols: { children?: Brick[] }[] = Array.isArray(brick.content?.columns)
     ? brick.content.columns
     : [];
+  const updateCol = (idx: number, nextCol: { children?: Brick[] }) => {
+    if (!onChange) return;
+    const arr = [...cols];
+    arr[idx] = nextCol;
+    onChange({ ...brick, content: { ...brick.content, columns: arr } });
+  };
   return (
     <View className="my-1 flex-row gap-2">
       {cols.map((col, i) => (
         <View key={i} className="flex-1 gap-2">
           {(col.children ?? []).map((c, j) => (
-            <BrickRenderer key={c.id ?? j} brick={c} />
+            <BrickRenderer
+              key={c.id ?? j}
+              brick={c}
+              canEdit={canEdit}
+              onChange={
+                canEdit && onChange
+                  ? (next) => {
+                      const ch = [...(col.children ?? [])];
+                      ch[j] = next;
+                      updateCol(i, { ...col, children: ch });
+                    }
+                  : undefined
+              }
+            />
           ))}
         </View>
       ))}
+      {canEdit && onChange ? (
+        <Pressable
+          onPress={() => onChange({ ...brick, content: { ...brick.content, columns: [...cols, { children: [] }] } })}
+          className="self-start rounded-md border border-dashed border-cyan/40 px-2 py-1"
+        >
+          <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-cyan">＋ col</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -484,24 +784,98 @@ function EmbedBrick({ brick }: BrickProps) {
   );
 }
 
+// ─── Bountiful table adapter ────────────────────────────────────────────────
+
+/**
+ * Bridges the cell-typed BountifulTable to the BrickRenderer onChange surface.
+ * Whole-content edits (column add, row add) go through onChange; cell patches
+ * also flow through onChange because the BrickList wrapping this dispatcher
+ * routes the eventual PUT through documents API — the realtime
+ * `brick.cell_patched` delta is emitted by the backend once the brick content
+ * round-trips. A future pass can swap this for the cell-patch endpoint to
+ * skip the brick-wide PUT.
+ */
+function BountifulTableAdapter({ brick, canEdit, onChange }: BrickProps) {
+  const columns: BountifulColumn[] = Array.isArray(brick.content?.columns)
+    ? (brick.content.columns as BountifulColumn[])
+    : [];
+  const rows: BountifulRow[] = Array.isArray(brick.content?.rows)
+    ? (brick.content.rows as BountifulRow[])
+    : [];
+
+  return (
+    <BountifulTable
+      brickId={brick.id ?? ''}
+      title={brick.content?.title}
+      columns={columns}
+      rows={rows}
+      readonly={!canEdit || !onChange}
+      onPatchCell={(rowId, colId, cell, rowMeta) => {
+        if (!onChange) return;
+        const nextRows = rows.map((r) =>
+          r.id === rowId
+            ? {
+                ...r,
+                cells: { ...(r.cells ?? {}), [colId]: cell as BountifulCell },
+                ...rowMeta,
+              }
+            : r,
+        );
+        onChange({ ...brick, content: { ...brick.content, rows: nextRows } });
+      }}
+      onUpdate={(next) => {
+        if (!onChange) return;
+        onChange({
+          ...brick,
+          content: {
+            ...brick.content,
+            title: next.title,
+            columns: next.columns,
+            rows: next.rows,
+          },
+        });
+      }}
+    />
+  );
+}
+
 // ─── Edit helpers ───────────────────────────────────────────────────────────
 
-import { TextInput } from 'react-native';
 function EditableText({
   value,
   onChangeText,
+  disabledStyles,
 }: {
   value: string;
   onChangeText: (t: string) => void;
+  disabledStyles?: string[];
 }) {
+  const [focused, setFocused] = useState(false);
   return (
-    <TextInput
-      value={value}
-      onChangeText={onChangeText}
-      multiline
-      style={{ fontFamily: fonts.regular, color: colors.foreground, fontSize: 15, padding: 0 }}
-      placeholderTextColor={colors.mutedForeground}
-    />
+    <View>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          // Delay blur so a toolbar tap can land before the toolbar disappears.
+          setTimeout(() => setFocused(false), 150);
+        }}
+        multiline
+        style={{ fontFamily: fonts.regular, color: colors.foreground, fontSize: 15, padding: 0 }}
+        placeholderTextColor={colors.mutedForeground}
+      />
+      {focused ? (
+        <View className="mt-2">
+          <InlineFormatToolbar
+            visible
+            value={value}
+            onChange={onChangeText}
+            disabledStyles={disabledStyles}
+          />
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -531,9 +905,10 @@ export function BrickRenderer(props: BrickProps) {
     case 'checklist':
       return <ChecklistBrick {...props} />;
     case 'table':
+      return <TableBrick {...props} />;
     case 'beautiful_table':
     case 'bountiful_table':
-      return <TableBrick {...props} />;
+      return <BountifulTableAdapter {...props} />;
     case 'accordion':
       return <AccordionBrick {...props} />;
     case 'tabs':
