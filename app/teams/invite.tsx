@@ -60,8 +60,14 @@ export default function InviteMemberScreen() {
   const onShare = async () => {
     if (!sent) return;
     const teamName = activeTeam?.name ?? 'Killio';
-    const linkBase = 'https://killio.dev/teams/accept';
-    const url = sent.token ? `${linkBase}?token=${encodeURIComponent(sent.token)}` : linkBase;
+    // Backend now returns `acceptUrl` (canonical /accept-invite?token=…) and
+    // `token` (raw). Prefer the URL the backend hands us — it knows
+    // FRONTEND_PUBLIC_URL — and only build one ourselves as a last resort.
+    const url =
+      sent.acceptUrl ??
+      (sent.token
+        ? `https://killio.dev/accept-invite?token=${encodeURIComponent(sent.token)}`
+        : 'https://killio.dev/accept-invite');
     try {
       await Share.share({ message: `${teamName}: ${url}`, url });
     } catch {

@@ -63,8 +63,10 @@ export interface TeamInvite {
   createdAt: string;
   expiresAt?: string | null;
   invitedBy?: string | null;
-  /** Raw token — backend currently does not echo this back. Kept optional. */
+  /** Raw token — backend echoes it ONLY on the POST response (never on list). */
   token?: string | null;
+  /** Canonical accept-invite URL (`<FRONTEND>/accept-invite?token=…`). */
+  acceptUrl?: string | null;
 }
 
 /** Lists pending/accepted invites. Backend route: `GET /teams/:teamId/invites`. */

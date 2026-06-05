@@ -28,16 +28,51 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Phase 1+ adds RECORD_AUDIO + FOREGROUND_SERVICE_MICROPHONE (Android 14
     // typed FGS) here; requested at runtime on first launch in the dev-build APK.
     permissions: [],
-    // Universal links for workspace invite acceptance:
-    //   https://killio.dev/teams/accept?token=... → /teams/accept
-    // The custom scheme `killiovault://teams/accept?token=...` also works
-    // because expo-router maps it automatically off the `scheme` above.
+    // Android App Links for killio.dev — when the user taps a killio.dev URL
+    // on their phone and Vault is installed, the OS opens it directly inside
+    // the app instead of the browser. Both `killio.dev` and `www.killio.dev`
+    // are claimed. The `https://killio.dev/.well-known/assetlinks.json` file
+    // on the frontend must include the app's SHA-256 cert fingerprint for
+    // `autoVerify: true` to actually verify — otherwise Android still routes
+    // the link to Vault but as an "unverified" handler.
+    //
+    // Paths claimed (must mirror Vault's expo-router screens):
+    //   /accept-invite          → /teams/accept
+    //   /teams/accept           → /teams/accept
+    //   /teams                  → /teams
+    //   /b, /b/<id>             → /b, /b/<id>
+    //   /d, /d/<id>             → /d, /d/<id>
+    //   /rooms, /rooms/<id>     → /rooms, /rooms/<id>
+    //   /workspace              → /workspace
+    //   /documents              → /documents
+    //   /integrations           → /integrations
+    //   /vault                  → /home (Vault landing)
     intentFilters: [
       {
         action: 'VIEW',
         autoVerify: true,
         data: [
-          { scheme: 'https', host: 'killio.dev', pathPrefix: '/teams/accept' },
+          // Invite acceptance (both shapes the backend can emit).
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/accept-invite' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/accept-invite' },
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/teams' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/teams' },
+          // Boards (kanban + gantt) detail.
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/b' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/b' },
+          // Documents detail.
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/d' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/d' },
+          // Rooms.
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/rooms' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/rooms' },
+          // Workspace + integrations top-levels.
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/workspace' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/workspace' },
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/documents' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/documents' },
+          { scheme: 'https', host: 'killio.dev', pathPrefix: '/integrations' },
+          { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/integrations' },
         ],
         category: ['BROWSABLE', 'DEFAULT'],
       },
