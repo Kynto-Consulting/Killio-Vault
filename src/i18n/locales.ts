@@ -114,6 +114,7 @@ export const MESSAGES: Record<Locale, Messages> = {
     nav: {
       menu: 'Menú',
       home: 'Inicio',
+      workspace: 'Workspace',
       documents: 'Documentos',
       diary: 'Diario',
       assistant: 'Asistente',
@@ -417,6 +418,7 @@ export const MESSAGES: Record<Locale, Messages> = {
     nav: {
       menu: 'Menu',
       home: 'Home',
+      workspace: 'Workspace',
       documents: 'Documents',
       diary: 'Diary',
       assistant: 'Assistant',

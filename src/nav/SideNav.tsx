@@ -21,6 +21,7 @@ import {
 import { useState } from 'react';
 
 import { useNav } from './NavContext';
+import { useAppMode, type AppMode } from './AppModeContext';
 import { useAuth } from '../core/auth/AuthContext';
 import { useTranslations } from '../i18n';
 import { colors } from '../theme/theme';
@@ -28,7 +29,8 @@ import { fonts } from '../theme/fonts';
 
 type Route =
   | '/home' | '/diary' | '/assistant' | '/history' | '/agents'
-  | '/integrations' | '/schedule' | '/usage' | '/settings' | '/documents';
+  | '/integrations' | '/schedule' | '/usage' | '/settings'
+  | '/documents' | '/workspace';
 
 interface Item {
   key: string;
@@ -36,10 +38,9 @@ interface Item {
   route: Route;
 }
 
-const ITEMS: Item[] = [
+const VAULT_ITEMS: Item[] = [
   { key: 'assistant', icon: MessageSquare, route: '/assistant' },
   { key: 'history', icon: History, route: '/history' },
-  { key: 'documents', icon: FileText, route: '/documents' },
   { key: 'diary', icon: Mic, route: '/diary' },
   { key: 'agents', icon: Bot, route: '/agents' },
   { key: 'integrations', icon: Blocks, route: '/integrations' },
@@ -47,6 +48,15 @@ const ITEMS: Item[] = [
   { key: 'usage', icon: BarChart3, route: '/usage' },
   { key: 'settings', icon: SlidersHorizontal, route: '/settings' },
 ];
+
+const WORKSPACE_ITEMS: Item[] = [
+  { key: 'workspace', icon: BarChart3, route: '/workspace' },
+  { key: 'documents', icon: FileText, route: '/documents' },
+];
+
+function itemsForMode(mode: AppMode): Item[] {
+  return mode === 'workspace' ? WORKSPACE_ITEMS : VAULT_ITEMS;
+}
 
 /**
  * Left slide-in drawer mirroring Killio-Frontend's mobile-nav-sheet:
@@ -59,7 +69,9 @@ export function SideNav() {
   const pathname = usePathname();
   const t = useTranslations('nav');
   const { activeTeam, workspaces, setActiveTeam, signOut } = useAuth();
+  const { mode, setMode } = useAppMode();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const items = itemsForMode(mode);
 
   const workspaceName = activeTeam?.name ?? 'Workspace';
   const initial = workspaceName.charAt(0).toUpperCase();
@@ -152,9 +164,39 @@ export function SideNav() {
             )}
           </View>
 
+          {/* Mode switch — Vault vs Workspace */}
+          <View className="px-3 pt-3">
+            <View className="flex-row rounded-xl border border-border bg-background p-1">
+              {(['vault', 'workspace'] as const).map((m) => {
+                const active = mode === m;
+                return (
+                  <Pressable
+                    key={m}
+                    onPress={async () => {
+                      await setMode(m);
+                      // Jump to the canonical landing screen for the new mode
+                      closeNav();
+                      requestAnimationFrame(() => {
+                        router.push(m === 'vault' ? '/assistant' : '/workspace');
+                      });
+                    }}
+                    className={`flex-1 items-center justify-center rounded-lg py-2 ${active ? 'bg-secondary' : ''}`}
+                  >
+                    <Text
+                      style={{ fontFamily: active ? fonts.semibold : fonts.medium }}
+                      className={`text-xs ${active ? 'text-foreground' : 'text-muted-foreground'}`}
+                    >
+                      {m === 'vault' ? 'Vault' : 'Workspace'}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
           {/* Nav items */}
           <ScrollView className="flex-1" contentContainerClassName="px-3 py-4 gap-1">
-            {ITEMS.map((it) => {
+            {items.map((it) => {
               const active = pathname === it.route;
               const Icon = it.icon;
               return (

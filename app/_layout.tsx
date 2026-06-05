@@ -12,6 +12,7 @@ import { AuthProvider } from '@/core/auth/AuthContext';
 import { CaptureProvider } from '@/capture/CaptureContext';
 import { I18nProvider } from '@/i18n';
 import { NavProvider, useNav } from '@/nav/NavContext';
+import { AppModeProvider } from '@/nav/AppModeContext';
 import { SideNav } from '@/nav/SideNav';
 import { WakeListener } from '@/wakeword/WakeListener';
 import { useAppFonts, fonts } from '@/theme/fonts';
@@ -49,6 +50,7 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <I18nProvider>
         <AuthProvider>
+          <AppModeProvider>
           <CaptureProvider>
             <NavProvider>
               <StatusBar style="light" />
@@ -75,11 +77,15 @@ export default function RootLayout() {
                 <Stack.Screen name="integrations" options={{ title: 'Integraciones', ...withMenu }} />
                 <Stack.Screen name="usage" options={{ title: 'Uso', ...withMenu }} />
                 <Stack.Screen name="whatsapp-pair" options={{ title: 'WhatsApp' }} />
+                <Stack.Screen name="documents" options={{ title: 'Documentos', ...withMenu }} />
+                <Stack.Screen name="document/[id]" options={{ headerShown: false }} />
+                <Stack.Screen name="workspace" options={{ title: 'Workspace', ...withMenu }} />
               </Stack>
               <SideNav />
               <WakeListener />
             </NavProvider>
           </CaptureProvider>
+          </AppModeProvider>
         </AuthProvider>
       </I18nProvider>
     </SafeAreaProvider>

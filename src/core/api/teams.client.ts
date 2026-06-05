@@ -1,6 +1,29 @@
 import { api } from './http';
 import { Team } from './types';
 
+export interface BoardCatalogEntry {
+  id: string;
+  name: string;
+  slug: string;
+  boardType?: 'kanban' | 'mesh';
+  description?: string | null;
+}
+
+export interface TeamCatalog {
+  boards: BoardCatalogEntry[];
+  documents: { id: string; title: string }[];
+  cards: { id: string; title: string; boardId: string; boardName: string }[];
+}
+
+export async function getTeamCatalog(teamId: string): Promise<TeamCatalog> {
+  const { data } = await api.get<TeamCatalog>(`/teams/${teamId}/catalog`);
+  return {
+    boards: data?.boards ?? [],
+    documents: data?.documents ?? [],
+    cards: data?.cards ?? [],
+  };
+}
+
 /** Lists the workspaces the current user belongs to. */
 export async function listTeams(): Promise<Team[]> {
   const { data } = await api.get<Team[]>('/teams');
