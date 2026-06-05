@@ -3,6 +3,7 @@
 import { useCapture } from '../capture/CaptureContext';
 import { useAuth } from '../core/auth/AuthContext';
 import { streamAgentChat } from '../core/api/agent.client';
+import { useTranslations } from '../i18n';
 import { speak } from '../tts/Tts';
 import { listAgents } from '../agents/local-agent.model';
 import { LocalAgentRuntime } from '../agents/LocalAgentRuntime';
@@ -15,6 +16,7 @@ import type { WakeMatch } from './WakeWord';
  * speaks the reply with that agent's voice â€” hands-free, screen locked.
  */
 export function WakeListener() {
+  const t = useTranslations('wakeListener');
   const { setOnWake, setMuted, flushNow } = useCapture();
   const { activeTeam } = useAuth();
   const busy = useRef(false);
@@ -52,7 +54,7 @@ export function WakeListener() {
 
         const ctx = recentTranscriptText(60_000);
         const ctxPrefix = ctx
-          ? `Contexto reciente (Ãºltimo minuto): "${ctx}"\n\n`
+          ? `${t('recentContext', { text: ctx })}\n\n`
           : '';
         const base = agent
           ? await new LocalAgentRuntime(agent).composeMessage(command)
@@ -101,7 +103,7 @@ export function WakeListener() {
       setOnWake(null);
       releaseBusy();
     };
-  }, [setOnWake, setMuted, flushNow, activeTeam?.id]);
+  }, [setOnWake, setMuted, flushNow, activeTeam?.id, t]);
 
   return null;
 }

@@ -220,6 +220,33 @@ export const MESSAGES: Record<Locale, Messages> = {
       workspaceFallback: 'Workspace',
       workspaceLabel: 'workspace',
     },
+    whatsappPair: {
+      connectedTitle: 'WhatsApp conectado',
+      done: 'Listo',
+      headerTitle: 'WhatsApp (personal)',
+      intro:
+        'Ingresa tu número de WhatsApp en formato internacional (ej. +51999123456). Generaremos un código de 8 dígitos para vincular este dispositivo.',
+      phonePlaceholder: '+51999123456',
+      generate: 'Generar código',
+      generateAnother: 'Generar otro código',
+      pairTitle: 'Código de vinculación',
+      step1: '1. Abre WhatsApp en tu teléfono.',
+      step2: '2. Ajustes → Dispositivos vinculados → Vincular un dispositivo.',
+      step3: '3. Toca "Vincular con número de teléfono".',
+      step4: '4. Escribe el código de 8 dígitos.',
+    },
+    wakeListener: {
+      recentContext: 'Contexto reciente (último minuto): "{{text}}"',
+    },
+    agentsScreen: {
+      langEs: 'Español (ES)',
+      langEn: 'English (US)',
+      untitled: 'Sin título',
+      wakeHey: 'Hey',
+    },
+    homeScreen: {
+      vaultTitle: 'Vault',
+    },
     stack: {
       home: 'Vault',
       consent: 'Privacidad',
@@ -436,6 +463,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       remove: 'Quitar',
       invalidTime: 'Hora inválida (usa HH:MM).',
       dayShort: 'D,L,M,X,J,V,S',
+      timePlaceholder: 'HH:MM',
     },
     consent: {
       title: 'Grabación de audio',
@@ -709,6 +737,33 @@ export const MESSAGES: Record<Locale, Messages> = {
       workspaceFallback: 'Workspace',
       workspaceLabel: 'workspace',
     },
+    whatsappPair: {
+      connectedTitle: 'WhatsApp connected',
+      done: 'Done',
+      headerTitle: 'WhatsApp (personal)',
+      intro:
+        'Enter your WhatsApp number in international format (e.g. +51999123456). We will generate an 8-digit code to link this device.',
+      phonePlaceholder: '+51999123456',
+      generate: 'Generate code',
+      generateAnother: 'Generate another code',
+      pairTitle: 'Pairing code',
+      step1: '1. Open WhatsApp on your phone.',
+      step2: '2. Settings → Linked devices → Link a device.',
+      step3: '3. Tap "Link with phone number".',
+      step4: '4. Type the 8-digit code.',
+    },
+    wakeListener: {
+      recentContext: 'Recent context (last minute): "{{text}}"',
+    },
+    agentsScreen: {
+      langEs: 'Spanish (ES)',
+      langEn: 'English (US)',
+      untitled: 'Untitled',
+      wakeHey: 'Hey',
+    },
+    homeScreen: {
+      vaultTitle: 'Vault',
+    },
     stack: {
       home: 'Vault',
       consent: 'Privacy',
@@ -925,6 +980,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       remove: 'Remove',
       invalidTime: 'Invalid time (use HH:MM).',
       dayShort: 'S,M,T,W,T,F,S',
+      timePlaceholder: 'HH:MM',
     },
     consent: {
       title: 'Audio recording',

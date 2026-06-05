@@ -8,6 +8,9 @@ import { useCapture } from '@/capture/CaptureContext';
 import { useAppMode } from '@/nav/AppModeContext';
 import { useTranslations } from '@/i18n';
 
+// Legacy "/home" route — kept for any deep link still pointing here. The
+// default export immediately redirects to the mode-specific landing screen.
+
 export default function HomeScreen() {
   // Legacy "/home" route — kept for any deep link still pointing here.
   // Bounce immediately to the canonical landing screen for the active mode
@@ -22,6 +25,7 @@ function HomeScreenLegacy() {
   const router = useRouter();
   const t = useTranslations('home');
   const tc = useTranslations('common');
+  const tHome = useTranslations('homeScreen');
   const { activeTeam, signOut } = useAuth();
   const { status, pending, nativeAvailable } = useCapture();
 
@@ -38,7 +42,7 @@ function HomeScreenLegacy() {
         source={require('../assets/killio_white.webp')}
         style={{ width: 120, height: 36, resizeMode: 'contain', marginBottom: 8 }}
       />
-      <H1>Vault</H1>
+      <H1>{tHome('vaultTitle')}</H1>
       <Body muted>{activeTeam?.name ?? t('workspace')}</Body>
 
       <Card className="mt-2">

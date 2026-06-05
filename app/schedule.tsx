@@ -83,12 +83,14 @@ export default function ScheduleScreen() {
                   value={minToHhMm(w.startMin)}
                   onCommit={(min) => patchWindow(i, { startMin: min })}
                   invalidLabel={t('invalidTime')}
+                  placeholder={t('timePlaceholder')}
                 />
                 <TimeField
                   label={t('to')}
                   value={minToHhMm(w.endMin)}
                   onCommit={(min) => patchWindow(i, { endMin: min })}
                   invalidLabel={t('invalidTime')}
+                  placeholder={t('timePlaceholder')}
                 />
               </View>
 
@@ -126,11 +128,13 @@ function TimeField({
   value,
   onCommit,
   invalidLabel,
+  placeholder,
 }: {
   label: string;
   value: string;
   onCommit: (min: number) => void;
   invalidLabel: string;
+  placeholder: string;
 }) {
   const [text, setText] = useState(value);
   const [err, setErr] = useState(false);
@@ -151,7 +155,7 @@ function TimeField({
         onChangeText={setText}
         onBlur={commit}
         onSubmitEditing={commit}
-        placeholder="HH:MM"
+        placeholder={placeholder}
         placeholderTextColor={colors.mutedForeground}
         keyboardType="numbers-and-punctuation"
       />

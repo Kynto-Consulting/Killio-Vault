@@ -27,10 +27,12 @@ import { useTranslations } from '@/i18n';
 import { colors, radius, spacing, typography } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
 
+/** Voice presets — labels are looked up via i18n at render time so the picker
+ *  renders in the user's current locale. */
 const VOICE_PRESETS = [
-  { value: 'es-ES', label: 'EspaÃ±ol (ES)' },
-  { value: 'en-US', label: 'English (US)' },
-];
+  { value: 'es-ES', labelKey: 'langEs' },
+  { value: 'en-US', labelKey: 'langEn' },
+] as const;
 
 interface Draft {
   id?: string;
@@ -55,6 +57,7 @@ export default function AgentsScreen() {
   const router = useRouter();
   const t = useTranslations('agents');
   const tc = useTranslations('common');
+  const tAgents = useTranslations('agentsScreen');
   const { entitlements } = useEntitlements();
   const { activeTeam } = useAuth();
   const [agents, setAgents] = useState<LocalAgent[]>([]);
@@ -169,7 +172,7 @@ export default function AgentsScreen() {
                   onPress={() => setDraft({ ...draft, voice: v.value })}
                   style={[styles.voiceChip, on && styles.voiceChipOn]}
                 >
-                  <Text style={[styles.voiceChipText, on && styles.voiceChipTextOn]}>{v.label}</Text>
+                  <Text style={[styles.voiceChipText, on && styles.voiceChipTextOn]}>{tAgents(v.labelKey)}</Text>
                 </Pressable>
               );
             })}
@@ -198,7 +201,7 @@ export default function AgentsScreen() {
               return (
                 <Pressable key={d.id} style={styles.docRow} onPress={() => toggleDoc(d.id)}>
                   <Text style={[styles.check, on && styles.checkOn]}>{on ? 'â˜‘' : 'â˜'}</Text>
-                  <Text style={styles.docTitle} numberOfLines={1}>{d.title || 'Sin tÃ­tulo'}</Text>
+                  <Text style={styles.docTitle} numberOfLines={1}>{d.title || tAgents('untitled')}</Text>
                 </Pressable>
               );
             })
@@ -231,7 +234,7 @@ export default function AgentsScreen() {
               {item.personality ? <Text style={styles.agentMeta} numberOfLines={1}>{item.personality}</Text> : null}
               <Text style={styles.agentMeta}>
                 {item.assignedDocIds.length} doc Â· voz {item.voice ?? 'es-ES'}
-                {item.wakePhrase ? ` Â· "Hey ${item.wakePhrase}"` : ''}
+                {item.wakePhrase ? ` · "${tAgents('wakeHey')} ${item.wakePhrase}"` : ''}
               </Text>
             </Pressable>
             <View style={styles.agentActions}>
