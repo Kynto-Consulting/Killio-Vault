@@ -106,6 +106,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-notifications',
     'expo-font',
     './plugins/withVaultCapture',
+    './plugins/withVaultWidgets',
   ],
   extra: {
     // Hosted backend by default. Override with EXPO_PUBLIC_API_BASE_URL for local

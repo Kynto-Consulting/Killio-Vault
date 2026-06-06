@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Long-press launcher icon → quick shortcuts.
+  Each shortcut emits the same killiovault:// deep link the home-screen
+  widgets emit, so the JS-side handler in `app/_layout.tsx` doesn't have
+  to learn two surfaces. `targetClass` points at MainActivity which Expo
+  manages — the real value is replaced by the config plugin at prebuild
+  time to use the resolved application id.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="voice"
+        android:enabled="true"
+        android:icon="@drawable/ic_mic"
+        android:shortcutShortLabel="@string/shortcut_voice_short"
+        android:shortcutLongLabel="@string/shortcut_voice_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="killiovault://assistant?action=voice"
+            android:targetPackage="dev.killio.vault"
+            android:targetClass="dev.killio.vault.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="screenshot"
+        android:enabled="true"
+        android:icon="@drawable/ic_screenshot"
+        android:shortcutShortLabel="@string/shortcut_screenshot_short"
+        android:shortcutLongLabel="@string/shortcut_screenshot_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="killiovault://assistant?action=screenshot_voice"
+            android:targetPackage="dev.killio.vault"
+            android:targetClass="dev.killio.vault.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="chat"
+        android:enabled="true"
+        android:icon="@drawable/ic_chat"
+        android:shortcutShortLabel="@string/shortcut_chat_short"
+        android:shortcutLongLabel="@string/shortcut_chat_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="killiovault://assistant?action=chat"
+            android:targetPackage="dev.killio.vault"
+            android:targetClass="dev.killio.vault.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="diary"
+        android:enabled="true"
+        android:icon="@drawable/ic_chat"
+        android:shortcutShortLabel="@string/shortcut_diary_short"
+        android:shortcutLongLabel="@string/shortcut_diary_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="killiovault://diary"
+            android:targetPackage="dev.killio.vault"
+            android:targetClass="dev.killio.vault.MainActivity" />
+    </shortcut>
+</shortcuts>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_voice_label">Hey Killio</string>
+    <string name="widget_voice_desc">Open Killio Vault in voice mode</string>
+    <string name="widget_screenshot_label">Screenshot + ask</string>
+    <string name="widget_screenshot_desc">Take a screenshot and ask the assistant about it</string>
+    <string name="widget_chat_label">Ask Killio</string>
+    <string name="widget_chat_desc">Open the Killio assistant in chat mode</string>
+    <string name="shortcut_voice_short">Hey Killio</string>
+    <string name="shortcut_voice_long">Open assistant in voice mode</string>
+    <string name="shortcut_screenshot_short">Screenshot + ask</string>
+    <string name="shortcut_screenshot_long">Capture screen and ask</string>
+    <string name="shortcut_chat_short">Ask Killio</string>
+    <string name="shortcut_chat_long">Open assistant (text)</string>
+    <string name="shortcut_diary_short">Diary</string>
+    <string name="shortcut_diary_long">Open today's diary</string>
+</resources>

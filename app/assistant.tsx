@@ -50,9 +50,16 @@ export default function AssistantScreen() {
   const navigation = useNavigation();
   const { activeTeam } = useAuth();
   const { setMuted, flushNow } = useCapture();
-  const { agentId, conversationId } = useLocalSearchParams<{
+  const { agentId, conversationId, action } = useLocalSearchParams<{
     agentId?: string;
     conversationId?: string;
+    /**
+     * Set by the home-screen widgets + launcher shortcuts:
+     *   - `voice`              → enter voice mode immediately (wake equivalent).
+     *   - `screenshot_voice`   → capture screen, attach, then voice mode.
+     *   - `chat`               → text-only (no auto-voice).
+     */
+    action?: string;
   }>();
   const [agent, setAgent] = useState<LocalAgent | null>(null);
   const runtime = useRef<LocalAgentRuntime | null>(null);
@@ -346,6 +353,56 @@ export default function AssistantScreen() {
     const toSend = ctx + base + (assetTags ? `\n\n${assetTags}` : '');
     await runTurn(toSend, { remember: !!runtime.current, userTurn: true, speakReply });
   };
+
+  // ── Widget / launcher-shortcut entry actions ────────────────────────────
+  // Triggered when the user opens the assistant via:
+  //   - `killiovault://assistant?action=voice`             (Hey Killio widget / shortcut)
+  //   - `killiovault://assistant?action=screenshot_voice`  (Screenshot+ask widget)
+  //   - `killiovault://assistant?action=chat`              (Ask Killio widget — no-op)
+  // The effect is guarded by a one-shot ref so re-renders don't replay it.
+  const actionFired = useRef(false);
+  useEffect(() => {
+    if (actionFired.current) return;
+    if (!action) return;
+    actionFired.current = true;
+
+    (async () => {
+      if (action === 'voice') {
+        // Defer one tick so the screen mounts before the mic prompt appears.
+        setTimeout(() => void micPress(), 250);
+        return;
+      }
+      if (action === 'screenshot_voice') {
+        try {
+          // Lazy require so Expo Go (where ScreenCapture is a no-op anyway)
+          // doesn't pay the bundle cost on unrelated screens.
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const screen = require('@/screen/ScreenCapture') as typeof import('@/screen/ScreenCapture');
+          if (!screen.isAvailable()) {
+            setTimeout(() => void micPress(), 250);
+            return;
+          }
+          const ok = await screen.requestPermission();
+          if (!ok) return;
+          const shot = await screen.capture();
+          if (shot) {
+            // Use the local file URI directly as the attachment — the chat
+            // upload pipeline accepts on-device URIs and re-uploads them
+            // through the asset multimodal path.
+            setAttachments((prev) => [
+              ...prev,
+              { url: shot.uri, name: `screenshot-${shot.ts}.png`, kind: 'img' },
+            ]);
+          }
+          setTimeout(() => void micPress(), 250);
+        } catch {
+          /* ignore — user can re-trigger via UI */
+        }
+      }
+      // action === 'chat' → no auto-action.
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [action]);
 
   // Push-to-talk: one-shot native recognition â†’ fills the input.
   const micPress = async () => {
