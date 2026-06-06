@@ -60,6 +60,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
           // Boards (kanban + gantt) detail.
           { scheme: 'https', host: 'killio.dev', pathPrefix: '/b' },
           { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/b' },
+          // NOTE: /m (Meshboards) is intentionally NOT claimed — the
+          // matching expo-router screen doesn't exist yet, so claiming it
+          // here would route killio.dev/m/<id> into Vault and 404. Re-add
+          // once `app/m/[id].tsx` lands.
           // Documents detail.
           { scheme: 'https', host: 'killio.dev', pathPrefix: '/d' },
           { scheme: 'https', host: 'www.killio.dev', pathPrefix: '/d' },

@@ -47,6 +47,7 @@ export default function AssistantScreen() {
   const t = useTranslations('assistant');
   const tc = useTranslations('common');
   const tFallback = useTranslations('fallback');
+  const tWake = useTranslations('wakeListener');
   const navigation = useNavigation();
   const { activeTeam } = useAuth();
   const { setMuted, flushNow } = useCapture();
@@ -343,9 +344,16 @@ export default function AssistantScreen() {
     } catch {
       // offline â€” agent still answers from what's already on the server
     }
-    const base = runtime.current ? await runtime.current.composeMessage(text || '(adjunto)') : text;
+    // Use the user's locale for both the empty-message fallback (when the
+    // turn is purely an attachment) and the wake-context prefix that goes
+    // INTO the model prompt — otherwise an English account would see
+    // Spanish system text inside its own message history.
+    const attachmentFallback = `(${tFallback('attachment').toLowerCase()})`;
+    const base = runtime.current
+      ? await runtime.current.composeMessage(text || attachmentFallback)
+      : text;
     const ctx = recentCtx.current
-      ? `Contexto reciente (Ãºltimo minuto de lo que el usuario decÃ­a): "${recentCtx.current}"\n\n`
+      ? `${tWake('recentContext', { text: recentCtx.current })}\n\n`
       : '';
     recentCtx.current = '';
     const speakReply = voiceTurn.current;

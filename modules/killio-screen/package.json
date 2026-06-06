@@ -1,0 +1,11 @@
+{
+  "name": "killio-screen",
+  "version": "0.1.0",
+  "description": "Killio Vault local Expo module — Android MediaProjection screen capture (typed FGS).",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "expo": {
+    "platforms": ["android"]
+  }
+}

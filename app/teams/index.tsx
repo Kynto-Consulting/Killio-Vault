@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -161,17 +161,36 @@ export default function TeamsScreen() {
   }, [loadAll]);
 
   // Realtime: subscribe to team:<id> so changes from the web propagate live.
-  // The backend may not emit these — if so, this is a no-op and pull-to-refresh
-  // remains the primary refresh path.
+  // Backend now emits these (task #13). Every event fans loadAll() which kicks
+  // 4 parallel HTTP calls (members + invites + activity + metrics) — bursts of
+  // events (e.g. accept-invite emits both invite.accepted AND member.added)
+  // would multiply that. Coalesce into a single trailing reload via a 300ms
+  // debounced ref-based scheduler.
+  const debouncedReloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReload = useCallback(() => {
+    if (debouncedReloadTimer.current) clearTimeout(debouncedReloadTimer.current);
+    debouncedReloadTimer.current = setTimeout(() => {
+      debouncedReloadTimer.current = null;
+      void loadAll();
+    }, 300);
+  }, [loadAll]);
+  useEffect(
+    () => () => {
+      if (debouncedReloadTimer.current) clearTimeout(debouncedReloadTimer.current);
+    },
+    [],
+  );
   useRealtimeChannel(teamId ? `team:${teamId}` : null, {
     enabled: !!teamId,
     events: {
-      'member.added': () => void loadAll(),
-      'member.removed': () => void loadAll(),
-      'member.role_changed': () => void loadAll(),
-      'invite.sent': () => void loadAll(),
-      'invite.revoked': () => void loadAll(),
-      'invite.accepted': () => void loadAll(),
+      'member.added': scheduleReload,
+      'member.removed': scheduleReload,
+      'member.left': scheduleReload,
+      'member.role_changed': scheduleReload,
+      'member.alias_updated': scheduleReload,
+      'invite.sent': scheduleReload,
+      'invite.revoked': scheduleReload,
+      'invite.accepted': scheduleReload,
     },
   });
 

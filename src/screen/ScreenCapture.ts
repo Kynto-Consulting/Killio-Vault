@@ -1,4 +1,4 @@
-import { NativeModulesProxy } from 'expo-modules-core';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 
 import { uploadFile } from '../core/api/uploads.client';
 import { getPersonalTeamId } from '../core/auth/token-store';
@@ -14,7 +14,13 @@ import { getPersonalTeamId } from '../core/auth/token-store';
  *
  * Absent in Expo Go → isAvailable() is false and capture is a no-op.
  */
-const native = (NativeModulesProxy as any)?.KillioScreen ?? null;
+interface KillioScreenSpec {
+  requestPermission(): Promise<boolean>;
+  capture(): Promise<Screenshot>;
+  list(): Promise<Screenshot[]>;
+}
+
+const native = requireOptionalNativeModule<KillioScreenSpec>('KillioScreen');
 
 export interface Screenshot {
   id: string;
