@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import {
   Bold,
   Code,
@@ -48,6 +48,18 @@ export interface InlineFormatToolbarProps {
   onChange(next: string): void;
   /** Hide individual buttons. Same keys the web toolbar accepts. */
   disabledStyles?: string[];
+  /**
+   * Current TextInput selection range. When `end > start` the toolbar operates
+   * on the selected substring (web behaviour: format the selection). When the
+   * selection is empty/absent the toolbar falls back to wrapping the whole
+   * value — matches what the web does with no selection.
+   */
+  selection?: { start: number; end: number } | null;
+  /**
+   * Called after a wrap so the caller can restore/move the TextInput selection
+   * to keep the selected text highlighted (the markers shift the indices).
+   */
+  onSelectionAfterWrap?(range: { start: number; end: number }): void;
   /** Optional AI / comment hooks. When omitted, the buttons are hidden. */
   onAiAction?(action: 'improve' | 'fix' | 'explain' | 'suggest_edit'): void;
   onComment?(): void;
@@ -93,27 +105,64 @@ export function InlineFormatToolbar({
   value,
   onChange,
   disabledStyles = [],
+  selection,
+  onSelectionAfterWrap,
   onAiAction,
   onComment,
   onClose,
 }: InlineFormatToolbarProps) {
   const t = useTranslations('inlineFormat');
-  const [panel, setPanel] = useState<'color' | 'highlight' | 'size' | 'block' | 'lucide' | null>(
-    null,
-  );
+  const [panel, setPanel] = useState<
+    'color' | 'highlight' | 'size' | 'block' | 'lucide' | 'link' | null
+  >(null);
+  const [linkUrl, setLinkUrl] = useState('https://');
 
   if (!visible) return null;
   const dis = (k: string) => disabledStyles.includes(k);
 
+  // True when the user has an active, non-empty selection in the editor.
+  const hasSel = !!selection && selection.end > selection.start;
+
+  /**
+   * Splice `open`/`close` markers around the current selection (or the whole
+   * value when nothing is selected) and report back the new selection range so
+   * the caller can keep the wrapped text highlighted.
+   */
   const wrap = (open: string, close = open) => {
+    if (hasSel && selection) {
+      const { start, end } = selection;
+      const selected = value.slice(start, end) || 'text';
+      const next = value.slice(0, start) + open + selected + close + value.slice(end);
+      onChange(next);
+      onSelectionAfterWrap?.({
+        start: start + open.length,
+        end: start + open.length + selected.length,
+      });
+      return;
+    }
     onChange(`${open}${value || 'text'}${close}`);
   };
-  const tag = (open: string, close: string) => {
-    onChange(`${open}${value || 'text'}${close}`);
-  };
+  const tag = (open: string, close: string) => wrap(open, close);
+  // Block-level markers (heading/quote prefixes) always toggle on the whole
+  // value — they're line-level on the web too.
   const togglePrefix = (prefix: string) => {
     if (value.startsWith(prefix)) onChange(value.slice(prefix.length));
     else onChange(`${prefix}${value}`);
+  };
+  // Standard-markdown link over the selection: `[label](url)`. Opens a small
+  // URL panel first (RN has no cross-platform Alert.prompt on Android).
+  const applyLink = (url: string) => {
+    const trimmed = url.trim() || 'https://';
+    if (hasSel && selection) {
+      const { start, end } = selection;
+      const label = value.slice(start, end) || 'link';
+      const inserted = `[${label}](${trimmed})`;
+      const next = value.slice(0, start) + inserted + value.slice(end);
+      onChange(next);
+      onSelectionAfterWrap?.({ start: start + 1, end: start + 1 + label.length });
+    } else {
+      onChange(`${value}[link](${trimmed})`);
+    }
   };
 
   return (
@@ -136,10 +185,11 @@ export function InlineFormatToolbar({
           <ToolBtn icon={Code} label="</>" onPress={() => wrap('`')} />
         ) : null}
         {!dis('link') ? (
-          <ToolBtn
+          <PanelBtn
             icon={LinkIcon}
             label="link"
-            onPress={() => tag('[link:https://]', '[/link]')}
+            active={panel === 'link'}
+            onPress={() => setPanel((p) => (p === 'link' ? null : 'link'))}
           />
         ) : null}
         {!dis('color') ? (
@@ -297,6 +347,35 @@ export function InlineFormatToolbar({
             </Pressable>
           ))}
         </ScrollView>
+      ) : null}
+
+      {/* Link URL panel — wraps the selection as [label](url). */}
+      {panel === 'link' ? (
+        <View className="flex-row items-center gap-1.5">
+          <TextInput
+            value={linkUrl}
+            onChangeText={setLinkUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            placeholder="https://"
+            placeholderTextColor={colors.mutedForeground}
+            className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-foreground"
+            style={{ fontFamily: fonts.regular, fontSize: 13, color: colors.foreground }}
+          />
+          <Pressable
+            onPress={() => {
+              applyLink(linkUrl);
+              setLinkUrl('https://');
+              setPanel(null);
+            }}
+            className="h-8 items-center justify-center rounded-md border border-cyan bg-cyan/10 px-3"
+          >
+            <Text style={{ fontFamily: fonts.semibold, color: colors.cyan }} className="text-[11px]">
+              Add
+            </Text>
+          </Pressable>
+        </View>
       ) : null}
 
       {/* Lucide picker */}

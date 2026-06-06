@@ -1,5 +1,11 @@
 import React, { useState } from 'react';
-import { Pressable, TextInput, View } from 'react-native';
+import {
+  Pressable,
+  TextInput,
+  View,
+  type NativeSyntheticEvent,
+  type TextInputSelectionChangeEventData,
+} from 'react-native';
 
 import { RichText } from '../RichText';
 import { InlineFormatToolbar } from '../InlineFormatToolbar';
@@ -110,6 +116,32 @@ export const UnifiedTextBrick: React.FC<TextBrickProps> = ({
   // web brick, which also fires onUpdate on blur — see callsites that rely on
   // this in unified-bountiful-table.tsx).
   const [draft, setDraft] = useState(text);
+  // Live TextInput selection. The web brick pops a floating format toolbar for
+  // the active selection; RN's TextInput exposes the range via
+  // onSelectionChange, so we mirror that and feed it to InlineFormatToolbar.
+  const [selection, setSelection] = useState<{ start: number; end: number }>({
+    start: 0,
+    end: 0,
+  });
+  // When a toolbar action splices markers in, we briefly drive the TextInput's
+  // `selection` prop to re-highlight the wrapped substring, then release
+  // control back to the native cursor (controlledSel = null).
+  const [controlledSel, setControlledSel] = useState<
+    { start: number; end: number } | null
+  >(null);
+
+  const hasSelection = selection.end > selection.start;
+
+  const onSelectionChange = (
+    e: NativeSyntheticEvent<TextInputSelectionChangeEventData>,
+  ) => {
+    const { start, end } = e.nativeEvent.selection;
+    setSelection({ start, end });
+    // The user moved the caret manually → stop forcing a controlled selection.
+    if (controlledSel && (controlledSel.start !== start || controlledSel.end !== end)) {
+      setControlledSel(null);
+    }
+  };
 
   // Keep local draft in sync when the brick text changes from outside (e.g.
   // realtime patches from the server) while we're not actively editing.
@@ -138,9 +170,30 @@ export const UnifiedTextBrick: React.FC<TextBrickProps> = ({
     >
       {editing ? (
         <View>
+          {/* Contextual toolbar — anchored ABOVE the input while a non-empty
+              selection exists, mirroring the web's floating selection toolbar. */}
+          {hasSelection ? (
+            <View style={{ marginBottom: 8 }}>
+              <InlineFormatToolbar
+                visible
+                value={draft}
+                onChange={setDraft}
+                selection={selection}
+                onSelectionAfterWrap={setControlledSel}
+                disabledStyles={disabledStyles}
+                onAiAction={
+                  onAiAction ? (action) => onAiAction(action, draft) : undefined
+                }
+                onComment={onComment}
+                onClose={() => setEditing(false)}
+              />
+            </View>
+          ) : null}
           <TextInput
             value={draft}
             onChangeText={setDraft}
+            onSelectionChange={onSelectionChange}
+            selection={controlledSel ?? undefined}
             onBlur={() => {
               setEditing(false);
               if (draft !== text) onUpdate(draft);
@@ -158,21 +211,26 @@ export const UnifiedTextBrick: React.FC<TextBrickProps> = ({
               minHeight: 24,
             }}
           />
-          <View style={{ marginTop: 8 }}>
-            <InlineFormatToolbar
-              visible
-              value={draft}
-              onChange={setDraft}
-              disabledStyles={disabledStyles}
-              onAiAction={
-                onAiAction
-                  ? (action) => onAiAction(action, draft)
-                  : undefined
-              }
-              onComment={onComment}
-              onClose={() => setEditing(false)}
-            />
-          </View>
+          {/* Persistent toolbar below — shown when nothing is selected so the
+              user always has a formatting path (block prefixes, lucide, etc.).
+              When a selection exists the contextual toolbar above takes over. */}
+          {!hasSelection ? (
+            <View style={{ marginTop: 8 }}>
+              <InlineFormatToolbar
+                visible
+                value={draft}
+                onChange={setDraft}
+                selection={selection}
+                onSelectionAfterWrap={setControlledSel}
+                disabledStyles={disabledStyles}
+                onAiAction={
+                  onAiAction ? (action) => onAiAction(action, draft) : undefined
+                }
+                onComment={onComment}
+                onClose={() => setEditing(false)}
+              />
+            </View>
+          ) : null}
         </View>
       ) : text.length > 0 ? (
         <RichText content={text} disabledStyles={disabledStyles} />

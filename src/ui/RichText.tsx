@@ -523,15 +523,42 @@ function renderLeafMarkdown(
   inheritedSize: number,
   keyPrefix: string,
 ): React.ReactNode[] {
-  // First split: inline code, inline math, lucide tokens — they must NOT
-  // participate in further decoration parsing because their content is literal.
-  const SPLIT_RE = /(`[^`]+`|\$[^$\n]+\$|\[lu:[\w-]+(?::[\d.]+)?\])/g;
+  // First split: inline code, inline math, lucide tokens, standard markdown
+  // links `[label](url)` and bare http(s) URLs — they must NOT participate in
+  // further decoration parsing because their content is literal. The labeled
+  // link is listed BEFORE the bare-URL autolink so a label containing a URL
+  // isn't double-linked.
+  const SPLIT_RE =
+    /(`[^`]+`|\$[^$\n]+\$|\[lu:[\w-]+(?::[\d.]+)?\]|\[[^\]]+\]\((?:https?:|mailto:)[^)\s]+\)|(?<![("=])\bhttps?:\/\/[^\s<>)]+)/g;
   const segments = text.split(SPLIT_RE);
 
   const out: React.ReactNode[] = [];
+  const LABELED_LINK_RE = /^\[([^\]]+)\]\(((?:https?:|mailto:)[^)\s]+)\)$/;
+  const BARE_URL_RE = /^https?:\/\/[^\s<>)]+$/;
+  const pushLink = (label: string, url: string, key: string) => {
+    out.push(
+      <Text
+        key={key}
+        onPress={() => void Linking.openURL(url)}
+        style={{ color: colors.cyan, textDecorationLine: 'underline' }}
+      >
+        {label}
+      </Text>,
+    );
+  };
+
   segments.forEach((seg, segIdx) => {
     if (!seg) return;
     const key = `${keyPrefix}-${segIdx}`;
+    const labeled = seg.match(LABELED_LINK_RE);
+    if (labeled) {
+      pushLink(labeled[1], labeled[2], key);
+      return;
+    }
+    if (BARE_URL_RE.test(seg)) {
+      pushLink(seg, seg, key);
+      return;
+    }
     if (seg.startsWith('[lu:') && seg.endsWith(']')) {
       const m = seg.match(/^\[lu:([\w-]+)(?::([\d.]+))?\]$/);
       if (m) {
