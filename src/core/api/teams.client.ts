@@ -50,7 +50,8 @@ export async function listTeamMembers(teamId: string): Promise<TeamMember[]> {
 }
 
 // ── Invites ────────────────────────────────────────────────────────────────
-export type TeamRole = 'owner' | 'admin' | 'member' | 'guest' | 'viewer';
+// Re-exported from `@/types/contracts` so this stays in sync with the web app.
+export type { TeamRole } from '@/types';
 
 export interface TeamInvite {
   id: string;

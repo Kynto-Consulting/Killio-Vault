@@ -16,6 +16,13 @@ import {
  * RN port of the frontend RefPill — same type→color/icon palette
  * (Killio-Frontend src/components/ui/ref-pill.tsx) so inline references render
  * identically in chat.
+ *
+ * Prop parity with web:
+ *   - type, id, name, label, onPress (web: onClick)
+ *   - workspaceUsers, workspaceName, teamId, provider, extKind are accepted
+ *     for signature compat but only `provider`/`extKind` are read on mobile —
+ *     the web user-card popover is too heavy for the inline RN cell. Tap a
+ *     user pill and the parent's onReferencePress decides where to go.
  */
 export type RefType =
   | 'doc'
@@ -61,17 +68,43 @@ const ICONS: Record<string, LucideIcon> = {
   ext: Puzzle,
 };
 
+export interface RefPillProps {
+  type: RefType;
+  name: string;
+  /** Underlying id of the entity. Surfaced to onPress consumers. */
+  id?: string;
+  /** Optional secondary line under the name (web parity — e.g. folder path). */
+  label?: string;
+  onPress?: () => void;
+  // Mobile: accepted for signature parity with web `RefPill`, currently unused
+  // because the RN popover isn't worth the cost inline. Parents read `id` and
+  // route to `/d/<id>` etc. themselves.
+  workspaceUsers?: unknown[];
+  workspaceName?: string;
+  teamId?: string;
+  /** Extension refs only. */
+  provider?: string;
+  extKind?: string;
+}
+
 export function RefPill({
   type,
   name,
+  id: _id,
+  label,
   onPress,
-}: {
-  type: RefType;
-  name: string;
-  onPress?: () => void;
-}) {
+  workspaceUsers: _workspaceUsers,
+  workspaceName: _workspaceName,
+  teamId: _teamId,
+  provider: _provider,
+  extKind: _extKind,
+}: RefPillProps) {
   const color = COLORS[type] ?? COLORS.ext;
   const Icon = ICONS[type] ?? Puzzle;
+  // When the caller supplies a `label`, render a two-line pill so the
+  // secondary context (folder path, board name) shows up just like the web
+  // hover state — but inline so it's visible without a hover gesture.
+  const hasLabel = !!label && label.trim().length > 0 && label !== name;
   return (
     <Pressable onPress={onPress}>
       <View
@@ -80,7 +113,7 @@ export function RefPill({
           alignItems: 'center',
           gap: 4,
           paddingHorizontal: 7,
-          paddingVertical: 2,
+          paddingVertical: hasLabel ? 3 : 2,
           borderRadius: 6,
           borderWidth: 1,
           backgroundColor: color + '1a',
@@ -88,7 +121,19 @@ export function RefPill({
         }}
       >
         <Icon size={12} color={color} />
-        <Text style={{ color, fontSize: 13, fontWeight: '500' }}>{name}</Text>
+        <View style={{ flexShrink: 1 }}>
+          <Text style={{ color, fontSize: 13, fontWeight: '500' }} numberOfLines={1}>
+            {name}
+          </Text>
+          {hasLabel ? (
+            <Text
+              style={{ color: color, opacity: 0.7, fontSize: 10 }}
+              numberOfLines={1}
+            >
+              {label}
+            </Text>
+          ) : null}
+        </View>
       </View>
     </Pressable>
   );

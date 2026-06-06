@@ -37,7 +37,7 @@ export default function SettingsScreen() {
   const tVoice = useTranslations('voicePicker');
   const tWake = useTranslations('wakeWordSettings');
   const tShot = useTranslations('screenCapture');
-  const { mode, setMode, status, nativeAvailable } = useCapture();
+  const { mode, setMode, status } = useCapture();
   const { entitlements } = useEntitlements();
   const [consent, setConsent] = useState<boolean | null>(null);
   const [voice, setVoice] = useState<string>('es-ES');
@@ -102,7 +102,7 @@ export default function SettingsScreen() {
     <Screen scroll>
       <H1>{t('title')}</H1>
       <Body muted>{t('status', { status })}</Body>
-      {!nativeAvailable ? <Body muted>{t('expoGoNote')}</Body> : null}
+      {/* Expo Go gating removed — capture starts in any build flavor. */}
 
       <Button
         title={t('schedule')}

@@ -1,13 +1,24 @@
-import React, { Fragment } from 'react';
-import { Image, Linking, Pressable, Text, View } from 'react-native';
+import React, { Fragment, useCallback, useMemo, useState } from 'react';
+import {
+  Image,
+  Linking,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+  type NativeSyntheticEvent,
+  type TextInputSelectionChangeEventData,
+} from 'react-native';
 import { FileText } from 'lucide-react-native';
 
 import { RefPill, type RefType } from './RefPill';
+import { ReferencePicker, type ReferencePickerProps } from './ReferencePicker';
 import { resolveLucide } from './lucide-registry';
 import { MathRenderer } from './MathRenderer';
 import { API_BASE_URL } from '../core/api/config';
 import { colors, typography } from '../theme/theme';
 import { fonts } from '../theme/fonts';
+import type { MentionType } from '../types/picker';
 
 /**
  * 1:1 port of Killio-Frontend src/components/ui/rich-text.tsx to React Native.
@@ -34,13 +45,48 @@ interface RichTextProps {
   onReferencePress?(type: string, id: string): void;
   /** Disable specific styles (used by table cells, etc). Same flags as web. */
   disabledStyles?: string[];
+  // ── Edit mode ──────────────────────────────────────────────────────────────
+  // When `editable=true`, RichText flips to a TextInput that emits `onChange`
+  // on every keystroke. Typing `@` (or `$`, `#`) opens the ReferencePicker
+  // scoped to the matching category set; picking inserts the canonical
+  // `@[type:id:Name]` token at the cursor (replacing the trigger char).
+  editable?: boolean;
+  onChange?(next: string): void;
+  /** Optional placeholder for the editable input. */
+  placeholder?: string;
+  /** Optional autoFocus when entering edit mode. */
+  autoFocus?: boolean;
+  // Picker candidate lists. Empty/undefined = picker still opens but only
+  // categories with data show up. Falls back to API via teamId if set.
+  documents?: ReferencePickerProps['documents'];
+  boards?: ReferencePickerProps['boards'];
+  cards?: ReferencePickerProps['cards'];
+  users?: ReferencePickerProps['users'];
+  folders?: ReferencePickerProps['folders'];
+  activeBricks?: ReferencePickerProps['activeBricks'];
+  teamId?: string;
 }
+
+// Picker scopes per trigger char — matches the web reference-picker behaviour:
+//   `@` → mention anything (user/doc/card/board/mesh)
+//   `$` → deep-link to a document
+//   `#` → deep-link to a card/board
+const TRIGGER_SCOPE: Record<string, MentionType[]> = {
+  '@': ['user', 'doc', 'card', 'board', 'mesh', 'folder', 'room'],
+  $: ['doc'],
+  '#': ['card', 'board', 'mesh'],
+};
 
 const REF_SPLIT_RE =
   /(@\[ext:[^\]]+\]|@\[(?:doc|board|mesh|card|user|folder|room|thread|transcript|event):[^\]]+\]|[$#]\[[^\]]+\])/g;
 const EXT_RE = /@\[ext:([^:\]]+):([^:\]]+):([^:\]]+):([^\]]*)\]/;
+// Accepts both `@[type:id:Display Name]` and `@[type:id|Display Name]`.
+// The pipe form is what the web reference-picker emits in the task spec; the
+// colon form is what `Killio-Frontend/.../reference-picker.tsx` actually writes
+// (`@[doc:abc:Title]`). Be permissive on the display separator so a token
+// authored in either app round-trips identically.
 const MENTION_RE =
-  /@\[(doc|board|mesh|card|user|folder|room|thread|transcript|event):([^:\]]+)(?::([^\]]+))?\]/;
+  /@\[(doc|board|mesh|card|user|folder|room|thread|transcript|event):([^:|\]]+)(?:[:|]([^\]]+))?\]/;
 const DEEP_RE = /^[$#]\[([^\]]+)\]$/;
 
 type RefToken =
@@ -61,7 +107,39 @@ export function RichText({
   size = 15,
   onReferencePress,
   disabledStyles = [],
+  editable,
+  onChange,
+  placeholder,
+  autoFocus,
+  documents,
+  boards,
+  cards,
+  users,
+  folders,
+  activeBricks,
+  teamId,
 }: RichTextProps) {
+  // Edit mode short-circuits the whole render tree — we hand control to
+  // RichTextEditor which owns the TextInput + ReferencePicker overlay.
+  if (editable && onChange) {
+    return (
+      <RichTextEditor
+        value={content ?? ''}
+        onChange={onChange}
+        color={color}
+        size={size}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        documents={documents}
+        boards={boards}
+        cards={cards}
+        users={users}
+        folders={folders}
+        activeBricks={activeBricks}
+        teamId={teamId}
+      />
+    );
+  }
   if (!content) return null;
   const noHeading = disabledStyles.includes('heading');
   const noSize = disabledStyles.includes('size');
@@ -740,3 +818,145 @@ function parsePx(raw: string): number | null {
 }
 
 void typography;
+
+// ─── Editable RichText (editor mode) ─────────────────────────────────────────
+
+interface RichTextEditorProps {
+  value: string;
+  onChange(next: string): void;
+  color: string;
+  size: number;
+  placeholder?: string;
+  autoFocus?: boolean;
+  documents?: ReferencePickerProps['documents'];
+  boards?: ReferencePickerProps['boards'];
+  cards?: ReferencePickerProps['cards'];
+  users?: ReferencePickerProps['users'];
+  folders?: ReferencePickerProps['folders'];
+  activeBricks?: ReferencePickerProps['activeBricks'];
+  teamId?: string;
+}
+
+/**
+ * Edit-mode renderer. Wraps a multiline TextInput, watches for the `@`/`$`/`#`
+ * trigger chars at the cursor, and pops the ReferencePicker scoped to that
+ * trigger. Picking a row replaces the trigger char with the canonical
+ * `@[type:id:Name]` token (web parity), so the display side renders an inline
+ * RefPill straight after blur.
+ *
+ * Mobile: We can't anchor the picker next to the caret (no DOM caret API), so
+ * the picker is a full-screen modal — the user types `@`, the picker opens
+ * with the same query they were typing, they tap a row, the modal closes and
+ * the token is inserted at the original cursor position.
+ */
+function RichTextEditor({
+  value,
+  onChange,
+  color,
+  size,
+  placeholder,
+  autoFocus,
+  documents,
+  boards,
+  cards,
+  users,
+  folders,
+  activeBricks,
+  teamId,
+}: RichTextEditorProps) {
+  const [selection, setSelection] = useState<{ start: number; end: number }>({
+    start: value.length,
+    end: value.length,
+  });
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [pickerScope, setPickerScope] = useState<MentionType[] | undefined>(undefined);
+  // Where the trigger char (`@`/`$`/`#`) lives in the buffer. Stored so we can
+  // splice the chosen token back into the right slot once the picker resolves.
+  const [triggerAt, setTriggerAt] = useState<number | null>(null);
+
+  const handleChangeText = useCallback(
+    (next: string) => {
+      onChange(next);
+      // Detect a trigger char immediately to the left of the cursor. We only
+      // act on a fresh insertion (next.length > value.length) — otherwise
+      // erasing through an old `@` would keep reopening the picker.
+      if (next.length > value.length) {
+        const cursor = selection.end;
+        const ch = next[cursor - 1];
+        if (ch === '@' || ch === '$' || ch === '#') {
+          setPickerScope(TRIGGER_SCOPE[ch]);
+          setTriggerAt(cursor - 1);
+          setPickerVisible(true);
+        }
+      }
+    },
+    [onChange, selection.end, value.length],
+  );
+
+  const handleSelectionChange = useCallback(
+    (e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
+      setSelection(e.nativeEvent.selection);
+    },
+    [],
+  );
+
+  const handlePick = useCallback(
+    (sel: { token: string; mentionType: MentionType; id: string; label: string }) => {
+      if (triggerAt === null) return;
+      // Replace the trigger char at `triggerAt` with the full token.
+      const before = value.slice(0, triggerAt);
+      const after = value.slice(triggerAt + 1);
+      const next = `${before}${sel.token} ${after}`;
+      onChange(next);
+      const cursor = before.length + sel.token.length + 1;
+      setSelection({ start: cursor, end: cursor });
+      setTriggerAt(null);
+    },
+    [onChange, triggerAt, value],
+  );
+
+  const closePicker = useCallback(() => {
+    setPickerVisible(false);
+    setTriggerAt(null);
+  }, []);
+
+  // Allowed list for the picker = the union of all trigger scopes; the picker
+  // itself filters by category chips so the user can narrow live.
+  const allowed = useMemo(() => pickerScope, [pickerScope]);
+
+  return (
+    <View>
+      <TextInput
+        value={value}
+        onChangeText={handleChangeText}
+        onSelectionChange={handleSelectionChange}
+        selection={selection}
+        multiline
+        placeholder={placeholder}
+        placeholderTextColor={colors.mutedForeground}
+        autoFocus={autoFocus}
+        style={{
+          fontFamily: fonts.regular,
+          color,
+          fontSize: size,
+          lineHeight: Math.round(size * 1.5),
+          padding: 0,
+          minHeight: size * 1.5,
+        }}
+      />
+      <ReferencePicker
+        visible={pickerVisible}
+        onClose={closePicker}
+        onPick={handlePick}
+        allowed={allowed}
+        documents={documents}
+        boards={boards}
+        cards={cards}
+        users={users}
+        folders={folders}
+        activeBricks={activeBricks}
+        teamId={teamId}
+      />
+    </View>
+  );
+}

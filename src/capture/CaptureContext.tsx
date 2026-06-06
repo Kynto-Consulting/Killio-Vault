@@ -47,7 +47,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       });
       controllerRef.current = controller;
       controller.setOnWake(wakeCbRef.current); // apply handler registered before creation
-      if (saved.kind !== 'off' && nativeAvailable) {
+      // Per user directive: always try to start capture regardless of build
+      // flavor. The controller itself drops into a 'degraded' status when no
+      // native module is present, so the timer + outbox flush keep running.
+      if (saved.kind !== 'off') {
         try {
           await controller.start();
         } catch {
@@ -69,8 +72,9 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     if (!controller) return;
     if (next.kind === 'off') {
       await controller.stop();
-    } else if (nativeAvailable) {
-      if (controller.getStatus() === 'idle') {
+    } else {
+      // Always try — degraded mode is fine, the controller handles it.
+      if (controller.getStatus() === 'idle' || controller.getStatus() === 'degraded') {
         controller.setMode(next);
         await controller.start();
       } else {

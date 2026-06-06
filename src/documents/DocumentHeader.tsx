@@ -7,10 +7,10 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   Copy as CopyIcon,
-  Eye,
   History,
   Lock,
   MessageSquare,
@@ -32,21 +32,23 @@ import type { FolderSummary } from '@/core/api/documents.client';
  * Top header for the document viewer/editor. Mirrors the web doc page header:
  *   ←  breadcrumb (workspace / folder / …)
  *      title (tap to rename inline)
- *      [edit/view] [⋮ menu]
+ *      [⋮ menu]
  *
  * The menu exposes the same actions the web page has on /d/[...]: rename,
  * duplicate, share, delete, and visibility toggles. Each action surfaces a
  * callback the parent screen wires to the backend (or to the local workspace
  * provider for offline-only docs).
+ *
+ * Tap-to-edit is always on (web parity) — there is no Edit/View mode toggle.
+ * The header pads its top edge with the safe-area inset so it never sits
+ * behind the Android status bar / notification clock.
  */
 export interface DocumentHeaderProps {
   title: string;
   /** Visible breadcrumb segments, leftmost = workspace, rightmost = current. */
   breadcrumb: BreadcrumbSegment[];
   visibility?: 'private' | 'team' | 'public';
-  canEdit: boolean;
   onBack(): void;
-  onToggleEdit(): void;
   onRename(nextTitle: string): Promise<void> | void;
   onDuplicate?(): Promise<void> | void;
   onShare?(): Promise<void> | void;
@@ -69,9 +71,7 @@ export function DocumentHeader({
   title,
   breadcrumb,
   visibility,
-  canEdit,
   onBack,
-  onToggleEdit,
   onRename,
   onDuplicate,
   onShare,
@@ -81,6 +81,7 @@ export function DocumentHeader({
   onOpenSidebar,
 }: DocumentHeaderProps) {
   const t = useTranslations('docHeader');
+  const insets = useSafeAreaInsets();
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -104,7 +105,10 @@ export function DocumentHeader({
   };
 
   return (
-    <View className="border-b border-border/40 bg-background px-3 pt-3 pb-2 gap-2">
+    <View
+      className="border-b border-border/40 bg-background px-3 pb-2 gap-2"
+      style={{ paddingTop: insets.top + 12 }}
+    >
       {/* Row 1 — back · title · actions */}
       <View className="flex-row items-center gap-2">
         <Pressable hitSlop={10} onPress={onBack} className="p-1">
@@ -148,23 +152,6 @@ export function DocumentHeader({
             </Pressable>
           )}
         </View>
-
-        <Pressable
-          onPress={onToggleEdit}
-          className="h-9 flex-row items-center gap-1 rounded-md border border-border bg-secondary px-2"
-        >
-          {canEdit ? (
-            <Eye size={13} color={colors.foreground} />
-          ) : (
-            <Pencil size={13} color={colors.foreground} />
-          )}
-          <Text
-            style={{ fontFamily: fonts.semibold }}
-            className="text-xs text-foreground"
-          >
-            {canEdit ? t('view') : t('edit')}
-          </Text>
-        </Pressable>
 
         {onOpenSidebar ? (
           <Pressable

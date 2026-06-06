@@ -15,6 +15,7 @@ import { I18nProvider, useTranslations } from '@/i18n';
 import { NavProvider, useNav } from '@/nav/NavContext';
 import { AppModeProvider } from '@/nav/AppModeContext';
 import { DocumentsProvider } from '@/documents/DocumentsProvider';
+import { WorkspaceCatalogProvider } from '@/workspace/WorkspaceCatalogContext';
 import { LocalWorkspaceProvider } from '@/local-workspace/LocalWorkspaceProvider';
 import { SideNav } from '@/nav/SideNav';
 import { WakeListener } from '@/wakeword/WakeListener';
@@ -104,6 +105,7 @@ export default function RootLayout() {
           <LocalWorkspaceProvider>
           <AuthProvider>
             <AppModeProvider>
+            <WorkspaceCatalogProvider>
             <DocumentsProvider>
             <CaptureProvider>
               <NavProvider>
@@ -114,6 +116,7 @@ export default function RootLayout() {
               </NavProvider>
             </CaptureProvider>
             </DocumentsProvider>
+            </WorkspaceCatalogProvider>
             </AppModeProvider>
           </AuthProvider>
           </LocalWorkspaceProvider>

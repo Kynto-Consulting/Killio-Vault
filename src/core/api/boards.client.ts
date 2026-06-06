@@ -1,13 +1,12 @@
 import { api } from './http';
 
-export interface BoardSummary {
-  id: string;
-  teamId: string;
-  name: string;
-  slug: string;
-  description?: string | null;
-  boardType?: 'kanban' | 'mesh';
-}
+/**
+ * Re-export shared contracts so consumers that did
+ * `import { BoardSummary } from '@/core/api/boards.client'`
+ * keep compiling. The canonical shape lives in `@/types/contracts`.
+ */
+export type { BoardSummary } from '@/types';
+import type { BoardSummary } from '@/types';
 
 export interface BoardCard {
   id: string;

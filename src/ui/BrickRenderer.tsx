@@ -1,22 +1,32 @@
-import { useState } from 'react';
-import { Image, Linking, Modal, Pressable, Text, TextInput, View } from 'react-native';
+import { createContext, useContext, useState } from 'react';
+import { Image, Linking, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import {
   ArrowDown,
   ArrowUp,
+  Bookmark as BookmarkIcon,
   CheckSquare,
   ChevronDown,
   ChevronRight,
   Code,
+  Columns,
   Copy,
   CreditCard,
+  Database,
   FileText,
+  FormInput,
   Hash,
   Heading1,
+  Image as ImageIcon,
+  LayoutGrid,
   Lightbulb,
+  ListTree,
   Minus,
+  Network,
   Plus,
   Quote,
+  Sigma,
   Square,
+  Table as TableIcon,
   Trash2,
   Type,
   Video,
@@ -25,15 +35,17 @@ import {
 
 import { RichText } from './RichText';
 import { InlineFormatToolbar } from './InlineFormatToolbar';
+import type { ReferencePickerProps } from './ReferencePicker';
 import { LatexEditor } from './LatexEditor';
 import { MathRenderer } from './MathRenderer';
-import { UnifiedTableBrick } from './UnifiedTableBrick';
+import { UnifiedTableBrick } from './bricks/unified-table-brick';
+import { UnifiedFormBrick } from './bricks/unified-form-brick';
 import {
-  BountifulTable,
+  UnifiedBountifulTable,
   type BountifulCell,
   type BountifulColumn,
   type BountifulRow,
-} from './BountifulTable';
+} from './bricks/unified-bountiful-table';
 import { useTranslations } from '../i18n';
 import { colors } from '../theme/theme';
 import { fonts } from '../theme/fonts';
@@ -68,6 +80,25 @@ export interface BrickProps {
   brick: Brick;
   canEdit?: boolean;
   onChange?: (next: Brick) => void;
+}
+
+// Picker context — BrickList wraps its tree with this so any text-ish brick's
+// EditableText can pop the ReferencePicker without prop-drilling through every
+// composite brick (accordion/tabs/columns/etc).
+export interface PickerContext {
+  documents?: ReferencePickerProps['documents'];
+  boards?: ReferencePickerProps['boards'];
+  cards?: ReferencePickerProps['cards'];
+  users?: ReferencePickerProps['users'];
+  folders?: ReferencePickerProps['folders'];
+  activeBricks?: ReferencePickerProps['activeBricks'];
+  teamId?: string;
+}
+
+const PickerCtx = createContext<PickerContext>({});
+
+export function usePickerContext(): PickerContext {
+  return useContext(PickerCtx);
 }
 
 function textOf(c: Record<string, any>): string {
@@ -800,21 +831,17 @@ function GraphBrick({ brick }: BrickProps) {
   );
 }
 
-function FormBrick({ brick }: BrickProps) {
-  const fields: { label?: string }[] = Array.isArray(brick.content?.fields)
-    ? brick.content.fields
-    : [];
+function FormBrickAdapter({ brick, canEdit, onChange }: BrickProps) {
   return (
-    <View className="my-1 gap-2 rounded-lg border border-border bg-secondary/30 p-3">
-      <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-muted-foreground">
-        Formulario
-      </Text>
-      {fields.map((f, i) => (
-        <View key={i} className="rounded-md border border-border bg-background px-3 py-2">
-          <Text className="text-xs text-muted-foreground">{String(f.label ?? `Campo ${i + 1}`)}</Text>
-        </View>
-      ))}
-    </View>
+    <UnifiedFormBrick
+      id={brick.id ?? `form-${brick.position ?? 0}`}
+      content={brick.content ?? {}}
+      canEdit={!!canEdit}
+      onUpdate={(nextContent) => {
+        if (!onChange) return;
+        onChange({ ...brick, content: nextContent });
+      }}
+    />
   );
 }
 
@@ -932,11 +959,13 @@ function BountifulTableAdapter({ brick, canEdit, onChange }: BrickProps) {
     : [];
 
   return (
-    <BountifulTable
+    <UnifiedBountifulTable
+      id={brick.id ?? `bountiful-${brick.position ?? 0}`}
       brickId={brick.id ?? ''}
       title={brick.content?.title}
       columns={columns}
       rows={rows}
+      views={Array.isArray(brick.content?.views) ? brick.content.views : undefined}
       readonly={!canEdit || !onChange}
       onPatchCell={(rowId, colId, cell, rowMeta) => {
         if (!onChange) return;
@@ -979,19 +1008,25 @@ function EditableText({
   disabledStyles?: string[];
 }) {
   const [focused, setFocused] = useState(false);
+  // Pull the document-level picker context so typing `@` opens a picker
+  // populated with the same docs/boards/users the doc detail screen fetched.
+  const picker = usePickerContext();
   return (
-    <View>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        onFocus={() => setFocused(true)}
-        onBlur={() => {
-          // Delay blur so a toolbar tap can land before the toolbar disappears.
-          setTimeout(() => setFocused(false), 150);
+    <Pressable onPress={() => setFocused(true)}>
+      <RichText
+        content={value}
+        editable
+        onChange={(t) => {
+          onChangeText(t);
         }}
-        multiline
-        style={{ fontFamily: fonts.regular, color: colors.foreground, fontSize: 15, padding: 0 }}
-        placeholderTextColor={colors.mutedForeground}
+        documents={picker.documents}
+        boards={picker.boards}
+        cards={picker.cards}
+        users={picker.users}
+        folders={picker.folders}
+        activeBricks={picker.activeBricks}
+        teamId={picker.teamId}
+        placeholder=""
       />
       {focused ? (
         <View className="mt-2">
@@ -1003,7 +1038,7 @@ function EditableText({
           />
         </View>
       ) : null}
-    </View>
+    </Pressable>
   );
 }
 
@@ -1052,7 +1087,7 @@ export function BrickRenderer(props: BrickProps) {
     case 'chart':
       return <GraphBrick {...props} />;
     case 'form':
-      return <FormBrick {...props} />;
+      return <FormBrickAdapter {...props} />;
     case 'payment':
       return <PaymentBrick {...props} />;
     case 'ai_summary':
@@ -1070,9 +1105,8 @@ export function BrickRenderer(props: BrickProps) {
   }
 }
 
-/** All brick kinds the "+" menu can insert. Subset that has a meaningful
- *  inline editor — composite / media bricks are added through the asset
- *  pipelines. */
+/** All brick kinds the "+" menu can insert. Web parity — same row of pills
+ *  the frontend slash-commands surface exposes. */
 export type AddableKind =
   | 'text'
   | 'heading'
@@ -1080,7 +1114,19 @@ export type AddableKind =
   | 'callout'
   | 'checklist'
   | 'code'
-  | 'divider';
+  | 'divider'
+  | 'image'
+  | 'bookmark'
+  | 'math'
+  | 'table'
+  | 'bountiful_table'
+  | 'database'
+  | 'mesh'
+  | 'form'
+  | 'toggle'
+  | 'accordion'
+  | 'tabs'
+  | 'columns';
 
 /**
  * Vertical stack of bricks. When `editable=true`, each brick switches to its
@@ -1100,6 +1146,13 @@ export function BrickList({
   onAdd,
   onDelete,
   onReorder,
+  documents,
+  boards,
+  cards,
+  users,
+  folders,
+  activeBricks,
+  teamId,
 }: {
   bricks: Brick[];
   editable?: boolean;
@@ -1107,12 +1160,22 @@ export function BrickList({
   onAdd?: (kind: AddableKind, afterBrickId?: string) => Promise<string | void> | string | void;
   onDelete?: (id: string) => void;
   onReorder?: (orderedIds: string[]) => void;
+  // Reference-picker context — these flow down via PickerCtx so any text
+  // brick's EditableText can pop the @-picker without further drilling.
+  documents?: ReferencePickerProps['documents'];
+  boards?: ReferencePickerProps['boards'];
+  cards?: ReferencePickerProps['cards'];
+  users?: ReferencePickerProps['users'];
+  folders?: ReferencePickerProps['folders'];
+  activeBricks?: ReferencePickerProps['activeBricks'];
+  teamId?: string;
 }) {
   const t = useTranslations('brickEditor');
   const sorted = [...bricks].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  const [addMenuFor, setAddMenuFor] = useState<string | 'end' | null>(null);
   const [contextFor, setContextFor] = useState<string | null>(null);
+  // Track which row's inline add-bar is expanded (or 'end' for the doc footer).
+  const [expandedAddFor, setExpandedAddFor] = useState<string | 'end' | null>(null);
 
   const moveBrick = (id: string, dir: 'up' | 'down') => {
     if (!onReorder) return;
@@ -1126,25 +1189,38 @@ export function BrickList({
     onReorder(next);
   };
 
+  const handlePick = async (kind: AddableKind, after: string | undefined) => {
+    setExpandedAddFor(null);
+    const next = await onAdd?.(kind, after);
+    if (typeof next === 'string') setFocusedId(next);
+  };
+
+  const pickerCtx: PickerContext = {
+    documents,
+    boards,
+    cards,
+    users,
+    folders,
+    activeBricks,
+    teamId,
+  };
+
   return (
+    <PickerCtx.Provider value={pickerCtx}>
     <View className="gap-1">
       {sorted.length === 0 && editable && onAdd ? (
-        <Pressable
-          onPress={() => setAddMenuFor('end')}
-          className="items-center justify-center rounded-xl border border-dashed border-border bg-card/40 px-4 py-8"
-        >
-          <View className="mb-2 h-8 w-8 items-center justify-center rounded-full bg-cyan/10">
-            <Plus size={14} color={colors.cyan} />
-          </View>
+        <View className="rounded-xl border border-dashed border-border bg-card/40 p-4 gap-2">
           <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-foreground">
             {t('addBlock')}
           </Text>
-        </Pressable>
+          <AddBrickRow onPick={(kind) => void handlePick(kind, undefined)} t={t} />
+        </View>
       ) : null}
 
       {sorted.map((b, i) => {
         const id = b.id ?? String(i);
         const isFocused = focusedId === id;
+        const isAddExpanded = expandedAddFor === b.id;
         return (
           <View key={id}>
             <Pressable
@@ -1177,40 +1253,56 @@ export function BrickList({
             </Pressable>
 
             {editable && onAdd && b.id ? (
-              <Pressable
-                onPress={() => setAddMenuFor(b.id!)}
-                className="my-0.5 flex-row items-center gap-1 self-center rounded-full bg-secondary/40 px-2 py-0.5 opacity-50"
-              >
-                <Plus size={9} color={colors.mutedForeground} />
-                <Text className="text-[9px] text-muted-foreground">{t('addInline')}</Text>
-              </Pressable>
+              isAddExpanded ? (
+                <View className="my-1 rounded-md border border-border/40 bg-card/40 p-2 gap-1">
+                  <View className="flex-row items-center justify-between">
+                    <Text
+                      style={{ fontFamily: fonts.semibold }}
+                      className="text-[10px] uppercase tracking-wider text-muted-foreground"
+                    >
+                      {t('addBlock')}
+                    </Text>
+                    <Pressable onPress={() => setExpandedAddFor(null)} hitSlop={6}>
+                      <Plus
+                        size={11}
+                        color={colors.mutedForeground}
+                        style={{ transform: [{ rotate: '45deg' }] }}
+                      />
+                    </Pressable>
+                  </View>
+                  <AddBrickRow
+                    onPick={(kind) => void handlePick(kind, b.id!)}
+                    t={t}
+                  />
+                </View>
+              ) : (
+                <Pressable
+                  onPress={() => setExpandedAddFor(b.id!)}
+                  className="my-0.5 flex-row items-center gap-1 self-center rounded-full bg-secondary/40 px-2 py-0.5 opacity-60"
+                >
+                  <Plus size={10} color={colors.mutedForeground} />
+                  <Text className="text-[10px] text-muted-foreground">{t('addInline')}</Text>
+                </Pressable>
+              )
             ) : null}
           </View>
         );
       })}
 
       {editable && onAdd && sorted.length > 0 ? (
-        <Pressable
-          onPress={() => setAddMenuFor('end')}
-          className="mt-1 flex-row items-center justify-center gap-1 rounded-lg border border-dashed border-border bg-card/40 py-2"
-        >
-          <Plus size={12} color={colors.mutedForeground} />
-          <Text style={{ fontFamily: fonts.medium }} className="text-xs text-muted-foreground">
-            {t('addAtEnd')}
+        <View className="mt-2 rounded-lg border border-dashed border-border bg-card/40 p-3 gap-2">
+          <Text
+            style={{ fontFamily: fonts.semibold }}
+            className="text-[11px] uppercase tracking-wider text-muted-foreground"
+          >
+            {t('addBlock')}
           </Text>
-        </Pressable>
+          <AddBrickRow
+            onPick={(kind) => void handlePick(kind, undefined)}
+            t={t}
+          />
+        </View>
       ) : null}
-
-      <AddKindModal
-        open={addMenuFor !== null}
-        onClose={() => setAddMenuFor(null)}
-        onPick={async (kind) => {
-          const after = addMenuFor === 'end' ? undefined : (addMenuFor as string);
-          setAddMenuFor(null);
-          const next = await onAdd?.(kind, after);
-          if (typeof next === 'string') setFocusedId(next);
-        }}
-      />
 
       <ContextMenu
         open={contextFor !== null}
@@ -1229,6 +1321,43 @@ export function BrickList({
         }}
       />
     </View>
+    </PickerCtx.Provider>
+  );
+}
+
+/**
+ * Horizontal scroll row of `[icon] [label]` pills, one per AddableKind. Mirrors
+ * the web slash-commands surface: tap a pill → insert brick of that kind.
+ */
+function AddBrickRow({
+  onPick,
+  t,
+}: {
+  onPick: (kind: AddableKind) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={{ gap: 6, paddingRight: 6 }}
+    >
+      {ADD_OPTIONS.map(({ kind, labelKey, icon: Icon }) => (
+        <Pressable
+          key={kind}
+          onPress={() => onPick(kind)}
+          className="flex-row items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5"
+        >
+          <Icon size={13} color={colors.foreground} />
+          <Text
+            style={{ fontFamily: fonts.medium }}
+            className="text-[11px] text-foreground"
+          >
+            {t(labelKey)}
+          </Text>
+        </Pressable>
+      ))}
+    </ScrollView>
   );
 }
 
@@ -1236,48 +1365,23 @@ const ADD_OPTIONS: { kind: AddableKind; labelKey: string; icon: typeof Type }[] 
   { kind: 'text', labelKey: 'kind.text', icon: Type },
   { kind: 'heading', labelKey: 'kind.heading', icon: Heading1 },
   { kind: 'quote', labelKey: 'kind.quote', icon: Quote },
-  { kind: 'callout', labelKey: 'kind.callout', icon: Hash },
+  { kind: 'callout', labelKey: 'kind.callout', icon: Lightbulb },
   { kind: 'checklist', labelKey: 'kind.checklist', icon: CheckSquare },
   { kind: 'code', labelKey: 'kind.code', icon: Code },
   { kind: 'divider', labelKey: 'kind.divider', icon: Minus },
+  { kind: 'image', labelKey: 'kind.image', icon: ImageIcon },
+  { kind: 'bookmark', labelKey: 'kind.bookmark', icon: BookmarkIcon },
+  { kind: 'math', labelKey: 'kind.math', icon: Sigma },
+  { kind: 'table', labelKey: 'kind.table', icon: TableIcon },
+  { kind: 'bountiful_table', labelKey: 'kind.bountiful_table', icon: TableIcon },
+  { kind: 'database', labelKey: 'kind.database', icon: Database },
+  { kind: 'mesh', labelKey: 'kind.mesh', icon: Network },
+  { kind: 'form', labelKey: 'kind.form', icon: FormInput },
+  { kind: 'toggle', labelKey: 'kind.toggle', icon: ListTree },
+  { kind: 'accordion', labelKey: 'kind.accordion', icon: ChevronRight },
+  { kind: 'tabs', labelKey: 'kind.tabs', icon: LayoutGrid },
+  { kind: 'columns', labelKey: 'kind.columns', icon: Columns },
 ];
-
-function AddKindModal({
-  open,
-  onClose,
-  onPick,
-}: {
-  open: boolean;
-  onClose(): void;
-  onPick(kind: AddableKind): void;
-}) {
-  const t = useTranslations('brickEditor');
-  return (
-    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable onPress={onClose} className="flex-1 items-center justify-end bg-background/80">
-        <View className="w-full rounded-t-2xl border-t border-border bg-card p-4 gap-2">
-          <Text style={{ fontFamily: fonts.bold }} className="text-base text-foreground">
-            {t('addBlock')}
-          </Text>
-          <View className="flex-row flex-wrap gap-2">
-            {ADD_OPTIONS.map(({ kind, labelKey, icon: Icon }) => (
-              <Pressable
-                key={kind}
-                onPress={() => onPick(kind)}
-                className="h-20 w-20 items-center justify-center gap-1 rounded-xl border border-border bg-background"
-              >
-                <Icon size={18} color={colors.foreground} />
-                <Text style={{ fontFamily: fonts.medium }} className="text-[10px] text-foreground">
-                  {t(labelKey)}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      </Pressable>
-    </Modal>
-  );
-}
 
 function ContextMenu({
   open,

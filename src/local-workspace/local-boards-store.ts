@@ -223,6 +223,18 @@ function toBoardSummary(b: LocalBoard): BoardSummary {
     slug: b.slug,
     description: b.description ?? null,
     boardType: b.boardType,
+    // Cover/background/theme are not surfaced in local boards yet — fill with
+    // neutral defaults so the shape matches the shared `@/types/contracts`
+    // `BoardSummary`. Cloud boards override these from the backend.
+    coverImageUrl: null,
+    backgroundKind: 'none',
+    backgroundValue: null,
+    backgroundImageUrl: null,
+    backgroundGradient: null,
+    themeKind: 'preset',
+    themePreset: null,
+    themeCustom: {},
+    updatedAt: b.createdAt,
   };
 }
 

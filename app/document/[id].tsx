@@ -15,7 +15,6 @@ import { useLocalWorkspace } from '@/local-workspace/LocalWorkspaceProvider';
 import {
   appendDocumentBlock,
   getDocument,
-  listFolders,
   removeBrick,
   reorderBricks,
   updateBrickContent,
@@ -23,6 +22,7 @@ import {
   type DocFull,
   type FolderSummary,
 } from '@/core/api/documents.client';
+import { useWorkspaceCatalog } from '@/workspace/WorkspaceCatalogContext';
 import type { KillioFile } from '@/local-workspace/killio-file';
 
 /**
@@ -53,31 +53,25 @@ export default function DocumentDetailScreen() {
 
   const [doc, setDoc] = useState<DocFull | null>(null);
   const [loading, setLoading] = useState(true);
-  const [canEdit, setCanEdit] = useState(false);
+  // Tap-to-edit is always on — web parity: every brick enters its inline
+  // editor on tap, there is no separate Edit/View mode.
+  const canEdit = true;
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved' | 'offline'>('idle');
   const [sidebarTab, setSidebarTab] = useState<'copilot' | 'comments' | 'activity' | null>(null);
-  // Folder catalogue for breadcrumb ancestry. Loaded once per team — cheap
-  // (`/folders` returns the flat list) and lets us walk parentFolderId chain
-  // without N round-trips. Local mode reads the chain straight from the path.
-  const [allFolders, setAllFolders] = useState<FolderSummary[]>([]);
 
-  useEffect(() => {
-    if (isLocal || !activeTeam?.id) {
-      setAllFolders([]);
-      return;
-    }
-    let cancelled = false;
-    listFolders(activeTeam.id)
-      .then((fs) => {
-        if (!cancelled) setAllFolders(fs);
-      })
-      .catch(() => {
-        if (!cancelled) setAllFolders([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTeam?.id, isLocal]);
+  // Workspace-wide catalogue (docs / boards / cards / folders / users) for
+  // every text brick's `@`-mention picker + this screen's folder-ancestry
+  // breadcrumb. Sourced from the global WorkspaceCatalogProvider so we do
+  // ZERO per-screen prefetch — the same data already loaded for the rest of
+  // the app is reused here.
+  const catalog = useWorkspaceCatalog();
+  const pickerDocs = catalog.documents;
+  const pickerBoards = catalog.boards;
+  const pickerCards = catalog.cards;
+  const pickerUsers = catalog.users;
+  const pickerFolders = catalog.folders;
+  // The breadcrumb walker uses parentFolderId — keep the raw shape.
+  const allFolders = catalog.rawFolders;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -457,9 +451,7 @@ export default function DocumentDetailScreen() {
         title={doc?.title ?? String(params.title ?? '')}
         breadcrumb={breadcrumb}
         visibility={doc?.visibility}
-        canEdit={canEdit}
         onBack={() => router.back()}
-        onToggleEdit={() => setCanEdit((v) => !v)}
         onRename={rename}
         onShare={() =>
           shareDocumentText({
@@ -506,6 +498,15 @@ export default function DocumentDetailScreen() {
             onAdd={handleAdd}
             onDelete={handleDelete}
             onReorder={handleReorder}
+            documents={pickerDocs}
+            boards={pickerBoards}
+            cards={pickerCards}
+            users={pickerUsers}
+            folders={pickerFolders}
+            activeBricks={(doc.bricks ?? [])
+              .filter((b) => !!b.id)
+              .map((b) => ({ id: b.id!, kind: b.kind }))}
+            teamId={isLocal ? undefined : (activeTeam?.id ?? undefined)}
           />
         )}
 
@@ -566,6 +567,30 @@ function defaultContentFor(kind: AddableKind): Record<string, any> {
       return { code: '', language: 'plaintext' };
     case 'divider':
       return {};
+    case 'image':
+      return { url: '', alt: '' };
+    case 'bookmark':
+      return { url: '', title: '' };
+    case 'math':
+      return { formula: '', display: true };
+    case 'table':
+      return { rows: [['', ''], ['', '']] };
+    case 'bountiful_table':
+    case 'database':
+      return { columns: [], rows: [] };
+    case 'mesh':
+      return { title: 'Canvas' };
+    case 'form':
+      return {
+        title: '',
+        description: '',
+        submitLabel: 'Enviar',
+        successMessage: 'Enviado correctamente.',
+        pages: [{ id: 'page-1', label: 'Paso 1' }],
+        childrenByContainer: { 'page-1': [] },
+      };
+    case 'toggle':
+      return { title: '', defaultOpen: false, children: [] };
     default:
       return { text: '' };
   }
@@ -573,6 +598,7 @@ function defaultContentFor(kind: AddableKind): Record<string, any> {
 
 function kindForBackend(kind: AddableKind): string {
   if (kind === 'heading') return 'text';
+  if (kind === 'toggle') return 'accordion';
   return kind;
 }
 

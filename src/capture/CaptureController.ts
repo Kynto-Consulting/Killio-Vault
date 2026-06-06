@@ -15,7 +15,14 @@ import { listAgents } from '../agents/local-agent.model';
  * controller is the JS brain that turns frames into transcript segments and
  * periodically flushes them. Schedule windows gate whether the mic is active.
  */
-export type CaptureStatus = 'idle' | 'listening' | 'paused' | 'error';
+export type CaptureStatus =
+  | 'idle'
+  | 'listening'
+  | 'paused'
+  | 'error'
+  /** No native capture path on this build (Expo Go) — the loop still runs
+   *  for outbox + day-rollover flushes; only the mic is dark. */
+  | 'degraded';
 
 export interface CaptureControllerOptions {
   mode: CaptureMode;
@@ -59,7 +66,12 @@ export class CaptureController {
     this.useSpeech = Speech.isAvailable() && Speech.isRecognitionAvailable();
   }
 
-  /** Whether any native capture path is usable on this build/device. */
+  /** Whether any native capture path is usable on this build/device.
+   *  HISTORICAL NOTE: callers used to gate `start()` on this returning true so
+   *  Expo Go users wouldn't crash. The user explicitly asked Vault to TRY to
+   *  start capture regardless — so this is now informational only; both
+   *  `CaptureContext` and `start()` treat false as "degraded mode" instead of
+   *  "blocked". */
   static nativeReady(): boolean {
     return (
       (Speech.isAvailable() && Speech.isRecognitionAvailable()) ||
@@ -87,19 +99,25 @@ export class CaptureController {
   }
 
   async start(): Promise<void> {
-    if (!CaptureController.nativeReady()) {
-      this.setStatus('error');
-      throw new Error(
-        'Audio capture needs the dev-build APK (foreground service). Expo Go cannot record in background.',
-      );
-    }
+    // Per the user's directive: always TRY to start capture, regardless of
+    // build flavor. In Expo Go (or any build where neither native module is
+    // present) we degrade to a "degraded" status — the windowTimer + outbox
+    // flush + maybeEndOfDayFlush still run, so anything the user types into
+    // the assistant still gets diary-flushed; we just don't auto-record.
+    // No more throw.
+    const speechOk = Speech.isAvailable() && Speech.isRecognitionAvailable();
+    const nativeOk = Native.isAvailable();
 
-    if (this.useSpeech) {
+    if (speechOk) {
       this.transcriptSub = Speech.onTranscript((e) => this.handleTranscript(e));
       this.errSub = Speech.onError(() => this.setStatus('error'));
-    } else {
+    } else if (nativeOk) {
       this.frameSub = Native.onAudioFrame((e) => this.handleFrame(e));
       this.errSub = Native.onError(() => this.setStatus('error'));
+    } else {
+      // Degraded mode — capture loop runs but mic is dark. Status stays
+      // 'degraded' so the UI can tell the user without blocking them.
+      this.setStatus('degraded');
     }
 
     // NO continuous upload. Transcripts stay local; they are flushed to the

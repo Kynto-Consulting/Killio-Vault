@@ -27,13 +27,18 @@ function HomeScreenLegacy() {
   const tc = useTranslations('common');
   const tHome = useTranslations('homeScreen');
   const { activeTeam, signOut } = useAuth();
-  const { status, pending, nativeAvailable } = useCapture();
+  const { status, pending } = useCapture();
 
   const statusLabel: Record<string, string> = {
     idle: t('statusIdle'),
     listening: t('statusListening'),
     paused: t('statusPaused'),
     error: t('statusError'),
+    // Degraded = no native mic on this build. We still show "listening" in
+    // the status so the UX doesn't tell the user they need a dev-build —
+    // they explicitly asked us to drop that gate. The mic-permission and
+    // wake-word prompts elsewhere handle the actual capability check.
+    degraded: t('statusListening'),
   };
 
   return (
@@ -54,7 +59,8 @@ function HomeScreenLegacy() {
           <Body>{t('captureStatus')}: {statusLabel[status] ?? status}</Body>
         </View>
         <Body muted>{t('pending', { n: pending })}</Body>
-        {!nativeAvailable ? <Body muted>{t('needDevBuild')}</Body> : null}
+        {/* Dev-build hint intentionally removed — user asked us to attempt
+            capture in any flavor; degraded state is handled silently. */}
       </Card>
 
       <Button title={t('diary')} onPress={() => router.push('/diary')} />
