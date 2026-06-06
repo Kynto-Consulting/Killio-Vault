@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 import { useCapture } from '../capture/CaptureContext';
 import { useAuth } from '../core/auth/AuthContext';
@@ -11,70 +11,142 @@ import { recentTranscriptText } from '../db/outbox';
 import { isWakeWordEnabled } from '../settings/settings-store';
 import type { WakeMatch } from './WakeWord';
 
+/*
+ * ── 24/7 wake-word flow: end-to-end trace ──────────────────────────────────
+ *
+ * GOAL: anywhere in the app (even backgrounded / screen off), saying
+ * "Hey Killio" / "Oye Killio" / "Hey {agentName}" should chime "Te escucho",
+ * start a FRESH conversation, then send whatever the human says next (when they
+ * stop talking) and speak the agent's reply back.
+ *
+ * 1. CaptureController (the app-global capture FGS) streams on-device
+ *    SpeechRecognizer transcripts 24/7 via handleTranscript(). For each final
+ *    transcript it (a) enqueues it to the diary outbox, then (b) runs
+ *    matchWake(text, agentNames). matchWake is intentionally lenient: the wake
+ *    phrase only has to appear at/near the START of the utterance — a bare
+ *    "Hey Killio" with no trailing command now matches (command === '').
+ *
+ * 2. On a match the controller fires onWakeCb(match) → this component's
+ *    `onWake` (registered globally via CaptureContext.setOnWake in _layout, so
+ *    it works regardless of which screen — if any — is focused).
+ *
+ * 3. onWake:
+ *      - bails if busy or the master wake toggle (/settings) is off;
+ *      - resets convId.current = undefined → the next streamAgentChat call has
+ *        NO conversationId, so the backend creates a NEW conversation (a fresh
+ *        chat, never appended to a prior one);
+ *      - mutes capture and speaks the localized confirmation `wakeListener.heard`
+ *        ("Te escucho" / "I'm listening"). Muting stops the chime from being
+ *        re-recorded / re-matched as a wake.
+ *      - When the chime's onFinish fires:
+ *          • if the wake utterance ALREADY carried an inline command
+ *            ("Hey Killio qué hora es") → send it immediately (one-shot);
+ *          • else → unmute + arm command capture via setOnCommandUtterance.
+ *
+ * 4. Command capture (armed): the controller routes every subsequent non-wake
+ *    transcript to onCommandUtterance(text). We accumulate the pieces and
+ *    (re)start a silence timer on each one. When the human STOPS talking
+ *    (no new transcript for SILENCE_MS) the timer fires sendCommand().
+ *
+ * 5. sendCommand(): disarms capture, prepends ~1 min of recent diary context,
+ *    composes through the matched agent's LocalAgentRuntime (if any), then
+ *    streamAgentChat({ conversationId: undefined }) → new conversation. The
+ *    streamed reply is accumulated and, on done, spoken back via TTS (voice
+ *    turn) with the agent's voice while capture stays muted; convId.current is
+ *    set to the new id so a follow-up within the same wake session could reuse
+ *    it (next wake resets it again).
+ *
+ * 6. A 60s watchdog (armed on wake) guarantees we always disarm + release busy
+ *    even if a transcript/stream callback is dropped.
+ */
+
+/** How long the human can pause before we treat the command as finished. */
+const SILENCE_MS = 1_800;
+/** Absolute cap on a single wake session (chime + listen + reply). */
+const SESSION_TIMEOUT_MS = 60_000;
+
 /**
- * Headless wake-word handler. When "Hey Killio â€¦" (or "Hey {agent} â€¦") is heard
- * in the live transcript, it routes the spoken command to the matched agent and
- * speaks the reply with that agent's voice â€” hands-free, screen locked.
+ * Headless wake-word handler. Mounted once, app-global (see app/_layout.tsx),
+ * so wake works on any screen and while backgrounded.
  */
 export function WakeListener() {
   const t = useTranslations('wakeListener');
-  const { setOnWake, setMuted, flushNow } = useCapture();
+  const { setOnWake, setOnCommandUtterance, setMuted, flushNow } = useCapture();
   const { activeTeam } = useAuth();
+
+  // Mutable session state kept in refs so the long-lived controller callbacks
+  // (registered once) always see the latest values without re-registering.
   const busy = useRef(false);
   const convId = useRef<string | undefined>(undefined);
+  const matchedAgentName = useRef<string | undefined>(undefined);
+  const commandParts = useRef<string[]>([]);
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeTeamId = useRef<string | undefined>(undefined);
+  activeTeamId.current = activeTeam?.id;
 
   useEffect(() => {
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    const releaseBusy = () => {
-      busy.current = false;
-      if (timeout) clearTimeout(timeout);
-      timeout = null;
+    const clearTimers = () => {
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      if (sessionTimer.current) clearTimeout(sessionTimer.current);
+      silenceTimer.current = null;
+      sessionTimer.current = null;
     };
 
-    const handler = async (m: WakeMatch) => {
-      if (busy.current) return;
-      // Honor the user-controlled master toggle in /settings.
-      if (!(await isWakeWordEnabled())) return;
-      const command = m.command.trim();
-      if (!command || !activeTeam?.id) return; // wake with no command â†’ ignore
-      busy.current = true;
-      // Safety: never leave the listener locked for more than 60s â€” a missed
-      // onDone/onError would otherwise block subsequent wake invocations.
-      timeout = setTimeout(releaseBusy, 60_000);
-      try {
-        const agent = m.agentName
-          ? listAgents().find(
-              (a) =>
-                (a.wakePhrase || a.name).toLowerCase() === m.agentName!.toLowerCase(),
-            ) ?? null
-          : null;
+    const endSession = () => {
+      setOnCommandUtterance(null);
+      clearTimers();
+      commandParts.current = [];
+      matchedAgentName.current = undefined;
+      busy.current = false;
+    };
 
+    const resolveAgent = (name?: string) =>
+      name
+        ? listAgents().find(
+            (a) => (a.wakePhrase || a.name).toLowerCase() === name.toLowerCase(),
+          ) ?? null
+        : null;
+
+    const sendCommand = async (command: string) => {
+      const teamId = activeTeamId.current;
+      const text = command.trim();
+      if (!text || !teamId) {
+        endSession();
+        return;
+      }
+      // Stop listening for more command pieces while we answer.
+      setOnCommandUtterance(null);
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      silenceTimer.current = null;
+
+      try {
         try {
           await flushNow();
         } catch {
-          /* offline */
+          /* offline — agent still answers from what's on the server */
         }
 
+        const agent = resolveAgent(matchedAgentName.current);
         const ctx = recentTranscriptText(60_000);
-        const ctxPrefix = ctx
-          ? `${t('recentContext', { text: ctx })}\n\n`
-          : '';
+        const ctxPrefix = ctx ? `${t('recentContext', { text: ctx })}\n\n` : '';
         const base = agent
-          ? await new LocalAgentRuntime(agent).composeMessage(command)
-          : command;
+          ? await new LocalAgentRuntime(agent).composeMessage(text)
+          : text;
         const message = ctxPrefix + base;
 
         let finalText = '';
         await streamAgentChat(
           {
-            teamId: activeTeam.id,
+            teamId,
             message,
+            // NEW conversation: convId.current was reset to undefined on wake.
             conversationId: convId.current,
             entityType: 'vault',
           },
           {
-            onDelta: (t) => {
-              finalText += t;
+            onDelta: (d) => {
+              finalText += d;
             },
             onDone: ({ conversationId }) => {
               convId.current = conversationId;
@@ -84,29 +156,87 @@ export function WakeListener() {
                   language: agent?.voice ?? 'es-ES',
                   onFinish: () => {
                     setMuted(false);
-                    releaseBusy();
+                    endSession();
+                  },
+                  onError: () => {
+                    setMuted(false);
+                    endSession();
                   },
                 });
               } else {
-                releaseBusy();
+                endSession();
               }
             },
             onError: () => {
-              releaseBusy();
+              endSession();
             },
           },
         );
       } catch {
-        releaseBusy();
+        endSession();
       }
     };
 
-    setOnWake(handler);
+    // Called for each non-wake transcript while armed (post-chime).
+    const onCommandUtterance = (text: string) => {
+      const piece = text.trim();
+      if (!piece) return;
+      commandParts.current.push(piece);
+      // Restart the "user stopped talking" timer on every new piece.
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      silenceTimer.current = setTimeout(() => {
+        void sendCommand(commandParts.current.join(' '));
+      }, SILENCE_MS);
+    };
+
+    const onWake = async (m: WakeMatch) => {
+      if (busy.current) return;
+      if (!(await isWakeWordEnabled())) return;
+      if (!activeTeamId.current) return;
+      busy.current = true;
+
+      // Fresh state for this wake session.
+      clearTimers();
+      commandParts.current = [];
+      matchedAgentName.current = m.agentName;
+      // NEW chat — never append to a prior conversation.
+      convId.current = undefined;
+
+      // Watchdog so a dropped callback can't wedge the listener forever.
+      sessionTimer.current = setTimeout(endSession, SESSION_TIMEOUT_MS);
+
+      const inlineCommand = m.command.trim();
+
+      // Chime "Te escucho" first (mute capture so we don't record/match it).
+      setMuted(true);
+      await speak(t('heard'), {
+        onFinish: () => {
+          setMuted(false);
+          if (inlineCommand) {
+            // One-shot: "Hey Killio, ¿qué hora es?" → answer immediately.
+            void sendCommand(inlineCommand);
+          } else {
+            // Listen for what the human says next; send when they stop.
+            setOnCommandUtterance(onCommandUtterance);
+          }
+        },
+        onError: () => {
+          // Chime failed — still proceed with the flow.
+          setMuted(false);
+          if (inlineCommand) void sendCommand(inlineCommand);
+          else setOnCommandUtterance(onCommandUtterance);
+        },
+      });
+    };
+
+    setOnWake(onWake);
     return () => {
       setOnWake(null);
-      releaseBusy();
+      setOnCommandUtterance(null);
+      clearTimers();
+      busy.current = false;
     };
-  }, [setOnWake, setMuted, flushNow, activeTeam?.id, t]);
+  }, [setOnWake, setOnCommandUtterance, setMuted, flushNow, t]);
 
   return null;
 }

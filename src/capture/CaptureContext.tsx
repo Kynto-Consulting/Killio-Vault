@@ -25,6 +25,8 @@ interface CaptureState {
   flushNow(): Promise<void>;
   /** Register a wake-phrase handler ("Hey Killio …"). */
   setOnWake(cb: ((m: import('../wakeword/WakeWord').WakeMatch) => void) | null): void;
+  /** Arm capture of the next utterance as a wake command (post-wake). */
+  setOnCommandUtterance(cb: ((text: string) => void) | null): void;
 }
 
 const Ctx = createContext<CaptureState | null>(null);
@@ -32,6 +34,7 @@ const Ctx = createContext<CaptureState | null>(null);
 export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const controllerRef = useRef<CaptureController | null>(null);
   const wakeCbRef = useRef<((m: any) => void) | null>(null);
+  const cmdCbRef = useRef<((text: string) => void) | null>(null);
   const [status, setStatus] = useState<CaptureStatus>('idle');
   const [mode, setModeState] = useState<CaptureMode>({ kind: 'off' });
   const [pending, setPending] = useState(0);
@@ -47,6 +50,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       });
       controllerRef.current = controller;
       controller.setOnWake(wakeCbRef.current); // apply handler registered before creation
+      controller.setOnCommandUtterance(cmdCbRef.current);
       // Per user directive: always try to start capture regardless of build
       // flavor. The controller itself drops into a 'degraded' status when no
       // native module is present, so the timer + outbox flush keep running.
@@ -105,6 +109,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       setOnWake: (cb) => {
         wakeCbRef.current = cb;
         controllerRef.current?.setOnWake(cb);
+      },
+      setOnCommandUtterance: (cb) => {
+        cmdCbRef.current = cb;
+        controllerRef.current?.setOnCommandUtterance(cb);
       },
     }),
     [status, mode, nativeAvailable, pending],

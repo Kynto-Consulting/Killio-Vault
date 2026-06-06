@@ -23,7 +23,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react-native';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { useNav } from './NavContext';
 import { useAppMode, type AppMode } from './AppModeContext';
@@ -90,6 +90,17 @@ export function SideNav() {
   const { mode, setMode } = useAppMode();
   const local = useLocalWorkspace();
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Debounce duplicate touch delivery: on a freshly-shown Android fade Modal the
+  // first gesture can arrive as two near-instant presses. Without this, the
+  // second press would immediately re-toggle (and re-close) the picker. We
+  // ignore any toggle that lands within DEBOUNCE_MS of the previous one.
+  const lastToggleAt = useRef(0);
+  const togglePicker = () => {
+    const now = Date.now();
+    if (now - lastToggleAt.current < 350) return;
+    lastToggleAt.current = now;
+    setPickerOpen((v) => !v);
+  };
   const [creatingCloud, setCreatingCloud] = useState(false);
   const [newCloudName, setNewCloudName] = useState('');
   const [submittingCloud, setSubmittingCloud] = useState(false);
@@ -155,25 +166,28 @@ export function SideNav() {
           <View className="border-b border-border/60">
             <View className="flex-row items-center justify-between p-4">
               {/*
-                ROOT CAUSE of the "needs 4-5 taps to open" bug:
-                The trigger used a *toggle* handler `setPickerOpen((v) => !v)`.
-                The drawer is a fade `Modal`; on Android a freshly-shown Modal
-                window can deliver the first gesture as a rapid press/again pair,
-                and any stray re-fire flips the toggle straight back to closed —
-                so it took several taps before an *odd* number of presses landed
-                and the picker stayed open.
-                FIX: this Pressable now *explicitly* opens the picker (the chevron
-                row never closes it — the X button / a workspace selection do).
-                With an explicit open, every tap is idempotent: closed → tap →
-                open, in ONE tap, regardless of duplicate touch delivery. We also
-                widen hitSlop and add a11y so the small chip is an easy target.
+                ROOT CAUSE of the unreliable workspace switcher:
+                There were TWO adjacent Pressables — the workspace block
+                (`setPickerOpen(true)`, open-only) and a separate chevron
+                (`setPickerOpen((v) => !v)`, toggle). On a fade `Modal` Android
+                can deliver the first gesture as a rapid press/again pair; a stray
+                re-fire on the chevron toggled the freshly-opened picker straight
+                back to closed, and the open-only block couldn't recover it — so
+                it took several taps to land in the open state.
+                FIX: collapse the two into ONE big, idempotent toggle target (the
+                whole workspace row + chevron). `toggle` is a stable functional
+                updater, but because it's the SOLE handler for the whole region
+                there's no second control fighting it: a duplicate touch within
+                the same row is debounced (see `togglePicker`). One tap opens,
+                one tap closes — every time. Large hitSlop + a11y make the chip an
+                easy target; the chevron rotates to signal state.
               */}
               <Pressable
                 className="flex-1 flex-row items-center gap-3"
-                onPress={() => setPickerOpen(true)}
+                onPress={togglePicker}
                 hitSlop={12}
                 accessibilityRole="button"
-                accessibilityLabel={`${workspaceName} — switch workspace`}
+                accessibilityLabel={`${workspaceName} — ${tSide('switchWorkspace')}`}
                 accessibilityState={{ expanded: pickerOpen }}
               >
                 <View className="h-9 w-9 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
@@ -191,19 +205,20 @@ export function SideNav() {
                         : activeTeam?.planTier ?? tSide('killio')}
                   </Text>
                 </View>
+                <View
+                  className="rounded-md p-1"
+                  style={{ transform: [{ rotate: pickerOpen ? '180deg' : '0deg' }] }}
+                >
+                  <ChevronsUpDown size={16} color={pickerOpen ? colors.cyan : colors.mutedForeground} />
+                </View>
               </Pressable>
-              {/* Chevron is its OWN button so it can collapse the picker without
-                  re-introducing the toggle bug on the main open target above. */}
               <Pressable
-                onPress={() => setPickerOpen((v) => !v)}
-                hitSlop={12}
-                className="rounded-md p-1"
+                onPress={closeNav}
+                hitSlop={10}
+                className="rounded-md p-1 ml-1"
                 accessibilityRole="button"
-                accessibilityLabel="Toggle workspace picker"
+                accessibilityLabel={tSide('closeMenu')}
               >
-                <ChevronsUpDown size={14} color={colors.mutedForeground} />
-              </Pressable>
-              <Pressable onPress={closeNav} hitSlop={10} className="rounded-md p-1 ml-1">
                 <X size={18} color={colors.mutedForeground} />
               </Pressable>
             </View>

@@ -1,21 +1,24 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   Modal,
   Pressable,
   RefreshControl,
+  SectionList,
   Text,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Hash, MessageCircle, Users } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, Hash, MessageCircle, Users } from 'lucide-react-native';
 
 import { Screen, Card, H1, Body } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
 import {
   findOrCreateDm,
   listTeamRooms,
+  listTeamRoomGroups,
   type Room,
+  type RoomGroup,
 } from '@/core/api/rooms.client';
 import { api } from '@/core/api/http';
 import { useTranslations } from '@/i18n';
@@ -38,27 +41,61 @@ export default function RoomsScreen() {
   const t = useTranslations('roomsScreen');
   const { activeTeam } = useAuth();
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [groups, setGroups] = useState<RoomGroup[]>([]);
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [dmPickerOpen, setDmPickerOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     if (!activeTeam?.id) return;
     setLoading(true);
     try {
-      const [rs, ms] = await Promise.all([
+      const [rs, gs, ms] = await Promise.all([
         listTeamRooms(activeTeam.id),
+        listTeamRoomGroups(activeTeam.id).catch(() => [] as RoomGroup[]),
         api.get<MemberRow[]>(`/teams/${activeTeam.id}/members`).then((r) => r.data ?? []),
       ]);
       setRooms(rs);
+      setGroups(gs);
       setMembers(ms);
     } catch {
       setRooms([]);
+      setGroups([]);
       setMembers([]);
     } finally {
       setLoading(false);
     }
   }, [activeTeam?.id]);
+
+  // Build SectionList sections: one per room-group (in group sort order), then
+  // a trailing "Other" section for any ungrouped room. This is what puts the
+  // Vault assistant conversation rooms (groupId = the team's "Vault" group)
+  // INSIDE the collapsible VAULT folder instead of loose below it.
+  const sections = useMemo(() => {
+    const byGroup = new Map<string, Room[]>();
+    const ungrouped: Room[] = [];
+    for (const r of rooms) {
+      if (r.groupId) {
+        const arr = byGroup.get(r.groupId) ?? [];
+        arr.push(r);
+        byGroup.set(r.groupId, arr);
+      } else {
+        ungrouped.push(r);
+      }
+    }
+    const out: { key: string; title: string; emoji?: string | null; data: Room[] }[] = [];
+    for (const g of groups) {
+      const data = byGroup.get(g.id) ?? [];
+      if (data.length === 0) continue;
+      out.push({ key: g.id, title: g.name, emoji: g.emoji, data });
+    }
+    if (ungrouped.length > 0) {
+      out.push({ key: '__ungrouped__', title: t('ungrouped'), data: ungrouped });
+    }
+    // Respect collapse state without dropping the header row.
+    return out.map((s) => ({ ...s, data: collapsed[s.key] ? [] : s.data }));
+  }, [rooms, groups, collapsed, t]);
 
   useEffect(() => {
     void load();
@@ -98,11 +135,12 @@ export default function RoomsScreen() {
         </Pressable>
       </View>
 
-      <FlatList
+      <SectionList
         className="mt-3"
         contentContainerClassName="px-5 pb-10 gap-2"
-        data={rooms}
+        sections={sections}
         keyExtractor={(r) => r.id}
+        stickySectionHeadersEnabled={false}
         refreshControl={
           <RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.foreground} />
         }
@@ -111,6 +149,30 @@ export default function RoomsScreen() {
             <Body muted>{t('empty')}</Body>
           </Card>
         }
+        renderSectionHeader={({ section }) => {
+          const isCollapsed = !!collapsed[section.key];
+          const Chevron = isCollapsed ? ChevronRight : ChevronDown;
+          return (
+            <Pressable
+              onPress={() =>
+                setCollapsed((prev) => ({ ...prev, [section.key]: !prev[section.key] }))
+              }
+              className="flex-row items-center gap-1.5 px-1 pt-2 pb-1"
+              accessibilityRole="button"
+              accessibilityLabel={section.title}
+            >
+              <Chevron size={14} color={colors.mutedForeground} />
+              <Text
+                style={{ fontFamily: fonts.bold }}
+                className="text-[11px] uppercase tracking-widest text-muted-foreground"
+                numberOfLines={1}
+              >
+                {section.emoji ? `${section.emoji} ` : ''}
+                {section.title}
+              </Text>
+            </Pressable>
+          );
+        }}
         renderItem={({ item }) => {
           const Icon = item.type === 'dm' ? MessageCircle : Hash;
           return (

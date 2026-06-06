@@ -539,6 +539,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       test: 'Probar voz',
       testing: 'Reproduciendo…',
       testText: 'Hola, soy Killio. ¿En qué puedo ayudarte hoy?',
+      testError: 'No se pudo reproducir la voz. Inténtalo de nuevo.',
     },
     wakeWordSettings: {
       title: 'Palabra clave',
@@ -567,6 +568,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       newDm: 'Nuevo DM',
       empty: 'Sin canales.',
       pickMember: 'Elige un miembro',
+      ungrouped: 'Otros',
     },
     roomChat: {
       untitled: 'Chat',
@@ -642,6 +644,7 @@ export const MESSAGES: Record<Locale, Messages> = {
     },
     wakeListener: {
       recentContext: 'Contexto reciente (último minuto): "{{text}}"',
+      heard: 'Te escucho',
     },
     agentsScreen: {
       langEs: 'Español (ES)',
@@ -649,6 +652,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       untitled: 'Sin título',
       wakeHey: 'Hey',
       testVoice: 'Probar voz',
+      testVoiceError: 'No se pudo reproducir la voz. Inténtalo de nuevo.',
     },
     homeScreen: {
       vaultTitle: 'Vault',
@@ -692,6 +696,8 @@ export const MESSAGES: Record<Locale, Messages> = {
       modeVault: 'Vault',
       modeWorkspace: 'Workspace',
       killio: 'Killio',
+      switchWorkspace: 'cambiar workspace',
+      closeMenu: 'Cerrar menú',
     },
     fallback: {
       untitled: 'Sin título',
@@ -1662,6 +1668,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       test: 'Test voice',
       testing: 'Playing…',
       testText: 'Hi, I am Killio. How can I help you today?',
+      testError: 'Could not play the voice. Please try again.',
     },
     wakeWordSettings: {
       title: 'Wake word',
@@ -1690,6 +1697,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       newDm: 'New DM',
       empty: 'No channels.',
       pickMember: 'Pick a member',
+      ungrouped: 'Other',
     },
     roomChat: {
       untitled: 'Chat',
@@ -1764,6 +1772,7 @@ export const MESSAGES: Record<Locale, Messages> = {
     },
     wakeListener: {
       recentContext: 'Recent context (last minute): "{{text}}"',
+      heard: "I'm listening",
     },
     agentsScreen: {
       langEs: 'Spanish (ES)',
@@ -1771,6 +1780,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       untitled: 'Untitled',
       wakeHey: 'Hey',
       testVoice: 'Test voice',
+      testVoiceError: 'Could not play the voice. Please try again.',
     },
     homeScreen: {
       vaultTitle: 'Vault',
@@ -1814,6 +1824,8 @@ export const MESSAGES: Record<Locale, Messages> = {
       modeVault: 'Vault',
       modeWorkspace: 'Workspace',
       killio: 'Killio',
+      switchWorkspace: 'switch workspace',
+      closeMenu: 'Close menu',
     },
     fallback: {
       untitled: 'Untitled',

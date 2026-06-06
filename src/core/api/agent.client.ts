@@ -68,7 +68,22 @@ export interface ClientActionEvent {
 export interface AgentStreamHandlers {
   onDelta?(text: string): void;
   onToolStart?(e: { id?: string; tool: string; input: unknown }): void;
-  onToolDone?(e: { id?: string; tool: string; success: boolean; output: unknown }): void;
+  onToolDone?(e: {
+    id?: string;
+    tool: string;
+    success: boolean;
+    input?: unknown;
+    output: unknown;
+    durationMs?: number;
+  }): void;
+  /**
+   * Emitted by the backend right after `tool_done` (separate event, same
+   * tool_use_id). Carries the raw result payload. Kept distinct from
+   * `onToolDone` so callers can render the result line exactly like the web.
+   */
+  onToolResult?(e: { id?: string; tool: string; success: boolean; data: unknown }): void;
+  /** A tool is paused awaiting user approval (chip → "approval" state). */
+  onToolApproval?(e: { id?: string; tool: string; input: unknown }): void;
   onClientAction?(e: ClientActionEvent): void;
   onDone?(e: { conversationId: string; messageId: string; text: string }): void;
   onError?(message: string): void;
@@ -107,10 +122,30 @@ export async function streamAgentChat(
         handlers.onDelta?.(String(evt.text ?? ''));
         break;
       case 'tool_start':
-        handlers.onToolStart?.({ tool: evt.tool, input: evt.input });
+        // Forward the backend tool_use_id (evt.id) so the chip is keyed by it —
+        // dropping it caused finished events to mis-match the started chip.
+        handlers.onToolStart?.({ id: evt.id, tool: evt.tool, input: evt.input });
         break;
       case 'tool_done':
-        handlers.onToolDone?.({ tool: evt.tool, success: !!evt.success, output: evt.output });
+        handlers.onToolDone?.({
+          id: evt.id,
+          tool: evt.tool,
+          success: !!evt.success,
+          input: evt.input,
+          output: evt.output,
+          durationMs: evt.durationMs,
+        });
+        break;
+      case 'tool_result':
+        handlers.onToolResult?.({
+          id: evt.id,
+          tool: evt.tool,
+          success: evt.success !== false,
+          data: evt.data,
+        });
+        break;
+      case 'tool_approval_request':
+        handlers.onToolApproval?.({ id: evt.id, tool: evt.tool, input: evt.input ?? {} });
         break;
       case 'client_action':
         handlers.onClientAction?.({ id: evt.id, tool: evt.tool, input: evt.input ?? {} });

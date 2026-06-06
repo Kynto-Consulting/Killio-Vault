@@ -183,7 +183,23 @@ export default function AssistantScreen() {
     setBusy(true);
     draftId.current = `a-${Date.now()}`;
     let finalText = '';
-    const toolInputById = new Map<string, { tool: string; input: unknown }>();
+    // Ordered registry of started tool calls, keyed by the backend tool_use_id
+    // (falls back to a synthetic id only when the backend omits one). Mirrors
+    // the web's `toolEvts` array so a finished event matches the started chip.
+    const started: { id: string; tool: string; resolved: boolean }[] = [];
+    const idFor = (e: { id?: string; tool: string }): string | undefined => {
+      if (e.id) return e.id;
+      // No id on the finished event → match the most-recent unresolved start of
+      // the same tool (same heuristic the frontend uses for repeated tools).
+      for (let i = started.length - 1; i >= 0; i--) {
+        if (started[i].tool === e.tool && !started[i].resolved) return started[i].id;
+      }
+      return undefined;
+    };
+    const emit = (markup: string) => {
+      finalText += markup;
+      appendAssistantDelta(markup);
+    };
     await streamAgentChat(
       {
         teamId: activeTeam.id,
@@ -198,21 +214,59 @@ export default function AssistantScreen() {
           appendAssistantDelta(t);
         },
         onToolStart: (e) => {
-          const id = e.id ?? `tc-${toolInputById.size}`;
-          toolInputById.set(id, { tool: e.tool, input: e.input });
-          // Synthesize inline markup so AgentMessage renders a live tool chip.
-          const invoke = `\n<invoke id="${id}" name="${e.tool}"><parameters>${
-            renderParams(e.input)
-          }</parameters></invoke>\n<tool_status id="${id}" status="running" />`;
-          finalText += invoke;
-          appendAssistantDelta(invoke);
+          const id = e.id ?? `tc-${started.length}`;
+          started.push({ id, tool: e.tool, resolved: false });
+          // Synthesize inline markup so AgentMessage renders a live tool chip,
+          // keyed by the SAME id the finished event will carry.
+          emit(
+            `\n<invoke id="${id}" name="${e.tool}"><parameters>${renderParams(
+              e.input,
+            )}</parameters></invoke>\n<tool_status id="${id}" status="running" />`,
+          );
         },
         onToolDone: (e) => {
-          const id = e.id ?? findIdFor(e.tool, toolInputById);
+          const id = idFor(e);
           if (!id) return;
-          const tag = `\n<tool_status id="${id}" status="done" success="${e.success}" />`;
-          finalText += tag;
-          appendAssistantDelta(tag);
+          const entry = started.find((s) => s.id === id);
+          if (entry) entry.resolved = true;
+          // Flip the chip to done/error AND attach the result so the chip can
+          // show its output line (was dropped → chip never completed).
+          emit(
+            `\n<tool_status id="${id}" status="${e.success ? 'done' : 'error'}" success="${
+              e.success
+            }"${e.durationMs != null ? ` duration_ms="${e.durationMs}"` : ''} />`,
+          );
+          if (e.output !== undefined) {
+            emit(
+              `\n<tool_output id="${id}" success="${e.success}">${escapeOutput(
+                e.output,
+              )}</tool_output>`,
+            );
+          }
+        },
+        onToolResult: (e) => {
+          // Separate result event (same tool_use_id). Only emit if tool_done
+          // didn't already carry the output, so the chip isn't duplicated.
+          const id = idFor(e);
+          if (!id || e.data === undefined) return;
+          if (finalText.includes(`<tool_output id="${id}"`)) return;
+          emit(
+            `\n<tool_output id="${id}" success="${e.success}">${escapeOutput(
+              e.data,
+            )}</tool_output>`,
+          );
+        },
+        onToolApproval: (e) => {
+          const id = e.id ?? `tc-${started.length}`;
+          if (!started.some((s) => s.id === id)) {
+            started.push({ id, tool: e.tool, resolved: false });
+            emit(
+              `\n<invoke id="${id}" name="${e.tool}"><parameters>${renderParams(
+                e.input,
+              )}</parameters></invoke>`,
+            );
+          }
+          emit(`\n<tool_status id="${id}" status="waiting_for_approval" />`);
         },
         onClientAction: (e) => void handleClientAction(e),
         onDone: ({ conversationId: cid }) => {
@@ -566,12 +620,24 @@ function renderParams(input: unknown): string {
     .join('');
 }
 
-function findIdFor(
-  tool: string,
-  map: Map<string, { tool: string; input: unknown }>,
-): string | undefined {
-  for (const [id, v] of map) if (v.tool === tool) return id;
-  return undefined;
+/**
+ * Serialises a tool result for inline `<tool_output>` markup. JSON so the
+ * markup parser (ai-markup.ts OUTPUT_RE) can JSON.parse it back; HTML-escaped
+ * so embedded `<`/`>`/`&` don't break the surrounding tag soup. Capped to keep
+ * a giant payload from bloating the persisted message.
+ */
+function escapeOutput(output: unknown): string {
+  let s: string;
+  try {
+    s = typeof output === 'string' ? output : JSON.stringify(output);
+  } catch {
+    s = String(output);
+  }
+  if (s.length > 4000) s = s.slice(0, 4000);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function describeAction(

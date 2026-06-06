@@ -13,6 +13,16 @@ export interface Room {
   linkedEntityType?: string | null;
   linkedEntityId?: string | null;
   emoji?: string | null;
+  /** Room-group folder this room lives under (e.g. the "Vault" group). */
+  groupId?: string | null;
+}
+
+export interface RoomGroup {
+  id: string;
+  teamId: string;
+  name: string;
+  emoji?: string | null;
+  sortOrder?: number;
 }
 
 export interface RoomMessage {
@@ -148,6 +158,11 @@ export async function reactRoomMessage(
 
 export async function listTeamRooms(teamId: string): Promise<Room[]> {
   const { data } = await api.get<Room[]>(`/teams/${teamId}/rooms`);
+  return data ?? [];
+}
+
+export async function listTeamRoomGroups(teamId: string): Promise<RoomGroup[]> {
+  const { data } = await api.get<RoomGroup[]>(`/teams/${teamId}/room-groups`);
   return data ?? [];
 }
 

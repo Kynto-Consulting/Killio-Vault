@@ -57,6 +57,14 @@ export class CaptureController {
   private muted = false;
   /** Fired when a wake phrase is detected in a transcript ("Hey Killio …"). */
   private onWakeCb: ((m: WakeMatch) => void) | null = null;
+  /**
+   * When the WakeListener has been woken with a bare "Hey Killio" (no inline
+   * command), it arms this callback so the NEXT spoken utterance(s) are routed
+   * to it as the command — implementing "wake → chime → capture what the human
+   * says next → send when they stop talking". Cleared by the listener once the
+   * turn is sent (or it times out).
+   */
+  private onCommandUtteranceCb: ((text: string) => void) | null = null;
 
   constructor(opts: CaptureControllerOptions) {
     this.mode = opts.mode;
@@ -183,6 +191,15 @@ export class CaptureController {
     this.onWakeCb = cb;
   }
 
+  /**
+   * Arm/disarm capture of the next plain utterance as a wake command. While
+   * armed, transcripts that do NOT themselves contain a wake phrase are routed
+   * to `cb` (instead of only being diary-enqueued). Pass null to disarm.
+   */
+  setOnCommandUtterance(cb: ((text: string) => void) | null): void {
+    this.onCommandUtteranceCb = cb;
+  }
+
   /** Native SpeechRecognizer transcript → diary outbox + wake-phrase scan. */
   private handleTranscript(e: Speech.TranscriptEvent): void {
     if (this.muted) return;
@@ -191,12 +208,19 @@ export class CaptureController {
     enqueueSegment({ text, ts: e.ts, source: 'android_speech' });
 
     // Wake detection (JS, over the free local transcripts).
-    if (this.onWakeCb) {
-      const names = listAgents()
-        .map((a) => a.wakePhrase || a.name)
-        .filter(Boolean);
-      const m = matchWake(text, names);
-      if (m) this.onWakeCb(m);
+    const names = listAgents()
+      .map((a) => a.wakePhrase || a.name)
+      .filter(Boolean);
+    const m = this.onWakeCb ? matchWake(text, names) : null;
+    if (m) {
+      this.onWakeCb!(m);
+      return;
+    }
+
+    // Post-wake command capture: when armed (after a bare "Hey Killio"), the
+    // next utterance that is NOT itself a wake phrase is the user's command.
+    if (this.onCommandUtteranceCb) {
+      this.onCommandUtteranceCb(text);
     }
   }
 

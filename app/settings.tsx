@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Check, Image as ImageIcon, X } from 'lucide-react-native';
 
@@ -60,15 +60,22 @@ export default function SettingsScreen() {
 
   const testVoice = async () => {
     setTesting(true);
+    let failed = false;
     try {
       await new Promise<void>((resolve) =>
-        speak(tVoice('testText'), {
+        void speak(tVoice('testText'), {
           language: voice,
+          onError: () => {
+            failed = true;
+          },
           onFinish: () => resolve(),
         }),
       );
+    } catch {
+      failed = true;
     } finally {
       setTesting(false);
+      if (failed) Alert.alert(tVoice('testError'));
     }
   };
 

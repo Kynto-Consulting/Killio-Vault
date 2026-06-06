@@ -133,10 +133,11 @@ function collectToolStates(content: string): Map<string, ToolState> {
     const id = a.id;
     if (!id) continue;
     const st = byId.get(id) ?? { id, name: id, status: 'done' as ToolStatus };
+    const body = unescapeHtml(m[2]);
     try {
-      st.output = JSON.parse(m[2]);
+      st.output = JSON.parse(body);
     } catch {
-      st.output = m[2];
+      st.output = body;
     }
     if (a.success === 'false') st.status = 'error';
     byId.set(id, st);

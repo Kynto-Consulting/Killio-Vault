@@ -191,7 +191,8 @@ export default function AgentsScreen() {
               onPress={() =>
                 void speak(`Hola, soy ${draft.name || 'Killio'}. ${draft.personality || ''}`.trim(), {
                   language: draft.voice ?? 'es-ES',
-                })
+                  onError: () => Alert.alert(tAgents('testVoiceError')),
+                }).catch(() => Alert.alert(tAgents('testVoiceError')))
               }
               style={styles.voiceChip}
             >
