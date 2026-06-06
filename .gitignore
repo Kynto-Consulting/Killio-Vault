@@ -26,3 +26,8 @@ expo-env.d.ts
 # build logs
 eas-*.txt
 android/build*.log
+
+# but DO ignore gradle build output inside the modules
+modules/**/android/build/
+modules/**/android/.gradle/
+modules/**/android/.cxx/

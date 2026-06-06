@@ -1,2 +1,0 @@
-D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\java\dev\killio\capture\KillioCaptureModule.kt
-D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\java\dev\killio\capture\VaultCaptureService.kt
