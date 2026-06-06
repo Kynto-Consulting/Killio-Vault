@@ -15,11 +15,13 @@ import { useLocalWorkspace } from '@/local-workspace/LocalWorkspaceProvider';
 import {
   appendDocumentBlock,
   getDocument,
+  listFolders,
   removeBrick,
   reorderBricks,
   updateBrickContent,
   updateDocument,
   type DocFull,
+  type FolderSummary,
 } from '@/core/api/documents.client';
 import type { KillioFile } from '@/local-workspace/killio-file';
 
@@ -54,6 +56,28 @@ export default function DocumentDetailScreen() {
   const [canEdit, setCanEdit] = useState(false);
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved' | 'offline'>('idle');
   const [sidebarTab, setSidebarTab] = useState<'copilot' | 'comments' | 'activity' | null>(null);
+  // Folder catalogue for breadcrumb ancestry. Loaded once per team — cheap
+  // (`/folders` returns the flat list) and lets us walk parentFolderId chain
+  // without N round-trips. Local mode reads the chain straight from the path.
+  const [allFolders, setAllFolders] = useState<FolderSummary[]>([]);
+
+  useEffect(() => {
+    if (isLocal || !activeTeam?.id) {
+      setAllFolders([]);
+      return;
+    }
+    let cancelled = false;
+    listFolders(activeTeam.id)
+      .then((fs) => {
+        if (!cancelled) setAllFolders(fs);
+      })
+      .catch(() => {
+        if (!cancelled) setAllFolders([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTeam?.id, isLocal]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -192,30 +216,76 @@ export default function DocumentDetailScreen() {
       let cursor = '';
       for (const p of parts) {
         cursor = cursor ? `${cursor}/${p}` : p;
+        // Land back in /documents with the folderId param so the screen
+        // restores the same folderStack the user was browsing. Captured by
+        // value so each segment routes to its own ancestor, not the leaf.
+        const target = cursor;
         segs.push({
           key: `local:${cursor}`,
           label: p,
-          onPress: () => router.replace('/documents'),
+          onPress: () =>
+            router.push({
+              pathname: '/documents',
+              params: { folderId: `local:${target}` },
+            }),
         });
       }
     } else {
+      // Workspace root.
       segs.push({
         key: 'ws',
         label: activeTeam?.name ?? tFallback('workspace'),
         onPress: () => router.replace('/workspace'),
       });
+      // /documents root.
       segs.push({
         key: 'docs',
         label: tFallback('breadcrumbDocs'),
         onPress: () => router.replace('/documents'),
       });
+      // Folder ancestry — walk parentFolderId up from the doc's folder, then
+      // reverse so the breadcrumb reads root → leaf. Missing folders (e.g.
+      // catalog still loading or doc moved out from under us) just collapse
+      // and the breadcrumb gracefully shrinks to Workspace / Documents / Doc.
+      if (doc?.folderId && allFolders.length > 0) {
+        const byId = new Map(allFolders.map((f) => [f.id, f]));
+        const chain: FolderSummary[] = [];
+        let cur: FolderSummary | undefined = byId.get(doc.folderId);
+        const guard = new Set<string>(); // cycle guard
+        while (cur && !guard.has(cur.id)) {
+          guard.add(cur.id);
+          chain.unshift(cur);
+          cur = cur.parentFolderId ? byId.get(cur.parentFolderId) : undefined;
+        }
+        for (const f of chain) {
+          const fid = f.id;
+          segs.push({
+            key: `folder:${fid}`,
+            label: f.name,
+            icon: f.icon ?? undefined,
+            onPress: () =>
+              router.push({ pathname: '/documents', params: { folderId: fid } }),
+          });
+        }
+      }
     }
     segs.push({
       key: 'doc',
       label: doc?.title ?? params.title ?? tFallback('document'),
     });
     return segs;
-  }, [isLocal, local.active?.name, localPath, activeTeam?.name, doc?.title, params.title, router, tFallback]);
+  }, [
+    isLocal,
+    local.active?.name,
+    localPath,
+    activeTeam?.name,
+    doc?.title,
+    doc?.folderId,
+    allFolders,
+    params.title,
+    router,
+    tFallback,
+  ]);
 
   const persistLocal = useCallback(
     async (nextDoc: DocFull) => {

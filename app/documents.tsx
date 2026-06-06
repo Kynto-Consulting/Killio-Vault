@@ -7,7 +7,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
   ChevronLeft,
   Clock,
@@ -60,6 +60,66 @@ export default function DocumentsScreen() {
   const [documents, setDocuments] = useState<DocSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
+
+  // Deep-link entry: the document breadcrumb (and a few other entry points)
+  // can route here with ?folderId=<id> to land directly on a sub-folder. We
+  // resolve the chain back to root from that id and seed `folderStack` so
+  // the breadcrumb shows the right ancestry. Effect re-runs only when the
+  // query param changes — manual navigation inside the screen mutates
+  // `folderStack` directly and is not overwritten.
+  const params = useLocalSearchParams<{ folderId?: string | string[] }>();
+  const folderIdParam = Array.isArray(params.folderId)
+    ? params.folderId[0]
+    : params.folderId ?? '';
+
+  useEffect(() => {
+    if (!folderIdParam) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Local route shape: `local:<path/with/slashes>`. Walk path segments
+        // back into the local.folders cache to recover icons + names.
+        if (folderIdParam.startsWith('local:')) {
+          if (!useLocal) return;
+          const fullPath = folderIdParam.slice('local:'.length);
+          const parts = fullPath.split('/').filter(Boolean);
+          const chain: FolderSummary[] = [];
+          let cursor = '';
+          for (const p of parts) {
+            cursor = cursor ? `${cursor}/${p}` : p;
+            const match = local.folders.find((f) => f.path === cursor);
+            chain.push({
+              id: cursor,
+              name: match?.name ?? p,
+              parentFolderId: null,
+              icon: match?.icon ?? '📁',
+              color: match?.color ?? null,
+            });
+          }
+          if (!cancelled) setFolderStack(chain);
+          return;
+        }
+        // Cloud branch — fetch the flat folder list and walk parentFolderId.
+        if (!activeTeam?.id) return;
+        const all = await listFolders(activeTeam.id);
+        const byId = new Map(all.map((f) => [f.id, f]));
+        const chain: FolderSummary[] = [];
+        let cur: FolderSummary | undefined = byId.get(folderIdParam);
+        const guard = new Set<string>();
+        while (cur && !guard.has(cur.id)) {
+          guard.add(cur.id);
+          chain.unshift(cur);
+          cur = cur.parentFolderId ? byId.get(cur.parentFolderId) : undefined;
+        }
+        if (!cancelled && chain.length > 0) setFolderStack(chain);
+      } catch {
+        /* ignore — user can navigate manually */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [folderIdParam, activeTeam?.id, useLocal, local.folders]);
 
   const currentFolder = folderStack[folderStack.length - 1] ?? null;
   const activeFolderId = currentFolder?.id ?? null;
@@ -285,30 +345,55 @@ export default function DocumentsScreen() {
           ) : null}
         </View>
 
-        {/* Breadcrumb */}
+        {/* Breadcrumb — workspace root + folder ancestry. Local mode shows the
+            local workspace name; cloud mode shows the active team name. Tap on
+            workspace label clears the folder stack; tap on any ancestor slices
+            the stack to that depth. The last segment is the current folder
+            (bolded). */}
         <View className="flex-row flex-wrap items-center gap-1">
-          <Pressable onPress={() => setFolderStack([])}>
+          <Pressable onPress={() => setFolderStack([])} hitSlop={4}>
             <Text
-              style={{ fontFamily: fonts.medium }}
-              className="text-xs text-muted-foreground"
+              style={{
+                fontFamily:
+                  folderStack.length === 0 ? fonts.semibold : fonts.medium,
+              }}
+              className={`text-xs ${
+                folderStack.length === 0
+                  ? 'text-foreground'
+                  : 'text-muted-foreground'
+              }`}
+              numberOfLines={1}
             >
-              {activeTeam?.name ?? tFallback('workspace')}
+              {useLocal
+                ? `💾 ${local.active?.name ?? tFallback('local')}`
+                : activeTeam?.name ?? tFallback('workspace')}
             </Text>
           </Pressable>
-          {folderStack.map((f, i) => (
-            <View key={f.id} className="flex-row items-center gap-1">
-              <Text className="text-xs text-muted-foreground">/</Text>
-              <Pressable onPress={() => setFolderStack((s) => s.slice(0, i + 1))}>
-                <Text
-                  style={{ fontFamily: fonts.semibold }}
-                  className="text-xs text-foreground"
+          {folderStack.map((f, i) => {
+            const isLast = i === folderStack.length - 1;
+            return (
+              <View key={f.id} className="flex-row items-center gap-1">
+                <Text className="text-xs text-muted-foreground">/</Text>
+                <Pressable
+                  onPress={() => setFolderStack((s) => s.slice(0, i + 1))}
+                  hitSlop={4}
                 >
-                  {f.icon ? `${f.icon} ` : ''}
-                  {f.name}
-                </Text>
-              </Pressable>
-            </View>
-          ))}
+                  <Text
+                    style={{
+                      fontFamily: isLast ? fonts.semibold : fonts.medium,
+                    }}
+                    className={`text-xs ${
+                      isLast ? 'text-foreground' : 'text-muted-foreground'
+                    }`}
+                    numberOfLines={1}
+                  >
+                    {f.icon ? `${f.icon} ` : ''}
+                    {f.name}
+                  </Text>
+                </Pressable>
+              </View>
+            );
+          })}
         </View>
 
         {/* Folders */}
