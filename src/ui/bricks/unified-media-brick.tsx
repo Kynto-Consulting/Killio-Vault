@@ -1,40 +1,38 @@
-"use client";
-
 import React from "react";
-import { AlignLeft, AlignCenter, AlignRight, Maximize, FileText, Settings, Link as LinkIcon, Image as ImageIcon, Video, Music, Bookmark } from "lucide-react";
-import { useTranslations } from "@/components/providers/i18n-provider";
-import { useLocalWorkspace } from "@/components/providers/local-workspace-provider";
-import { isAssetRef, readAssetFile } from "@/lib/local-workspace/assets";
-import { getImageUrl } from "@/lib/image-cache";
+import {
+  Image,
+  Linking,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { Audio, ResizeMode, Video } from "expo-av";
+import {
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  Maximize,
+  FileText,
+  Settings,
+  Link as LinkIcon,
+  Image as ImageIcon,
+  Video as VideoIcon,
+  Music,
+  Bookmark,
+  Play,
+  Pause,
+} from "lucide-react-native";
+import { useTranslations } from "@/i18n";
+import { colors } from "@/theme/theme";
+import { fonts } from "@/theme/fonts";
 
-// Resolve any `asset:<name>` refs in the given urls to displayable URLs via the
-// global image cache (deduped + pooled, no per-render objectURL churn). In cloud
-// mode (no dir) refs can't resolve and pass through unchanged.
-function useResolvedAssetMap(urls: string[]): Record<string, string> {
-  const { getDir } = useLocalWorkspace();
-  const [map, setMap] = React.useState<Record<string, string>>({});
-  const refsKey = React.useMemo(
-    () => Array.from(new Set(urls.filter(isAssetRef))).sort().join("|"),
-    [urls],
-  );
-  React.useEffect(() => {
-    const refs = refsKey ? refsKey.split("|") : [];
-    if (refs.length === 0) { setMap({}); return; }
-    const dir = getDir();
-    if (!dir) { setMap({}); return; }
-    let cancelled = false;
-    const readAsset = (name: string) => readAssetFile(dir, name).catch(() => null);
-    Promise.all(refs.map(async (ref) => {
-      try { const u = await getImageUrl(ref, readAsset); return u ? ([ref, u] as const) : null; }
-      catch { return null; }
-    })).then((pairs) => {
-      if (cancelled) return;
-      setMap(Object.fromEntries(pairs.filter(Boolean) as Array<readonly [string, string]>));
-    });
-    return () => { cancelled = true; };
-  }, [refsKey, getDir]);
-  return map;
-}
+// Mobile: the web brick resolved `asset:<name>` refs through a local-workspace
+// object-URL cache (useResolvedAssetMap / image-cache). On RN those primitives
+// don't exist; `asset:`/`/uploads/` URLs resolve directly to remote URIs via
+// resolveUrl, and Image/Video consume { uri } sources. framer-motion, the
+// click-outside listener and all hover/group classes are dropped.
 
 export type MediaCarouselItem = {
   url: string;
@@ -84,13 +82,108 @@ const parseMediaMeta = (caption: string | null | undefined, fallback: MediaCarou
 };
 
 const buildMediaCaption = (meta: MediaMeta): string => {
-  return `${MEDIA_META_PREFIX}${JSON.stringify({ 
-    subtitle: meta.subtitle || "", 
+  return `${MEDIA_META_PREFIX}${JSON.stringify({
+    subtitle: meta.subtitle || "",
     items: meta.items,
     layout: meta.layout || "center",
     border: meta.border || "soft",
     shadow: meta.shadow || "none",
   })}`;
+};
+
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "http://localhost:4000";
+
+const resolveUrl = (url: string | null | undefined): string => {
+  if (!url) return "";
+  // Mobile: asset: refs can't be resolved locally → pass through unchanged.
+  if (url.startsWith("/uploads/")) return `${API_BASE_URL}${url}`;
+  return url;
+};
+
+// Mobile: <audio> has no RN equivalent → expo-av Audio.Sound with a
+// play/pause button + a thin progress bar.
+const AudioPlayer: React.FC<{ uri: string; title?: string | null }> = ({ uri, title }) => {
+  const soundRef = React.useRef<Audio.Sound | null>(null);
+  const [isPlaying, setIsPlaying] = React.useState(false);
+  const [progress, setProgress] = React.useState(0);
+
+  React.useEffect(() => {
+    return () => {
+      void soundRef.current?.unloadAsync();
+      soundRef.current = null;
+    };
+  }, [uri]);
+
+  const toggle = async () => {
+    try {
+      if (!soundRef.current) {
+        const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
+        soundRef.current = sound;
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (!status.isLoaded) return;
+          setIsPlaying(status.isPlaying);
+          const total = status.durationMillis || 1;
+          setProgress(Math.min(1, (status.positionMillis || 0) / total));
+          if (status.didJustFinish) {
+            setIsPlaying(false);
+            setProgress(0);
+            void soundRef.current?.setPositionAsync(0);
+          }
+        });
+        setIsPlaying(true);
+        return;
+      }
+      const status = await soundRef.current.getStatusAsync();
+      if (status.isLoaded && status.isPlaying) {
+        await soundRef.current.pauseAsync();
+      } else {
+        await soundRef.current.playAsync();
+      }
+    } catch {
+      // Ignore playback errors (unreachable URI, codec, etc.).
+    }
+  };
+
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        padding: 16,
+        minWidth: 280,
+        backgroundColor: colors.muted + "1a",
+      }}
+    >
+      <Pressable
+        onPress={() => void toggle()}
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: colors.primary,
+        }}
+      >
+        {isPlaying ? (
+          <Pause size={18} color={colors.primaryForeground} />
+        ) : (
+          <Play size={18} color={colors.primaryForeground} />
+        )}
+      </Pressable>
+      <View style={{ flex: 1, gap: 4 }}>
+        {title ? (
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, fontFamily: fonts.regular }} numberOfLines={1}>
+            {title}
+          </Text>
+        ) : null}
+        <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.border, overflow: "hidden" }}>
+          <View style={{ width: `${progress * 100}%`, height: 4, backgroundColor: colors.primary }} />
+        </View>
+      </View>
+    </View>
+  );
 };
 
 export const UnifiedMediaBrick: React.FC<{
@@ -99,8 +192,8 @@ export const UnifiedMediaBrick: React.FC<{
   content: any;
   canEdit: boolean;
   onUpdate: (content: any) => void;
-  onUploadMediaFiles?: (payload: { brickId: string; files: File[] }) => Promise<void> | void;
-}> = ({ brickId, kind = "media", content, canEdit, onUpdate, onUploadMediaFiles }) => {
+  onUploadMediaFiles?: (payload: { brickId: string; files: any[] }) => Promise<void> | void;
+}> = ({ brickId, kind = "media", content, canEdit, onUpdate }) => {
   const t = useTranslations("document-detail");
   const fallback: MediaCarouselItem = {
     url: content.url || "",
@@ -112,21 +205,7 @@ export const UnifiedMediaBrick: React.FC<{
   const meta = parseMediaMeta(content.caption, fallback);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [showSettings, setShowSettings] = React.useState(false);
-  
-  const [emptyTab, setEmptyTab] = React.useState<"upload" | "link">(kind === "bookmark" ? "link" : "upload");
   const [linkInput, setLinkInput] = React.useState("");
-  const [isFormOpen, setIsFormOpen] = React.useState(false);
-  const containerRef = React.useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (isFormOpen && containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsFormOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isFormOpen]);
 
   React.useEffect(() => {
     if (activeIndex >= meta.items.length) {
@@ -136,9 +215,20 @@ export const UnifiedMediaBrick: React.FC<{
 
   const activeItem = meta.items[activeIndex] || fallback;
   const mime = (activeItem?.mimeType || "").toLowerCase();
-  const isImage = mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(activeItem?.url || "") || content.mediaType === "image";
-  const isVideo = mime.startsWith("video/") || /\.(mp4|webm|mov|ogg|m4v)$/i.test(activeItem?.url || "") || content.mediaType === "video" || kind === "video";
-  const isAudio = mime.startsWith("audio/") || /\.(mp3|wav|ogg|aac|flac)$/i.test(activeItem?.url || "") || content.mediaType === "audio" || kind === "audio";
+  const isImage =
+    mime.startsWith("image/") ||
+    /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(activeItem?.url || "") ||
+    content.mediaType === "image";
+  const isVideo =
+    mime.startsWith("video/") ||
+    /\.(mp4|webm|mov|ogg|m4v)$/i.test(activeItem?.url || "") ||
+    content.mediaType === "video" ||
+    kind === "video";
+  const isAudio =
+    mime.startsWith("audio/") ||
+    /\.(mp3|wav|ogg|aac|flac)$/i.test(activeItem?.url || "") ||
+    content.mediaType === "audio" ||
+    kind === "audio";
   const isWebBookmark = content.mediaType === "bookmark" || kind === "bookmark" || mime === "text/html";
 
   const updateMeta = (nextMeta: MediaMeta, nextIndex = 0) => {
@@ -160,325 +250,561 @@ export const UnifiedMediaBrick: React.FC<{
   const border = meta.border || "soft";
   const shadow = meta.shadow || "none";
 
-  const assetMap = useResolvedAssetMap(meta.items.map((it) => it.url || ""));
+  const alignItems = layout === "left" ? "flex-start" : layout === "right" ? "flex-end" : "center";
 
-  const resolveUrl = (url: string | null | undefined) => {
-    if (!url) return "";
-    if (url.startsWith("asset:")) return assetMap[url] || ""; // local workspace asset → object URL
-    if (url.startsWith('/uploads/')) {
-      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4000';
-      return `${baseUrl}${url}`;
+  const wrapperStyle = (() => {
+    const style: any = { position: "relative", marginVertical: 16 };
+    if (!activeItem?.url) return { ...style, width: "100%" };
+    style.overflow = "hidden";
+    style.width = layout === "full" ? "100%" : "auto";
+    style.maxWidth = "100%";
+    if (border === "soft") {
+      style.borderRadius = 12;
+      style.borderWidth = 1;
+      style.borderColor = colors.border + "66";
+    } else if (border === "strong") {
+      style.borderRadius = 12;
+      style.borderWidth = 2;
+      style.borderColor = colors.border;
+    }
+    if (shadow === "md" || shadow === "lg") {
+      style.shadowColor = "#000";
+      style.shadowOpacity = shadow === "lg" ? 0.3 : 0.18;
+      style.shadowRadius = shadow === "lg" ? 12 : 6;
+      style.shadowOffset = { width: 0, height: shadow === "lg" ? 6 : 3 };
+      style.elevation = shadow === "lg" ? 8 : 4;
+    }
+    return style;
+  })();
+
+  const hostname = (url: string): string => {
+    try {
+      if (url.startsWith("http")) return new URL(url).hostname;
+    } catch {
+      // ignore
     }
     return url;
   };
 
-  const getContainerClassName = () => {
-    let classes = "relative group flex flex-col my-4 ";
-    if (layout === "left") classes += "items-start ";
-    else if (layout === "right") classes += "items-end ";
-    else classes += "items-center ";
-    return classes;
+  const submitLink = () => {
+    if (!canEdit || !linkInput.trim()) return;
+    const newItem: MediaCarouselItem = {
+      url: linkInput.trim(),
+      title: kind === "bookmark" ? "Bookmark" : "",
+      mimeType: kind === "bookmark" ? "text/html" : null,
+      sizeBytes: null,
+    };
+    if (meta.items.length === 0) {
+      updateMeta({ ...meta, items: [newItem] }, 0);
+    } else {
+      updateMeta({ ...meta, items: [...meta.items, newItem] }, meta.items.length);
+    }
+    setLinkInput("");
   };
 
-  const getMediaWrapperClassName = () => {
-    let classes = "transition-all duration-200 relative group/media ";
-    if (!activeItem?.url) return classes + "w-full"; // Single simple wrapper for empty state
+  const EmptyIcon = kind === "image" ? ImageIcon : kind === "video" ? VideoIcon : kind === "audio" ? Music : kind === "bookmark" ? Bookmark : FileText;
 
-    classes += "overflow-hidden ";
-    if (layout === "full") classes += "w-full ";
-    else classes += "w-auto max-w-full ";
+  const renderMedia = () => {
+    if (!activeItem?.url) {
+      return (
+        <View
+          style={{
+            width: "100%",
+            marginTop: 4,
+            marginBottom: 4,
+            borderRadius: 4,
+            backgroundColor: colors.muted + "1a",
+            borderWidth: 1,
+            borderColor: "transparent",
+            padding: 10,
+            gap: 8,
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <EmptyIcon size={18} color={colors.mutedForeground} />
+            <View style={{ flex: 1, gap: 8 }}>
+              {kind !== "bookmark" && canEdit ? (
+                // Mobile: <input type=file> → caller-driven picker; we surface a hint
+                // (onUploadMediaFiles wiring stays in BrickRenderer when wired).
+                <Text style={{ fontSize: 14, color: colors.mutedForeground, fontFamily: fonts.regular }}>
+                  {kind === "image"
+                    ? t("brickRenderer.chooseImage")
+                    : kind === "video"
+                    ? t("brickRenderer.chooseVideo")
+                    : kind === "audio"
+                    ? t("brickRenderer.chooseAudio")
+                    : t("brickRenderer.chooseFile")}
+                </Text>
+              ) : null}
 
-    if (border === "soft") classes += "rounded-xl border border-border/40 ";
-    else if (border === "strong") classes += "rounded-xl border-2 border-border/80 ";
-    
-    if (shadow === "md") classes += "shadow-md ";
-    else if (shadow === "lg") classes += "shadow-lg ";
+              {canEdit ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <TextInput
+                    value={linkInput}
+                    onChangeText={setLinkInput}
+                    onSubmitEditing={submitLink}
+                    placeholder={t("brickRenderer.embedPlaceholder")}
+                    placeholderTextColor={colors.mutedForeground}
+                    autoCapitalize="none"
+                    keyboardType="url"
+                    style={{
+                      flex: 1,
+                      fontSize: 14,
+                      color: colors.foreground,
+                      fontFamily: fonts.regular,
+                      paddingVertical: 2,
+                    }}
+                  />
+                  {linkInput.trim() ? (
+                    <Pressable
+                      onPress={submitLink}
+                      style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 4, backgroundColor: colors.primary }}
+                    >
+                      <Text style={{ fontSize: 12, fontFamily: fonts.medium, color: colors.primaryForeground }}>
+                        {kind === "bookmark" ? t("brickRenderer.bookmarkButton") : t("brickRenderer.embedButton")}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : (
+                <Text style={{ fontSize: 14, color: colors.mutedForeground, fontFamily: fonts.regular }}>
+                  {t("brickRenderer.attachPrompt")}
+                </Text>
+              )}
+            </View>
+          </View>
+        </View>
+      );
+    }
 
-    return classes;
+    const uri = resolveUrl(activeItem.url);
+
+    if (isWebBookmark) {
+      return (
+        <Pressable
+          onPress={() => void Linking.openURL(uri)}
+          style={{
+            width: "100%",
+            maxWidth: 480,
+            alignSelf: "center",
+            backgroundColor: colors.surface,
+            borderWidth: 1,
+            borderColor: colors.border + "80",
+            borderRadius: 8,
+            overflow: "hidden",
+          }}
+        >
+          <View style={{ padding: 16, gap: 6 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <LinkIcon size={12} color={colors.mutedForeground} />
+              <Text style={{ fontSize: 12, color: colors.mutedForeground, fontFamily: fonts.regular }} numberOfLines={1}>
+                {hostname(activeItem.url)}
+              </Text>
+            </View>
+            <Text style={{ fontSize: 14, fontFamily: fonts.semibold, color: colors.foreground }} numberOfLines={1}>
+              {activeItem.title || activeItem.url}
+            </Text>
+            <Text style={{ fontSize: 12, color: colors.mutedForeground, fontFamily: fonts.regular, opacity: 0.8 }} numberOfLines={1}>
+              {activeItem.url}
+            </Text>
+          </View>
+        </Pressable>
+      );
+    }
+
+    if (isVideo) {
+      return (
+        <Video
+          source={{ uri }}
+          useNativeControls
+          resizeMode={layout === "full" ? ResizeMode.COVER : ResizeMode.CONTAIN}
+          style={{ width: "100%", aspectRatio: 16 / 9, maxHeight: 420, backgroundColor: "#00000010" }}
+        />
+      );
+    }
+
+    if (isAudio) {
+      return <AudioPlayer uri={uri} title={activeItem.title} />;
+    }
+
+    if (isImage) {
+      return (
+        <Image
+          source={{ uri }}
+          resizeMode={layout === "full" ? "cover" : "contain"}
+          style={{ width: layout === "full" ? "100%" : 300, height: 240, maxWidth: "100%" }}
+          accessibilityLabel={activeItem.title || content.title || "Media"}
+        />
+      );
+    }
+
+    // Generic file → download/open row.
+    return (
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: 16,
+          minWidth: 280,
+          gap: 16,
+          backgroundColor: colors.muted + "1a",
+          borderWidth: 1,
+          borderColor: colors.border + "80",
+          borderRadius: 6,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flex: 1 }}>
+          <FileText size={28} color={colors.indigo} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 14, fontFamily: fonts.semibold, color: colors.foreground }} numberOfLines={1}>
+              {activeItem.title || t("brickRenderer.defaultDocTitle")}
+            </Text>
+            {activeItem.sizeBytes ? (
+              <Text style={{ fontSize: 12, color: colors.mutedForeground, fontFamily: fonts.regular }}>
+                {(activeItem.sizeBytes / 1024 / 1024).toFixed(2)} MB
+              </Text>
+            ) : null}
+          </View>
+        </View>
+        <Pressable
+          onPress={() => void Linking.openURL(uri)}
+          style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 4, backgroundColor: colors.indigo + "1a" }}
+        >
+          <Text style={{ fontSize: 12, fontFamily: fonts.medium, color: colors.indigo }}>
+            {t("brickRenderer.download")}
+          </Text>
+        </Pressable>
+      </View>
+    );
   };
+
+  const alignButton = (l: MediaMeta["layout"], Icon: typeof AlignLeft) => (
+    <Pressable
+      onPress={() => updateMeta({ ...meta, layout: l })}
+      style={{
+        padding: 6,
+        borderRadius: 6,
+        backgroundColor: layout === l ? colors.background : "transparent",
+      }}
+    >
+      <Icon size={16} color={layout === l ? colors.foreground : colors.mutedForeground} />
+    </Pressable>
+  );
+
+  const optionRow = (
+    label: string,
+    options: Array<{ value: string; label: string }>,
+    current: string,
+    onSelect: (v: string) => void,
+  ) => (
+    <View style={{ flex: 1, gap: 8 }}>
+      <Text style={{ fontSize: 11, fontFamily: fonts.semibold, color: colors.mutedForeground, letterSpacing: 0.5 }}>
+        {label}
+      </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+        {options.map((opt) => {
+          const active = current === opt.value;
+          return (
+            <Pressable
+              key={opt.value}
+              onPress={() => onSelect(opt.value)}
+              style={{
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                borderRadius: 6,
+                borderWidth: 1,
+                borderColor: active ? colors.primary : colors.border,
+                backgroundColor: active ? colors.primary : colors.background,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontFamily: fonts.regular,
+                  color: active ? colors.primaryForeground : colors.foreground,
+                }}
+              >
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
 
   return (
-    <div className={getContainerClassName()}>
-      <div className={getMediaWrapperClassName()}>
-        {/* MEDIA RENDER */}
-        {activeItem?.url ? (
-          isWebBookmark ? (
-            <a href={resolveUrl(activeItem.url)} target="_blank" rel="noreferrer" className="block w-full max-w-lg mx-auto bg-card border border-border/50 rounded-lg overflow-hidden hover:border-accent/50 transition-colors shadow-sm">
-              <div className="p-4 flex flex-col gap-1.5">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground mb-0.5">
-                  <LinkIcon className="w-3 h-3" />
-                  <span className="truncate">{activeItem.url.startsWith('http') ? new URL(activeItem.url).hostname : activeItem.url}</span>
-                </div>
-                <h3 className="font-semibold text-sm truncate text-foreground">{activeItem.title || activeItem.url}</h3>
-                <div className="text-xs text-muted-foreground truncate opacity-80">{activeItem.url}</div>
-              </div>
-            </a>
-          ) : isVideo ? (
-            <video src={resolveUrl(activeItem.url)} controls className={`bg-black/5 ${layout === "full" ? "w-full object-cover max-h-[70vh]" : "max-h-[60vh] object-contain w-auto mx-auto"}`} />
-          ) : isAudio ? (
-            <div className="flex flex-col items-center justify-center p-6 bg-muted/10 gap-4 min-w-[300px]">
-              <audio src={resolveUrl(activeItem.url)} controls className="w-full" />
-              {activeItem.title && <span className="text-xs text-muted-foreground">{activeItem.title}</span>}
-            </div>
-          ) : isImage ? (
-            <img src={resolveUrl(activeItem.url)} alt={activeItem.title || content.title || "Media"} className={`bg-transparent ${layout === "full" ? "w-full object-cover max-h-[70vh]" : "max-h-[70vh] object-contain w-auto mx-auto"}`} />
-          ) : (
-            <div className="flex items-center justify-between p-4 bg-muted/10 border border-border/50 rounded-md min-w-[300px] gap-4">
-              <div className="flex items-center gap-3">
-                <FileText className="w-8 h-8 text-accent shrink-0" />
-                <div className="flex flex-col overflow-hidden">
-                  <span className="text-sm font-semibold truncate max-w-[200px]">{activeItem.title || t("brickRenderer.defaultDocTitle")}</span>
-                  {activeItem.sizeBytes && <span className="text-xs text-muted-foreground">{(activeItem.sizeBytes / 1024 / 1024).toFixed(2)} MB</span>}
-                </div>
-              </div>
-              <a href={resolveUrl(activeItem.url)} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-primary/10 hover:bg-primary/20 text-primary px-3 py-1.5 rounded text-xs font-medium transition-colors">
-                {t("brickRenderer.download")}
-              </a>
-            </div>
-          )
-        ) : (
-          <div className="w-full relative group/empty mt-1 mb-1 max-w-[800px]">
-            <div className="flex items-center gap-3 py-1.5 px-2 rounded-sm bg-muted/10 border border-transparent hover:border-border/40 hover:bg-muted/30 transition-all text-[15px] group-hover/empty:bg-muted/20">
-              <div className="text-muted-foreground flex items-center justify-center p-1 rounded-sm">
-                {kind === "image" ? <ImageIcon className="w-[18px] h-[18px]" /> : kind === "video" ? <Video className="w-[18px] h-[18px]" /> : kind === "audio" ? <Music className="w-[18px] h-[18px]" /> : kind === "bookmark" ? <Bookmark className="w-[18px] h-[18px]" /> : <FileText className="w-[18px] h-[18px]" />}
-              </div>
-              
-              <div className="flex-1 flex items-center gap-4 text-muted-foreground min-w-0">
-                {kind !== "bookmark" && canEdit && (
-                  <label className="cursor-pointer hover:text-foreground transition-colors whitespace-nowrap">
-                    {kind === "image" ? t("brickRenderer.chooseImage") ?? "Upload image" : kind === "video" ? t("brickRenderer.chooseVideo") ?? "Upload video" : kind === "audio" ? t("brickRenderer.chooseAudio") ?? "Upload audio" : t("brickRenderer.chooseFile") ?? "Upload file"}
-                    <input
-                      type="file"
-                      multiple
-                      accept={kind === "image" ? "image/*" : kind === "video" ? "video/*" : kind === "audio" ? "audio/*" : "image/*,video/*,audio/*,.svg,.pdf,.txt,.csv,.doc,.docx,.ppt,.pptx,.xls,.xlsx"}
-                      className="hidden"
-                      onChange={(event) => {
-                        const files = Array.from(event.target.files || []);
-                        if (files.length === 0) return;
-                        if (onUploadMediaFiles) {
-                          void Promise.resolve(onUploadMediaFiles({ brickId, files }));
-                        }
-                        event.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                )}
-                
-                {canEdit && (
-                  <form 
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      if (!canEdit || !linkInput.trim()) return;
-                      
-                      const newItem = {
-                        url: linkInput.trim(),
-                        title: kind === "bookmark" ? "Bookmark" : "",
-                        mimeType: kind === "bookmark" ? "text/html" : undefined,
-                        sizeBytes: null,
-                      };
-                      
-                      if (meta.items.length === 0) {
-                        updateMeta({ ...meta, items: [newItem] }, 0);
-                      } else {
-                        updateMeta({ ...meta, items: [...meta.items, newItem] }, meta.items.length);
-                      }
-                    }}
-                    className="flex-1 flex items-center min-w-0"
-                  >
-                    <span className="text-muted-foreground/40 mr-3 hidden sm:inline-block">/</span>
-                    <input
-                       type="url"
-                       value={linkInput}
-                       onChange={(e) => setLinkInput(e.target.value)}
-                       placeholder={t("brickRenderer.embedPlaceholder") ?? "Embed link..."}
-                       className="flex-1 bg-transparent border-none outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground/50 py-0.5 min-w-0 px-0 h-auto"
-                    />
-                     {linkInput.trim() && (
-                      <button
-                        type="submit"
-                        className="ml-2 px-3 py-1 bg-primary text-primary-foreground text-xs rounded font-medium hover:bg-primary/90 transition-colors shrink-0"
-                      >
-                        {kind === "bookmark" ? t("brickRenderer.bookmarkButton") ?? "Add bookmark" : t("brickRenderer.embedButton") ?? "Embed"}
-                      </button>
-                    )}
-                  </form>
-                )}
-                
-                {!canEdit && (
-                  <span className="text-muted-foreground">{t("brickRenderer.attachPrompt")}</span>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+    <View style={{ flexDirection: "column", marginVertical: 16, alignItems: alignItems as any }}>
+      <View style={wrapperStyle}>
+        {renderMedia()}
 
-        {/* CAROUSEL CONTROLS OVER MEDIA */}
+        {/* CAROUSEL CONTROLS */}
         {meta.items.length > 1 ? (
           <>
-            <button
-              type="button"
-              onClick={() => setActiveIndex((prev) => (prev - 1 + meta.items.length) % meta.items.length)}
-              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full border border-border/40 bg-background/80 px-2 py-1 text-xs opacity-0 group-hover/media:opacity-100 transition-opacity"
+            <Pressable
+              onPress={() => setActiveIndex((prev) => (prev - 1 + meta.items.length) % meta.items.length)}
+              style={{
+                position: "absolute",
+                left: 8,
+                top: "50%",
+                transform: [{ translateY: -14 }],
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: colors.border + "66",
+                backgroundColor: colors.background + "cc",
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+              }}
             >
-              Prev
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveIndex((prev) => (prev + 1) % meta.items.length)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full border border-border/40 bg-background/80 px-2 py-1 text-xs opacity-0 group-hover/media:opacity-100 transition-opacity"
+              <Text style={{ fontSize: 12, color: colors.foreground, fontFamily: fonts.regular }}>Prev</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setActiveIndex((prev) => (prev + 1) % meta.items.length)}
+              style={{
+                position: "absolute",
+                right: 8,
+                top: "50%",
+                transform: [{ translateY: -14 }],
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: colors.border + "66",
+                backgroundColor: colors.background + "cc",
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+              }}
             >
-              Next
-            </button>
-            <div className="absolute bottom-2 right-2 rounded-md bg-background/80 px-2 py-1 text-[11px] font-semibold opacity-0 group-hover/media:opacity-100 transition-opacity">
-              {activeIndex + 1} / {meta.items.length}
-            </div>
+              <Text style={{ fontSize: 12, color: colors.foreground, fontFamily: fonts.regular }}>Next</Text>
+            </Pressable>
+            <View
+              style={{
+                position: "absolute",
+                bottom: 8,
+                right: 8,
+                borderRadius: 6,
+                backgroundColor: colors.background + "cc",
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+              }}
+            >
+              <Text style={{ fontSize: 11, fontFamily: fonts.semibold, color: colors.foreground }}>
+                {activeIndex + 1} / {meta.items.length}
+              </Text>
+            </View>
           </>
         ) : null}
 
-        {/* FLOATING EDIT BUTTON (Notion Style) */}
-        {canEdit && activeItem?.url && (
-          <button 
-            type="button"
-            onClick={() => setShowSettings(!showSettings)}
-            className="absolute top-2 right-2 rounded-md bg-background/90 text-foreground border border-border/50 p-1.5 opacity-0 group-hover/media:opacity-100 transition-opacity hover:bg-muted shadow-sm"
+        {/* EDIT BUTTON */}
+        {canEdit && activeItem?.url ? (
+          <Pressable
+            onPress={() => setShowSettings(!showSettings)}
+            style={{
+              position: "absolute",
+              top: 8,
+              right: 8,
+              borderRadius: 6,
+              backgroundColor: colors.background + "e6",
+              borderWidth: 1,
+              borderColor: colors.border + "80",
+              padding: 6,
+            }}
           >
-            <Settings className="w-4 h-4" />
-          </button>
-        )}
-      </div>
+            <Settings size={16} color={colors.foreground} />
+          </Pressable>
+        ) : null}
+      </View>
 
-      {/* SUBTITLE BELOW MEDIA */}
+      {/* SUBTITLE */}
       {showSettings ? null : (
-        <div className="mt-2 w-full max-w-2xl text-center flex flex-col items-center">
-           {canEdit ? (
-             <input
-               value={meta.subtitle || ""}
-               onChange={(event) => updateMeta({ ...meta, subtitle: event.target.value }, activeIndex)}
-               placeholder={t("brickRenderer.subtitlePlaceholder")}
-               className="bg-transparent text-center text-sm text-muted-foreground outline-none border-none placeholder:text-muted-foreground/50 w-full resize-none min-h-[1.5rem]"
-             />
-           ) : (
-             meta.subtitle ? <p className="text-sm text-muted-foreground">{meta.subtitle}</p> : null
-           )}
-        </div>
+        <View style={{ marginTop: 8, width: "100%", maxWidth: 560, alignItems: "center" }}>
+          {canEdit ? (
+            <TextInput
+              value={meta.subtitle || ""}
+              onChangeText={(text) => updateMeta({ ...meta, subtitle: text }, activeIndex)}
+              placeholder={t("brickRenderer.subtitlePlaceholder")}
+              placeholderTextColor={colors.mutedForeground}
+              style={{
+                textAlign: "center",
+                fontSize: 14,
+                color: colors.mutedForeground,
+                fontFamily: fonts.regular,
+                width: "100%",
+              }}
+            />
+          ) : meta.subtitle ? (
+            <Text style={{ fontSize: 14, color: colors.mutedForeground, fontFamily: fonts.regular }}>
+              {meta.subtitle}
+            </Text>
+          ) : null}
+        </View>
       )}
 
       {/* SETTINGS PANEL */}
-      {showSettings && canEdit && (
-        <div className="w-full max-w-2xl mt-4 p-4 rounded-xl border border-border/60 bg-muted/10 shadow-sm space-y-4 text-sm animate-in fade-in slide-in-from-top-2">
-          {/* Layout Controls */}
-          <div className="flex flex-col gap-2">
-            <span className="text-xs font-semibold text-muted-foreground tracking-wider uppercase">{t("brickRenderer.alignment")}</span>
-            <div className="flex items-center gap-1 bg-muted/20 p-1 rounded-lg w-fit border border-border/50">
-              <button onClick={() => updateMeta({ ...meta, layout: "left" })} className={`p-1.5 rounded-md ${layout === "left" ? "bg-background shadow-sm" : "hover:bg-background/50 text-muted-foreground"}`} title={t("brickRenderer.alignLeft")}><AlignLeft className="w-4 h-4" /></button>
-              <button onClick={() => updateMeta({ ...meta, layout: "center" })} className={`p-1.5 rounded-md ${layout === "center" ? "bg-background shadow-sm" : "hover:bg-background/50 text-muted-foreground"}`} title={t("brickRenderer.alignCenter")}><AlignCenter className="w-4 h-4" /></button>
-              <button onClick={() => updateMeta({ ...meta, layout: "right" })} className={`p-1.5 rounded-md ${layout === "right" ? "bg-background shadow-sm" : "hover:bg-background/50 text-muted-foreground"}`} title={t("brickRenderer.alignRight")}><AlignRight className="w-4 h-4" /></button>
-              <button onClick={() => updateMeta({ ...meta, layout: "full" })} className={`p-1.5 rounded-md ${layout === "full" ? "bg-background shadow-sm" : "hover:bg-background/50 text-muted-foreground"}`} title={t("brickRenderer.alignFull")}><Maximize className="w-4 h-4" /></button>
-            </div>
-          </div>
+      {showSettings && canEdit ? (
+        <View
+          style={{
+            width: "100%",
+            maxWidth: 560,
+            marginTop: 16,
+            padding: 16,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.border + "99",
+            backgroundColor: colors.muted + "1a",
+            gap: 16,
+          }}
+        >
+          <View style={{ gap: 8 }}>
+            <Text style={{ fontSize: 11, fontFamily: fonts.semibold, color: colors.mutedForeground, letterSpacing: 0.5 }}>
+              {t("brickRenderer.alignment")}
+            </Text>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 4,
+                backgroundColor: colors.muted + "33",
+                padding: 4,
+                borderRadius: 8,
+                alignSelf: "flex-start",
+                borderWidth: 1,
+                borderColor: colors.border + "80",
+              }}
+            >
+              {alignButton("left", AlignLeft)}
+              {alignButton("center", AlignCenter)}
+              {alignButton("right", AlignRight)}
+              {alignButton("full", Maximize)}
+            </View>
+          </View>
 
-          <div className="grid grid-cols-2 gap-4">
-            {/* Border Options */}
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold text-muted-foreground tracking-wider uppercase">{t("brickRenderer.borders")}</span>
-               <select
-                value={border}
-                onChange={(e) => updateMeta({ ...meta, border: e.target.value as any })}
-                className="w-full rounded-md border border-input shadow-sm bg-background px-3 py-1.5 text-sm outline-none"
+          <View style={{ flexDirection: "row", gap: 16 }}>
+            {optionRow(
+              t("brickRenderer.borders"),
+              [
+                { value: "none", label: t("brickRenderer.borderNone") },
+                { value: "soft", label: t("brickRenderer.borderSoft") },
+                { value: "strong", label: t("brickRenderer.borderStrong") },
+              ],
+              border,
+              (v) => updateMeta({ ...meta, border: v as any }),
+            )}
+            {optionRow(
+              t("brickRenderer.shadow"),
+              [
+                { value: "none", label: t("brickRenderer.shadowNone") },
+                { value: "md", label: t("brickRenderer.shadowMd") },
+                { value: "lg", label: t("brickRenderer.shadowLg") },
+              ],
+              shadow,
+              (v) => updateMeta({ ...meta, shadow: v as any }),
+            )}
+          </View>
+
+          <View style={{ gap: 12, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border + "66" }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <LinkIcon size={16} color={colors.mutedForeground} />
+              <TextInput
+                value={activeItem?.url || ""}
+                placeholder={t("brickRenderer.urlPlaceholder")}
+                placeholderTextColor={colors.mutedForeground}
+                autoCapitalize="none"
+                onChangeText={(text) => {
+                  const newItems = [...meta.items];
+                  newItems[activeIndex] = { ...activeItem, url: text };
+                  updateMeta({ ...meta, items: newItems }, activeIndex);
+                }}
+                style={{
+                  flex: 1,
+                  borderRadius: 6,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  backgroundColor: colors.background,
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  fontSize: 14,
+                  color: colors.foreground,
+                  fontFamily: fonts.regular,
+                }}
+              />
+            </View>
+
+            <TextInput
+              value={meta.subtitle || ""}
+              placeholder={t("brickRenderer.subtitleGeneralPlaceholder")}
+              placeholderTextColor={colors.mutedForeground}
+              onChangeText={(text) => updateMeta({ ...meta, subtitle: text }, activeIndex)}
+              style={{
+                width: "100%",
+                borderRadius: 6,
+                borderWidth: 1,
+                borderColor: colors.border,
+                backgroundColor: colors.background,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                fontSize: 14,
+                color: colors.foreground,
+                fontFamily: fonts.regular,
+              }}
+            />
+
+            <View style={{ flexDirection: "row", alignItems: "center", marginTop: 8 }}>
+              <Pressable
+                onPress={() => setShowSettings(false)}
+                style={{
+                  marginLeft: "auto",
+                  backgroundColor: colors.primary,
+                  paddingHorizontal: 16,
+                  paddingVertical: 6,
+                  borderRadius: 6,
+                }}
               >
-                <option value="none">{t("brickRenderer.borderNone")}</option>
-                <option value="soft">{t("brickRenderer.borderSoft")}</option>
-                <option value="strong">{t("brickRenderer.borderStrong")}</option>
-              </select>
-            </div>
+                <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.primaryForeground }}>
+                  {t("brickRenderer.acceptControls")}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
 
-            {/* Shadow Options */}
-             <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold text-muted-foreground tracking-wider uppercase">{t("brickRenderer.shadow")}</span>
-               <select
-                value={shadow}
-                onChange={(e) => updateMeta({ ...meta, shadow: e.target.value as any })}
-                className="w-full rounded-md border border-input shadow-sm bg-background px-3 py-1.5 text-sm outline-none"
-              >
-                <option value="none">{t("brickRenderer.shadowNone")}</option>
-                <option value="md">{t("brickRenderer.shadowMd")}</option>
-                <option value="lg">{t("brickRenderer.shadowLg")}</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Edit current URLs / Subtitle / Items */}
-           <div className="flex flex-col gap-3 pt-2 border-t border-border/40">
-              <div className="flex items-center gap-2">
-                 <LinkIcon className="w-4 h-4 text-muted-foreground" />
-                 <input 
-                   value={activeItem?.url || ""} 
-                   placeholder={t("brickRenderer.urlPlaceholder")} 
-                   onChange={(e) => {
-                     const newItems = [...meta.items];
-                     newItems[activeIndex] = { ...activeItem, url: e.target.value };
-                     updateMeta({ ...meta, items: newItems }, activeIndex);
-                   }}
-                   className="flex-1 rounded-md border border-input shadow-sm bg-background px-3 py-1.5 text-sm outline-none" 
-                 />
-              </div>
-
-               <input 
-                 value={meta.subtitle || ""} 
-                 placeholder={t("brickRenderer.subtitleGeneralPlaceholder")} 
-                 onChange={(e) => updateMeta({ ...meta, subtitle: e.target.value }, activeIndex)}
-                 className="w-full rounded-md border border-input shadow-sm bg-background px-3 py-1.5 text-sm outline-none" 
-               />
-
-               <div className="flex items-center gap-2 mt-2">
-                <label className="inline-flex cursor-pointer items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-semibold hover:bg-muted/40 shadow-sm">
-                  {t("brickRenderer.uploadMore")}
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,video/*,.svg,.pdf,.txt,.csv,.doc,.docx,.ppt,.pptx,.xls,.xlsx"
-                    className="hidden"
-                    onChange={(event) => {
-                      const files = Array.from(event.target.files || []);
-                      if (files.length === 0) return;
-                      if (onUploadMediaFiles) {
-                        void Promise.resolve(onUploadMediaFiles({ brickId, files }));
-                      }
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-                 <button onClick={() => setShowSettings(false)} className="ml-auto bg-primary text-primary-foreground text-xs font-semibold px-4 py-1.5 rounded-md hover:bg-primary/90 shadow-sm">
-                   {t("brickRenderer.acceptControls")}
-                 </button>
-               </div>
-           </div>
-
-           {/* Carousel Thumbnails inside settings */}
-            {meta.items.length > 1 && (
-            <div className="flex gap-2 overflow-x-auto pb-1 mt-2 p-2 bg-background rounded-lg border border-border/40 overflow-hidden">
+          {/* Carousel thumbnails */}
+          {meta.items.length > 1 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, padding: 8 }}
+              style={{ backgroundColor: colors.background, borderRadius: 8, borderWidth: 1, borderColor: colors.border + "66" }}
+            >
               {meta.items.map((item, idx) => {
                 const itemMime = (item.mimeType || "").toLowerCase();
-                const thumbImage = itemMime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(item.url || "");
+                const thumbImage =
+                  itemMime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(item.url || "");
                 return (
-                  <button
-                    type="button"
+                  <Pressable
                     key={`${item.url}-${idx}`}
-                    onClick={() => setActiveIndex(idx)}
-                    className={`h-12 w-16 shrink-0 overflow-hidden rounded-md border ${idx === activeIndex ? "border-primary border-2" : "border-border/60"}`}
+                    onPress={() => setActiveIndex(idx)}
+                    style={{
+                      height: 48,
+                      width: 64,
+                      overflow: "hidden",
+                      borderRadius: 6,
+                      borderWidth: idx === activeIndex ? 2 : 1,
+                      borderColor: idx === activeIndex ? colors.primary : colors.border + "99",
+                    }}
                   >
                     {thumbImage ? (
-                      <img src={resolveUrl(item.url)} alt={item.title || `Media ${idx + 1}`} className="h-full w-full object-cover" />
+                      <Image source={{ uri: resolveUrl(item.url) }} style={{ height: "100%", width: "100%" }} resizeMode="cover" />
                     ) : (
-                      <div className="flex h-full w-full items-center justify-center bg-muted/20 text-[9px] font-semibold">FILE</div>
+                      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.muted + "33" }}>
+                        <Text style={{ fontSize: 9, fontFamily: fonts.semibold, color: colors.mutedForeground }}>FILE</Text>
+                      </View>
                     )}
-                  </button>
+                  </Pressable>
                 );
               })}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+            </ScrollView>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
   );
 };

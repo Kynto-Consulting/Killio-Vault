@@ -40,6 +40,7 @@ import {
   User as UserIcon,
   UserCheck,
   X,
+  type LucideIcon,
 } from 'lucide-react-native';
 
 import { sheetEngine } from '../sheet-engine';
@@ -57,7 +58,7 @@ import { fonts } from '../../theme/fonts';
  *    `BountifulView`, `BountifulViewLayout`.
  *  - All 18+ column types in the type surface — text/number/email/url/select/
  *    multi_select/status/date/checkbox/people/document/board/card/popup_document/
- *    formula/rollup/created_*/last_edited_*.
+ *    formula/rollup/created_at/created_by/last_edited_at/last_edited_by.
  *  - Same props shape: `onUpdate(content)`, `onPatchCell(rowId, colId, cell,
  *    rowMeta)`, `onPatchColumn`, `onAddColumn`, `onRemoveColumn`,
  *    `onDuplicateColumn`.
@@ -1918,7 +1919,7 @@ function MenuRow({
   disabled,
   destructive,
 }: {
-  icon: React.ComponentType<{ size?: number; color?: string }>;
+  icon: LucideIcon;
   label: string;
   onPress(): void;
   active?: boolean;
@@ -1953,7 +1954,7 @@ function ToolbarBtn({
   label,
   onPress,
 }: {
-  icon: React.ComponentType<{ size?: number; color?: string }>;
+  icon: LucideIcon;
   label: string;
   onPress(): void;
 }) {
@@ -2087,7 +2088,7 @@ function canonicalType(colType: string): string {
   }
 }
 
-function iconForColType(colType: string): React.ComponentType<{ size?: number; color?: string }> {
+function iconForColType(colType: string): LucideIcon {
   switch (canonicalType(colType)) {
     case 'checkbox':
       return CheckSquare;

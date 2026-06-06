@@ -1,14 +1,62 @@
-'use client';
-
 import React, { useState, useEffect, useMemo } from 'react';
-import { CreditCard, AlertCircle, CheckCircle2, Copy, ExternalLink, Lock, RefreshCw, Loader2, Clock, RotateCcw, Settings } from 'lucide-react';
-import { useTranslations } from '@/components/providers/i18n-provider';
-import { useSession } from '@/components/providers/session-provider';
-import { listScripts, type ScriptSummary } from '@/lib/api/scripts';
-import { createPaymentLink, type CreatePaymentLinkPayload } from '@/lib/api/payments';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { toast } from '@/lib/toast';
+import {
+  Alert,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import {
+  CreditCard,
+  AlertCircle,
+  CheckCircle2,
+  Copy,
+  ExternalLink,
+  Lock,
+  RefreshCw,
+  Loader2,
+  Clock,
+  RotateCcw,
+  Settings,
+  ChevronDown,
+  type LucideIcon,
+} from 'lucide-react-native';
+
+import { useTranslations } from '@/i18n';
+import { useAuth } from '@/core/auth/AuthContext';
+import { listScripts, type ScriptSummary } from '@/core/api/scripts.client';
+import { createPaymentLink, type CreatePaymentLinkPayload } from '@/core/api/payments.client';
+import { API_BASE_URL } from '@/core/api/config';
+import { colors } from '@/theme/theme';
+import { fonts } from '@/theme/fonts';
+
+/**
+ * React Native port of the web `unified-payment-brick.tsx`.
+ *
+ * The brick API and content schema match the web file 1:1 — same prop names,
+ * same content keys, same i18n namespace (`document-detail`) — so a brick
+ * authored on web round-trips through Vault and back unchanged.
+ *
+ * Web → Native swap notes (key deltas from the source file):
+ *   • Mobile: iframe checkout → system browser via Linking. The web brick
+ *     embeds the provider checkout in an <iframe>; RN can't do iframes, so we
+ *     open `checkoutUrl` in the system browser with `Linking.openURL`.
+ *   • `useSession()` → `useAuth()`.
+ *   • `lucide-react` → `lucide-react-native`.
+ *   • shadcn `Button`/`Input` → inline `<Pressable>` / `<TextInput>`.
+ *   • `<select>` → tap-to-cycle / modal picker (currency + provider).
+ *   • `<textarea>` → `<TextInput multiline>`.
+ *   • `navigator.clipboard` → `expo-clipboard`.
+ *   • `toast(msg, kind)` → `Alert.alert(...)`.
+ *   • `window.open('/integrations')` → dropped (web-only deep link).
+ *   • `process.env.NEXT_PUBLIC_*` → Vault `API_BASE_URL`.
+ *   • CSS `hover:`/`group-hover:`/`cursor-*` removed.
+ */
 
 interface UnifiedPaymentBrickProps {
   id: string;
@@ -48,12 +96,45 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   BRL: 'R$',
 };
 
+const CURRENCIES = ['USD', 'EUR', 'ARS', 'MXN', 'BRL'];
+const PROVIDERS: Array<'stripe' | 'paypal' | 'mercadopago'> = ['stripe', 'paypal', 'mercadopago'];
+
 const StatusIcon = ({ status }: { status: string }) => {
-  if (status === 'paid') return <CheckCircle2 className="w-4 h-4 text-emerald-600" />;
-  if (status === 'failed') return <AlertCircle className="w-4 h-4 text-red-600" />;
-  if (status === 'refunded') return <RotateCcw className="w-4 h-4 text-blue-600" />;
-  return <Clock className="w-4 h-4 text-amber-600" />;
+  if (status === 'paid') return <CheckCircle2 size={16} color={colors.success} />;
+  if (status === 'failed') return <AlertCircle size={16} color={colors.destructive} />;
+  if (status === 'refunded') return <RotateCcw size={16} color={colors.indigo} />;
+  return <Clock size={16} color={colors.warning} />;
 };
+
+/** Inline label/value picker row that cycles a small option set on tap. */
+function PickerRow({
+  options,
+  value,
+  onChange,
+  renderLabel,
+}: {
+  options: string[];
+  value: string;
+  onChange: (next: string) => void;
+  renderLabel?: (v: string) => string;
+}) {
+  const cycle = () => {
+    const idx = options.indexOf(value);
+    const next = options[(idx + 1) % options.length];
+    onChange(next);
+  };
+  return (
+    <Pressable
+      onPress={cycle}
+      className="h-10 flex-row items-center justify-between rounded-md border border-border bg-background px-3"
+    >
+      <Text style={{ fontFamily: fonts.regular }} className="text-sm text-foreground">
+        {renderLabel ? renderLabel(value) : value}
+      </Text>
+      <ChevronDown size={14} color={colors.mutedForeground} />
+    </Pressable>
+  );
+}
 
 export function UnifiedPaymentBrick({
   id,
@@ -63,13 +144,18 @@ export function UnifiedPaymentBrick({
   readonly = false,
 }: UnifiedPaymentBrickProps) {
   const t = useTranslations('document-detail');
-  const { activeTeamId, accessToken } = useSession();
+  const { activeTeam } = useAuth();
+  const activeTeamId = activeTeam?.id ?? null;
+  // accessToken is injected by the axios interceptor (token-store); kept as a
+  // truthy stub so the web `if (accessToken)` guards keep working.
+  const accessToken = activeTeamId ? 'managed-by-axios' : null;
 
   const [isEditing, setIsEditing] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [teamScripts, setTeamScripts] = useState<ScriptSummary[]>([]);
   const [isLoadingScripts, setIsLoadingScripts] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
 
   const [formData, setFormData] = useState({
     title: content.title || '',
@@ -81,19 +167,18 @@ export function UnifiedPaymentBrick({
     checkoutUrl: content.checkoutUrl || '',
   });
 
-  const webhookBase = useMemo(() => {
-    return (
-      process.env.NEXT_PUBLIC_API_BASE_URL ??
-      process.env.NEXT_PUBLIC_KILLIO_API_URL ??
-      process.env.NEXT_PUBLIC_API_URL ??
-      'http://localhost:4000'
-    ).replace(/\/+$/, '');
-  }, []);
+  // Mobile: web reads NEXT_PUBLIC_* env vars; Vault uses the shared API base.
+  const webhookBase = useMemo(() => API_BASE_URL.replace(/\/+$/, ''), []);
 
   const webhookScripts = useMemo(() => {
     return teamScripts.filter((script) => {
       const publicToken = script.triggerConfig?.publicToken;
-      return script.triggerType === 'webhook' && script.isActive && typeof publicToken === 'string' && publicToken.length > 0;
+      return (
+        script.triggerType === 'webhook' &&
+        script.isActive &&
+        typeof publicToken === 'string' &&
+        publicToken.length > 0
+      );
     });
   }, [teamScripts]);
 
@@ -102,7 +187,7 @@ export function UnifiedPaymentBrick({
       setIsLoadingScripts(true);
       listScripts(activeTeamId, accessToken)
         .then(setTeamScripts)
-        .catch((err) => {
+        .catch((err: unknown) => {
           console.error('Error loading scripts:', err);
         })
         .finally(() => setIsLoadingScripts(false));
@@ -133,7 +218,7 @@ export function UnifiedPaymentBrick({
         externalProductId = paymentLink.externalProductId ?? null;
       } catch (error) {
         console.error('Error generating payment link:', error);
-        toast(t('payment.form.linkError'), 'error');
+        Alert.alert(t('payment.form.linkError') || 'Error', t('payment.form.linkError') || '');
       }
     }
 
@@ -155,9 +240,9 @@ export function UnifiedPaymentBrick({
     setIsSaving(false);
   };
 
-  const handleCopyUrl = () => {
+  const handleCopyUrl = async () => {
     if (content.checkoutUrl) {
-      navigator.clipboard.writeText(content.checkoutUrl);
+      await Clipboard.setStringAsync(content.checkoutUrl);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
     }
@@ -165,7 +250,10 @@ export function UnifiedPaymentBrick({
 
   const formatAmount = (amount: number, currency: string) => {
     const symbol = CURRENCY_SYMBOLS[currency] || currency;
-    return `${symbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `${symbol}${amount.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
   };
 
   const status = content.status || 'pending';
@@ -173,101 +261,122 @@ export function UnifiedPaymentBrick({
   const isConfigured = !!(content.amount && content.amount > 0);
 
   const statusConfig = {
-    pending: { color: 'text-amber-600', bg: 'bg-amber-50 dark:bg-amber-500/10', label: t('payment.status.pending') || 'Pendiente' },
-    paid: { color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-500/10', label: t('payment.status.paid') || 'Pagado' },
-    failed: { color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-500/10', label: t('payment.status.failed') || 'Fallido' },
-    refunded: { color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-500/10', label: t('payment.status.refunded') || 'Reembolsado' },
+    pending: { color: colors.warning, label: t('payment.status.pending') || 'Pendiente' },
+    paid: { color: colors.success, label: t('payment.status.paid') || 'Pagado' },
+    failed: { color: colors.destructive, label: t('payment.status.failed') || 'Fallido' },
+    refunded: { color: colors.indigo, label: t('payment.status.refunded') || 'Reembolsado' },
   };
 
   const currentStatus = statusConfig[status as keyof typeof statusConfig] || statusConfig.pending;
-  const providerLabels = {
+  const providerLabels: Record<string, string> = {
     stripe: t('payment.form.providerStripe') || 'Stripe',
     paypal: t('payment.form.providerPaypal') || 'PayPal',
     mercadopago: t('payment.form.providerMercadoPago') || 'MercadoPago',
   };
 
+  const selectedScriptName =
+    webhookScripts.find((s) => s.id === content.scriptId)?.name ||
+    (content.scriptId ? content.scriptId : t('payment.form.noScript') || 'Sin script de notificación');
+
   // ── EDIT MODE ────────────────────────────────────────────────────────────────
   if (isEditing && canEdit && !readonly) {
     return (
-      <div className="rounded-lg border border-border bg-card p-5 space-y-4 shadow-sm">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Pago</p>
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setIsEditing(false)}>
-            Cancelar
-          </Button>
-        </div>
-
-        <div className="space-y-3">
-          <Input
-            value={formData.title}
-            onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-            placeholder={t('payment.form.titlePlaceholder') || 'Título del pago'}
-          />
-          <textarea
-            value={formData.description}
-            onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-            placeholder={t('payment.form.descriptionPlaceholder') || 'Descripción opcional'}
-            rows={2}
-            className="w-full px-3 py-2 border border-border rounded-md bg-background text-sm resize-none outline-none focus:ring-2 focus:ring-accent/30"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted-foreground">{t('payment.form.amount') || 'Monto'}</p>
-            <Input
-              type="number"
-              value={formData.amount}
-              onChange={(e) => setFormData({ ...formData, amount: parseFloat(e.target.value) || 0 })}
-              placeholder="0.00"
-              step="0.01"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted-foreground">{t('payment.form.currency') || 'Moneda'}</p>
-            <select
-              value={formData.currency}
-              onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-accent/30"
-            >
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
-              <option value="ARS">ARS</option>
-              <option value="MXN">MXN</option>
-              <option value="BRL">BRL</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-muted-foreground">{t('payment.form.provider') || 'Proveedor'}</p>
-          <select
-            value={formData.provider}
-            onChange={(e) => setFormData({ ...formData, provider: e.target.value as any })}
-            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-accent/30"
+      <View className="rounded-lg border border-border bg-card p-5" style={{ gap: 16 }}>
+        <View className="flex-row items-center justify-between" style={{ gap: 8 }}>
+          <Text
+            style={{ fontFamily: fonts.semibold }}
+            className="text-xs uppercase tracking-widest text-muted-foreground"
           >
-            <option value="stripe">{providerLabels.stripe}</option>
-            <option value="paypal">{providerLabels.paypal}</option>
-            <option value="mercadopago">{providerLabels.mercadopago}</option>
-          </select>
-        </div>
+            {t('payment.title') || 'Pago'}
+          </Text>
+          <Pressable onPress={() => setIsEditing(false)} className="rounded-md px-2 py-1">
+            <Text className="text-xs text-foreground">{t('payment.form.cancel') || 'Cancelar'}</Text>
+          </Pressable>
+        </View>
 
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-muted-foreground">{t('payment.form.checkoutUrl') || 'URL de pago (opcional)'}</p>
-          <Input
-            value={formData.checkoutUrl}
-            onChange={(e) => setFormData({ ...formData, checkoutUrl: e.target.value })}
-            placeholder={t('payment.form.checkoutUrlPlaceholder') || 'https://... (si tienes un link externo)'}
+        <View style={{ gap: 12 }}>
+          <TextInput
+            value={formData.title}
+            onChangeText={(text) => setFormData({ ...formData, title: text })}
+            placeholder={t('payment.form.titlePlaceholder') || 'Título del pago'}
+            placeholderTextColor={colors.mutedForeground}
+            style={{ fontFamily: fonts.regular }}
+            className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground"
           />
-          <p className="text-[10px] text-muted-foreground">{t('payment.form.checkoutUrlHint') || 'Si está vacío se generará automáticamente con las credenciales del workspace.'}</p>
-        </div>
+          <TextInput
+            value={formData.description || ''}
+            onChangeText={(text) => setFormData({ ...formData, description: text })}
+            placeholder={t('payment.form.descriptionPlaceholder') || 'Descripción opcional'}
+            placeholderTextColor={colors.mutedForeground}
+            multiline
+            numberOfLines={2}
+            style={{ fontFamily: fonts.regular, textAlignVertical: 'top' }}
+            className="min-h-[56px] rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+          />
+        </View>
 
-        <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Notificación post-pago</p>
-            <button
-              type="button"
-              onClick={() => {
+        <View className="flex-row" style={{ gap: 12 }}>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text className="text-xs text-muted-foreground">{t('payment.form.amount') || 'Monto'}</Text>
+            <TextInput
+              keyboardType="decimal-pad"
+              value={String(formData.amount)}
+              onChangeText={(text) => setFormData({ ...formData, amount: parseFloat(text) || 0 })}
+              placeholder="0.00"
+              placeholderTextColor={colors.mutedForeground}
+              style={{ fontFamily: fonts.regular }}
+              className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground"
+            />
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text className="text-xs text-muted-foreground">{t('payment.form.currency') || 'Moneda'}</Text>
+            <PickerRow
+              options={CURRENCIES}
+              value={formData.currency}
+              onChange={(next) => setFormData({ ...formData, currency: next })}
+            />
+          </View>
+        </View>
+
+        <View style={{ gap: 6 }}>
+          <Text className="text-xs text-muted-foreground">{t('payment.form.provider') || 'Proveedor'}</Text>
+          <PickerRow
+            options={PROVIDERS}
+            value={formData.provider}
+            onChange={(next) => setFormData({ ...formData, provider: next as typeof formData.provider })}
+            renderLabel={(v) => providerLabels[v] || v}
+          />
+        </View>
+
+        <View style={{ gap: 6 }}>
+          <Text className="text-xs text-muted-foreground">
+            {t('payment.form.checkoutUrl') || 'URL de pago (opcional)'}
+          </Text>
+          <TextInput
+            value={formData.checkoutUrl}
+            onChangeText={(text) => setFormData({ ...formData, checkoutUrl: text })}
+            placeholder={t('payment.form.checkoutUrlPlaceholder') || 'https://...'}
+            placeholderTextColor={colors.mutedForeground}
+            autoCapitalize="none"
+            style={{ fontFamily: fonts.regular }}
+            className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground"
+          />
+          <Text className="text-[10px] text-muted-foreground">
+            {t('payment.form.checkoutUrlHint') ||
+              'Si está vacío se generará automáticamente con las credenciales del workspace.'}
+          </Text>
+        </View>
+
+        <View className="rounded-md border border-border/60 bg-muted/20 p-3" style={{ gap: 8 }}>
+          <View className="flex-row items-center justify-between" style={{ gap: 8 }}>
+            <Text
+              style={{ fontFamily: fonts.semibold }}
+              className="text-xs uppercase tracking-wider text-muted-foreground"
+            >
+              {t('payment.form.notifyTitle') || 'Notificación post-pago'}
+            </Text>
+            <Pressable
+              onPress={() => {
                 if (activeTeamId && accessToken) {
                   setIsLoadingScripts(true);
                   listScripts(activeTeamId, accessToken)
@@ -276,105 +385,159 @@ export function UnifiedPaymentBrick({
                 }
               }}
               disabled={isLoadingScripts || !activeTeamId || !accessToken}
-              className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+              className={isLoadingScripts || !activeTeamId || !accessToken ? 'opacity-50' : ''}
             >
-              {isLoadingScripts ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            </button>
-          </div>
-          <select
-            value={content.scriptId || ''}
-            onChange={(e) => {
-              const scriptId = e.target.value;
-              if (scriptId) {
-                const script = webhookScripts.find((s) => s.id === scriptId);
-                if (script) {
-                  const publicToken = script.triggerConfig?.publicToken;
-                  const webhookUrl = `${webhookBase}/w/${activeTeamId}/webhook/${scriptId}/${publicToken}`;
-                  onUpdate({ ...content, scriptId, webhookUrl });
-                }
-              } else {
-                onUpdate({ ...content, scriptId: undefined, webhookUrl: undefined });
-              }
-            }}
+              {isLoadingScripts ? (
+                <Loader2 size={14} color={colors.mutedForeground} />
+              ) : (
+                <RefreshCw size={14} color={colors.mutedForeground} />
+              )}
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() => setScriptPickerOpen(true)}
             disabled={isLoadingScripts}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none"
+            className="h-9 flex-row items-center justify-between rounded-md border border-border bg-background px-3"
           >
-            <option value="">{isLoadingScripts ? 'Cargando...' : 'Sin script de notificación'}</option>
-            {webhookScripts.map((script) => (
-              <option key={script.id} value={script.id}>
-                {script.name || script.id}
-              </option>
-            ))}
-          </select>
-        </div>
+            <Text className="text-sm text-foreground" numberOfLines={1}>
+              {isLoadingScripts ? t('payment.form.loading') || 'Cargando...' : selectedScriptName}
+            </Text>
+            <ChevronDown size={14} color={colors.mutedForeground} />
+          </Pressable>
+        </View>
 
-        <div className="rounded-md border border-emerald-200 dark:border-emerald-500/20 bg-emerald-50 dark:bg-emerald-500/10 p-3 flex items-start gap-2">
-          <Lock className="w-3.5 h-3.5 text-emerald-600 mt-0.5 shrink-0" />
-          <div className="space-y-1">
-            <p className="text-xs text-emerald-700 dark:text-emerald-300 font-medium">
-              Las credenciales del proveedor se gestionan en Integrations del workspace.
-            </p>
-            <button
-              type="button"
-              onClick={() => window.open('/integrations', '_blank')}
-              className="text-xs text-emerald-600 dark:text-emerald-400 underline underline-offset-2 hover:no-underline"
+        <View className="flex-row items-start rounded-md border border-border bg-success/10 p-3" style={{ gap: 8 }}>
+          <Lock size={14} color={colors.success} style={{ marginTop: 2 }} />
+          <Text style={{ flex: 1 }} className="text-xs text-success">
+            {t('payment.form.credentialsHint') ||
+              'Las credenciales del proveedor se gestionan en Integrations del workspace.'}
+          </Text>
+        </View>
+
+        <Pressable
+          onPress={handleSave}
+          disabled={isSaving}
+          className={`h-11 flex-row items-center justify-center rounded-lg bg-primary ${
+            isSaving ? 'opacity-60' : ''
+          }`}
+        >
+          {isSaving ? <Loader2 size={16} color={colors.primaryForeground} /> : null}
+          <Text
+            style={{ fontFamily: fonts.semibold, marginLeft: isSaving ? 8 : 0 }}
+            className="text-sm text-primary-foreground"
+          >
+            {isSaving ? t('payment.form.saving') || 'Guardando...' : t('payment.form.save') || 'Guardar'}
+          </Text>
+        </Pressable>
+
+        <Modal
+          visible={scriptPickerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setScriptPickerOpen(false)}
+        >
+          <Pressable
+            onPress={() => setScriptPickerOpen(false)}
+            className="flex-1 items-center justify-center bg-background/80 p-4"
+          >
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
+              className="w-full max-w-md rounded-xl border border-border bg-card p-3"
             >
-              Abrir Integrations
-            </button>
-          </div>
-        </div>
-
-        <Button onClick={handleSave} className="w-full" disabled={isSaving}>
-          {isSaving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-          {isSaving ? 'Guardando...' : (t('payment.form.save') || 'Guardar')}
-        </Button>
-      </div>
+              <ScrollView style={{ maxHeight: 320 }}>
+                <Pressable
+                  onPress={() => {
+                    onUpdate({ ...content, scriptId: undefined, webhookUrl: undefined });
+                    setScriptPickerOpen(false);
+                  }}
+                  className="rounded-md px-3 py-2 active:bg-secondary"
+                >
+                  <Text className="text-sm text-foreground">
+                    {t('payment.form.noScript') || 'Sin script de notificación'}
+                  </Text>
+                </Pressable>
+                {webhookScripts.map((script) => (
+                  <Pressable
+                    key={script.id}
+                    onPress={() => {
+                      const publicToken = script.triggerConfig?.publicToken;
+                      const webhookUrl = `${webhookBase}/w/${activeTeamId}/webhook/${script.id}/${publicToken}`;
+                      onUpdate({ ...content, scriptId: script.id, webhookUrl });
+                      setScriptPickerOpen(false);
+                    }}
+                    className="rounded-md px-3 py-2 active:bg-secondary"
+                  >
+                    <Text className="text-sm text-foreground">{script.name || script.id}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </View>
     );
   }
 
   // ── NOT CONFIGURED (editor only) ─────────────────────────────────────────────
   if (!isConfigured && canEdit) {
     return (
-      <div className="rounded-lg border border-dashed border-border bg-muted/10 p-6 text-center space-y-3">
-        <CreditCard className="w-8 h-8 text-muted-foreground mx-auto" />
-        <div>
-          <p className="text-sm font-medium text-foreground">Pago no configurado</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Configura el monto y el proveedor para activar este brick.</p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            setFormData({ title: '', description: '', amount: 0, currency: 'USD', provider: 'stripe', connectionId: '', checkoutUrl: '' });
+      <View className="items-center rounded-lg border border-dashed border-border bg-muted/10 p-6" style={{ gap: 12 }}>
+        <CreditCard size={32} color={colors.mutedForeground} />
+        <View className="items-center">
+          <Text style={{ fontFamily: fonts.medium }} className="text-sm text-foreground">
+            {t('payment.notConfigured') || 'Pago no configurado'}
+          </Text>
+          <Text className="mt-0.5 text-xs text-muted-foreground">
+            {t('payment.notConfiguredHint') || 'Configura el monto y el proveedor para activar este brick.'}
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => {
+            setFormData({
+              title: '',
+              description: '',
+              amount: 0,
+              currency: 'USD',
+              provider: 'stripe',
+              connectionId: '',
+              checkoutUrl: '',
+            });
             setIsEditing(true);
           }}
+          className="flex-row items-center rounded-md border border-border bg-card px-3 py-2"
         >
-          <Settings className="h-3.5 w-3.5 mr-2" />
-          Configurar pago
-        </Button>
-      </div>
+          <Settings size={14} color={colors.foreground} />
+          <Text style={{ fontFamily: fonts.medium, marginLeft: 8 }} className="text-sm text-foreground">
+            {t('payment.configure') || 'Configurar pago'}
+          </Text>
+        </Pressable>
+      </View>
     );
   }
 
   // ── DISPLAY MODE ─────────────────────────────────────────────────────────────
   return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
-      <div className="bg-muted/40 px-4 py-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <CreditCard className="w-4 h-4 text-muted-foreground" />
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+    <View className="overflow-hidden rounded-lg border border-border bg-card">
+      <View className="flex-row items-center justify-between bg-muted/40 px-4 py-3" style={{ gap: 8 }}>
+        <View className="flex-row items-center" style={{ gap: 8 }}>
+          <CreditCard size={16} color={colors.mutedForeground} />
+          <Text
+            style={{ fontFamily: fonts.semibold }}
+            className="text-xs uppercase tracking-wide text-muted-foreground"
+          >
             {PROVIDER_LABELS[content.provider || 'stripe']}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full ${currentStatus.bg}`}>
+          </Text>
+        </View>
+        <View className="flex-row items-center" style={{ gap: 8 }}>
+          <View className="flex-row items-center rounded-full px-2.5 py-1" style={{ gap: 6 }}>
             <StatusIcon status={status} />
-            <span className={`text-xs font-medium ${currentStatus.color}`}>{currentStatus.label}</span>
-          </div>
+            <Text style={{ fontFamily: fonts.medium, color: currentStatus.color }} className="text-xs">
+              {currentStatus.label}
+            </Text>
+          </View>
           {canEdit && (
-            <button
-              type="button"
-              onClick={() => {
+            <Pressable
+              onPress={() => {
                 setFormData({
                   title: content.title || '',
                   description: content.description || '',
@@ -386,89 +549,109 @@ export function UnifiedPaymentBrick({
                 });
                 setIsEditing(true);
               }}
-              className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
-              title="Editar"
+              className="rounded-md p-1.5"
             >
-              <Settings className="w-3.5 h-3.5" />
-            </button>
+              <Settings size={14} color={colors.mutedForeground} />
+            </Pressable>
           )}
-        </div>
-      </div>
+        </View>
+      </View>
 
-      <div className="p-5 space-y-4">
-        <div className="space-y-1">
-          <h3 className="text-lg font-semibold text-foreground">{content.title || t('payment.untitled') || 'Pago'}</h3>
-          {content.description && (
-            <p className="text-sm text-muted-foreground whitespace-pre-line">{content.description}</p>
-          )}
-        </div>
+      <View className="p-5" style={{ gap: 16 }}>
+        <View style={{ gap: 4 }}>
+          <Text style={{ fontFamily: fonts.semibold }} className="text-lg text-foreground">
+            {content.title || t('payment.untitled') || 'Pago'}
+          </Text>
+          {content.description ? (
+            <Text className="text-sm text-muted-foreground">{content.description}</Text>
+          ) : null}
+        </View>
 
-        <div className="bg-muted/30 rounded-lg p-4 text-center">
-          <p className="text-xs text-muted-foreground mb-1">{t('payment.amountLabel') || 'Total'}</p>
-          <p className="text-4xl font-bold text-foreground tracking-tight">
+        <View className="items-center rounded-lg bg-muted/30 p-4">
+          <Text className="mb-1 text-xs text-muted-foreground">{t('payment.amountLabel') || 'Total'}</Text>
+          <Text style={{ fontFamily: fonts.bold }} className="text-4xl tracking-tight text-foreground">
             {formatAmount(content.amount || 0, content.currency || 'USD')}
-          </p>
-        </div>
+          </Text>
+        </View>
 
         {status === 'paid' && content.paidAt && (
-          <div className="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 rounded-lg p-3">
-            <div className="flex items-start gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 mt-0.5 shrink-0" />
-              <div className="text-sm">
-                <p className="font-medium text-emerald-600">{t('payment.state.paidConfirmed') || 'Pago confirmado'}</p>
-                <p className="text-emerald-600/80 text-xs">
-                  {new Date(content.paidAt).toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' })}
-                </p>
-                {content.payerEmail && (
-                  <p className="text-emerald-600/70 text-xs mt-0.5">{content.payerEmail}</p>
-                )}
-              </div>
-            </div>
-          </div>
+          <View className="rounded-lg border border-border bg-success/10 p-3">
+            <View className="flex-row items-start" style={{ gap: 8 }}>
+              <CheckCircle2 size={16} color={colors.success} style={{ marginTop: 2 }} />
+              <View>
+                <Text style={{ fontFamily: fonts.medium }} className="text-sm text-success">
+                  {t('payment.state.paidConfirmed') || 'Pago confirmado'}
+                </Text>
+                <Text className="text-xs text-success/80">
+                  {new Date(content.paidAt).toLocaleDateString('es-ES', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  })}
+                </Text>
+                {content.payerEmail ? (
+                  <Text className="mt-0.5 text-xs text-success/70">{content.payerEmail}</Text>
+                ) : null}
+              </View>
+            </View>
+          </View>
         )}
 
         {status === 'failed' && (
-          <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-lg p-3">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
-              <div className="text-sm">
-                <p className="font-medium text-red-600">{t('payment.state.failed') || 'Pago fallido'}</p>
-                <p className="text-red-600/80 text-xs">{t('payment.state.failedRetry') || 'Puedes intentarlo de nuevo.'}</p>
-              </div>
-            </div>
-          </div>
+          <View className="rounded-lg border border-border bg-destructive/10 p-3">
+            <View className="flex-row items-start" style={{ gap: 8 }}>
+              <AlertCircle size={16} color={colors.destructive} style={{ marginTop: 2 }} />
+              <View>
+                <Text style={{ fontFamily: fonts.medium }} className="text-sm text-destructive">
+                  {t('payment.state.failed') || 'Pago fallido'}
+                </Text>
+                <Text className="text-xs text-destructive/80">
+                  {t('payment.state.failedRetry') || 'Puedes intentarlo de nuevo.'}
+                </Text>
+              </View>
+            </View>
+          </View>
         )}
 
         {status === 'pending' && (
-          <div className="flex flex-col gap-2">
+          <View style={{ gap: 8 }}>
             {checkoutUrl ? (
               <>
-                <a
-                  href={checkoutUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full px-4 py-2.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition font-medium text-sm text-center flex items-center justify-center gap-2 group"
+                {/* Mobile: iframe checkout → system browser via Linking */}
+                <Pressable
+                  onPress={() => Linking.openURL(checkoutUrl)}
+                  className="h-11 w-full flex-row items-center justify-center rounded-lg bg-primary"
+                  style={{ gap: 8 }}
                 >
-                  {t('payment.payNow') || 'Pagar ahora'}
-                  <ExternalLink className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-                </a>
-                <button
-                  type="button"
-                  onClick={handleCopyUrl}
-                  className="flex items-center justify-center gap-2 px-4 py-2 text-sm border border-border rounded-lg hover:bg-muted/50 transition text-muted-foreground"
+                  <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-primary-foreground">
+                    {t('payment.payWithProvider', {
+                      provider: PROVIDER_LABELS[content.provider || 'stripe'],
+                    }) || `Pagar con ${PROVIDER_LABELS[content.provider || 'stripe']}`}
+                  </Text>
+                  <ExternalLink size={16} color={colors.primaryForeground} />
+                </Pressable>
+                <Pressable
+                  onPress={handleCopyUrl}
+                  className="h-10 w-full flex-row items-center justify-center rounded-lg border border-border"
+                  style={{ gap: 8 }}
                 >
-                  <Copy className="w-3.5 h-3.5" />
-                  {isCopied ? (t('payment.copied') || 'Copiado') : (t('payment.copyLink') || 'Copiar enlace')}
-                </button>
+                  <Copy size={14} color={colors.mutedForeground} />
+                  <Text className="text-sm text-muted-foreground">
+                    {isCopied
+                      ? t('payment.copied') || 'Copiado'
+                      : t('payment.copyLink') || 'Copiar enlace'}
+                  </Text>
+                </Pressable>
               </>
             ) : canEdit ? (
-              <p className="text-xs text-center text-muted-foreground py-1">
-                {t('payment.noCheckoutUrlHint') || 'Genera un link de pago configurando las credenciales del proveedor.'}
-              </p>
+              <Text className="py-1 text-center text-xs text-muted-foreground">
+                {t('payment.noCheckoutUrlHint') ||
+                  'Genera un link de pago configurando las credenciales del proveedor.'}
+              </Text>
             ) : null}
-          </div>
+          </View>
         )}
-      </div>
-    </div>
+      </View>
+    </View>
   );
 }

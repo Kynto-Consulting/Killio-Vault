@@ -187,8 +187,7 @@ function ActivityRow({
 }) {
   const mapped = actionMap[entry.action];
   const Icon = mapped?.icon ?? History;
-  const actor =
-    (entry.actorId && membersById?.[entry.actorId]) ?? undefined;
+  const actor = entry.actorId ? membersById?.[entry.actorId] : undefined;
   const actorName = actor?.name ?? entry.actorName ?? (entry.actorId ?? t('actor'));
   const initial = (actorName || '?').charAt(0).toUpperCase();
 

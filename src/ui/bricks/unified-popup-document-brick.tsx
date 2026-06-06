@@ -1,33 +1,82 @@
-"use client";
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  ActivityIndicator,
+  Linking,
+  Modal,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
+import {
+  FileText,
+  ExternalLink,
+  X,
+  ChevronRight,
+  Pencil,
+  Folder as FolderIcon,
+} from 'lucide-react-native';
 
-import React, { useState, useCallback, useEffect, useRef } from "react";
-import { useParams } from "next/navigation";
-import { FileText, ExternalLink, X, Loader2, ChevronRight, Pencil, Folder as FolderIcon } from "lucide-react";
 import {
   createDocument,
   getDocument,
-  getDocumentBricks,
   listDocuments,
-  updateDocumentTitle,
-  createDocumentBrick,
-  updateDocumentBrick,
-  deleteDocumentBrick,
-  reorderDocumentBricks,
-  DocumentSummary,
+  appendDocumentBlock,
+  updateBrickContent,
+  removeBrick,
+  reorderBricks,
   patchBrickCell,
-  DocumentView,
-  DocumentBrick,
-} from "@/lib/api/documents";
-import { listTeamBoards, listTeamMembers, BoardSummary, TeamMemberSummary } from "@/lib/api/contracts";
-import { useSession } from "@/components/providers/session-provider";
-import { useTranslations } from "@/components/providers/i18n-provider";
-import { sanitizeChildrenByContainer } from "@/lib/bricks/nesting";
+  type DocFull,
+  type DocBrick,
+  type DocSummary,
+} from '@/core/api/documents.client';
+import { listTeamBoards } from '@/core/api/boards.client';
+import { listTeamMembers, type TeamMember } from '@/core/api/teams.client';
+import type { BoardSummary } from '@/types';
+import { useAuth } from '@/core/auth/AuthContext';
+import { useTranslations } from '@/i18n';
+import { colors } from '@/theme/theme';
+import { fonts } from '@/theme/fonts';
+import { UnifiedBrickList } from './unified-brick-list';
+
+/**
+ * React Native port of the web `unified-popup-document-brick.tsx`.
+ *
+ * The brick API and content schema match the web file 1:1 — same prop names
+ * (`UnifiedPopupDocumentBrick`), same content keys — so a brick authored on web
+ * round-trips through Vault and back unchanged.
+ *
+ * Web → Native swap notes (key deltas from the source file):
+ *   • Mobile: floating slide-over popover → bottom-sheet `Modal`. The web brick
+ *     renders a fixed, resizable right-side panel; RN uses a bottom sheet with a
+ *     backdrop. The drag-to-resize handle, `window.innerWidth` math, the
+ *     `localStorage` width persistence, and the `matchMedia` mobile probe are
+ *     all dropped (// Mobile: drop window/document/localStorage).
+ *   • Mobile: external-source files (Drive / OneDrive) can't be shown in an
+ *     <iframe>; we render an "Open in browser" button that defers to
+ *     `Linking.openURL(viewerUrl)`.
+ *   • The inline document body is wired to the Vault sibling
+ *     `./unified-brick-list` (statically imported — RN bundles eagerly, so the
+ *     web's `import()` lazy-loader is dropped).
+ *   • `useParams()` (next) → `useLocalSearchParams()` (expo-router).
+ *   • `useSession()` → `useAuth()`; `lucide-react` → `lucide-react-native`.
+ *   • `<a href>` standalone links → `Linking.openURL`.
+ *   • Vault types: `DocumentView` → `DocFull`, `DocumentBrick` → `DocBrick`,
+ *     `DocumentSummary` → `DocSummary`. Brick CRUD maps to the Vault
+ *     documents.client (`createDocumentBrick` → `appendDocumentBlock`,
+ *     `updateDocumentBrick` → `updateBrickContent`, `deleteDocumentBrick` →
+ *     `removeBrick`, `reorderDocumentBricks` → `reorderBricks`).
+ *   • Backend gap: Vault `createDocument` doesn't accept `isInlinePopup` /
+ *     `parentDocumentId` yet, so auto-provisioning creates a plain document.
+ */
 
 export interface PopupDocumentContent {
   title?: string;
   inlineDocumentId?: string | null;
   externalSource?: {
-    provider: "google_drive" | "onedrive";
+    provider: 'google_drive' | 'onedrive';
     fileId: string;
     fileName: string;
     mimeType?: string;
@@ -45,7 +94,24 @@ interface UnifiedPopupDocumentBrickProps {
   onUpdate: (content: PopupDocumentContent) => void;
 }
 
-function sanitizeBricks(bricks: DocumentBrick[]): DocumentBrick[] {
+/** Minimal stand-in for the web `sanitizeChildrenByContainer` helper: strips
+ *  child references that point to bricks no longer present in the document. */
+function sanitizeChildrenByContainer(
+  content: Record<string, any>,
+  ids: Set<string>,
+): Record<string, any> {
+  const cbc = content?.childrenByContainer;
+  if (!cbc || typeof cbc !== 'object') return content;
+  const cleaned: Record<string, string[]> = {};
+  for (const [container, childIds] of Object.entries(cbc)) {
+    if (Array.isArray(childIds)) {
+      cleaned[container] = childIds.filter((cid) => typeof cid === 'string' && ids.has(cid));
+    }
+  }
+  return { ...content, childrenByContainer: cleaned };
+}
+
+function sanitizeBricks(bricks: DocBrick[]): DocBrick[] {
   const deduped = Array.from(new Map(bricks.map((b) => [b.id, b])).values());
   const ids = new Set(deduped.map((b) => b.id));
   return deduped.map((b) => ({
@@ -69,54 +135,23 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   });
 }
 
-function buildFallbackDocumentView(documentId: string, title: string, bricks: DocumentBrick[]): DocumentView {
-  const now = new Date().toISOString();
-  return {
-    id: documentId,
-    title,
-    teamId: "",
-    visibility: "private",
-    createdByUserId: "",
-    createdAt: now,
-    updatedAt: now,
-    role: "editor",
-    bricks,
-  };
-}
-
-let cachedUnifiedBrickList: React.ComponentType<any> | null = null;
-let unifiedBrickListImportPromise: Promise<React.ComponentType<any>> | null = null;
-
-function loadUnifiedBrickListComponent(): Promise<React.ComponentType<any>> {
-  if (cachedUnifiedBrickList) {
-    return Promise.resolve(cachedUnifiedBrickList);
-  }
-  if (!unifiedBrickListImportPromise) {
-    unifiedBrickListImportPromise = import("@/components/bricks/unified-brick-list")
-      .then((m) => {
-        cachedUnifiedBrickList = m.UnifiedBrickList;
-        return m.UnifiedBrickList;
-      })
-      .finally(() => {
-        unifiedBrickListImportPromise = null;
-      });
-  }
-  return unifiedBrickListImportPromise;
-}
-
 export function UnifiedPopupDocumentBrick({
   id,
   content,
   canEdit,
   onUpdate,
 }: UnifiedPopupDocumentBrickProps) {
-  const t = useTranslations("document-detail");
-  const { accessToken, activeTeamId } = useSession();
+  const t = useTranslations('document-detail');
+  const { activeTeam } = useAuth();
+  const activeTeamId = activeTeam?.id ?? null;
+  // accessToken is injected by the axios interceptor (token-store); kept as a
+  // truthy stub so the web `if (accessToken)` guards keep working.
+  const accessToken = activeTeamId ? 'managed-by-axios' : null;
   const [isOpen, setIsOpen] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [tempTitle, setTempTitle] = useState(content.title ?? "");
+  const [tempTitle, setTempTitle] = useState(content.title ?? '');
 
-  const title = content.title || t("popupDocument.untitled", { fallback: "Untitled document" });
+  const title = content.title || t('popupDocument.untitled') || 'Untitled document';
 
   const handleTitleSave = () => {
     const trimmed = tempTitle.trim();
@@ -126,112 +161,84 @@ export function UnifiedPopupDocumentBrick({
     setIsEditingTitle(false);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") handleTitleSave();
-    if (e.key === "Escape") {
-      setTempTitle(content.title ?? "");
-      setIsEditingTitle(false);
-    }
-  };
-
   return (
     <>
       {/* Brick card */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 14px",
-          borderRadius: 10,
-          border: "1px solid rgba(255,255,255,0.1)",
-          background: "rgba(255,255,255,0.03)",
-          cursor: "default",
-          userSelect: "none",
-        }}
+      <View
+        className="flex-row items-center rounded-lg border border-border bg-card px-3.5 py-2.5"
+        style={{ gap: 10 }}
       >
-        <FileText style={{ width: 16, height: 16, color: "rgba(255,255,255,0.4)", flexShrink: 0 }} />
+        <FileText size={16} color={colors.mutedForeground} />
 
         {isEditingTitle && canEdit ? (
-          <input
+          <TextInput
             autoFocus
             value={tempTitle}
-            onChange={(e) => setTempTitle(e.target.value)}
+            onChangeText={setTempTitle}
             onBlur={handleTitleSave}
-            onKeyDown={handleKeyDown}
-            style={{
-              flex: 1,
-              background: "transparent",
-              border: "none",
-              borderBottom: "1px solid rgba(255,255,255,0.3)",
-              outline: "none",
-              fontSize: 13,
-              color: "rgba(255,255,255,0.88)",
-              padding: "0 2px",
-            }}
+            onSubmitEditing={handleTitleSave}
+            style={{ fontFamily: fonts.regular, flex: 1 }}
+            className="border-b border-border px-0.5 text-[13px] text-foreground"
           />
         ) : (
-          <span
-            style={{ flex: 1, fontSize: 13, color: "rgba(255,255,255,0.85)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-            onDoubleClick={canEdit ? () => { setTempTitle(content.title ?? ""); setIsEditingTitle(true); } : undefined}
+          <Text
+            style={{ flex: 1 }}
+            numberOfLines={1}
+            className="text-[13px] text-foreground"
+            onPress={
+              canEdit
+                ? () => {
+                    setTempTitle(content.title ?? '');
+                    setIsEditingTitle(true);
+                  }
+                : undefined
+            }
           >
             {title}
-          </span>
+          </Text>
         )}
 
         {canEdit && !isEditingTitle && (
-          <button
-            type="button"
-            onClick={() => { setTempTitle(content.title ?? ""); setIsEditingTitle(true); }}
-            style={{ padding: 4, background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.3)", lineHeight: 1 }}
-            title="Rename"
+          <Pressable
+            onPress={() => {
+              setTempTitle(content.title ?? '');
+              setIsEditingTitle(true);
+            }}
+            hitSlop={6}
+            className="p-1"
           >
-            <Pencil style={{ width: 12, height: 12 }} />
-          </button>
+            <Pencil size={12} color={colors.mutedForeground} />
+          </Pressable>
         )}
 
-        {content.inlineDocumentId && (
-          <a
-            href={`/d/${content.inlineDocumentId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ padding: 4, background: "transparent", border: "none", color: "rgba(255,255,255,0.3)", lineHeight: 1 }}
-            title="Open in new tab"
-            onClick={(e) => e.stopPropagation()}
+        {content.inlineDocumentId ? (
+          // Mobile: <a href="/d/:id"> → open the standalone document deep link.
+          <Pressable
+            onPress={() => Linking.openURL(`/d/${content.inlineDocumentId}`)}
+            hitSlop={6}
+            className="p-1"
           >
-            <ExternalLink style={{ width: 12, height: 12 }} />
-          </a>
-        )}
+            <ExternalLink size={12} color={colors.mutedForeground} />
+          </Pressable>
+        ) : null}
 
-        <button
-          type="button"
-          onClick={() => setIsOpen(true)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            padding: "4px 10px",
-            borderRadius: 7,
-            border: "1px solid rgba(255,255,255,0.12)",
-            background: "transparent",
-            color: "rgba(255,255,255,0.6)",
-            fontSize: 12,
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-          }}
+        <Pressable
+          onPress={() => setIsOpen(true)}
+          className="flex-row items-center rounded-md border border-border px-2.5 py-1"
+          style={{ gap: 4 }}
         >
-          <ChevronRight style={{ width: 12, height: 12 }} />
-          {t("popupDocument.open", { fallback: "Open" })}
-        </button>
-      </div>
+          <ChevronRight size={12} color={colors.mutedForeground} />
+          <Text className="text-xs text-muted-foreground">{t('popupDocument.open') || 'Open'}</Text>
+        </Pressable>
+      </View>
 
-      {/* Slide-over panel */}
+      {/* Bottom-sheet panel */}
       {isOpen && (
         <PopupDocumentPanel
           content={content}
           canEdit={canEdit}
-          teamId={activeTeamId ?? null}
-          accessToken={accessToken ?? ""}
+          teamId={activeTeamId}
+          accessToken={accessToken ?? ''}
           onClose={() => setIsOpen(false)}
           onUpdate={onUpdate}
         />
@@ -251,47 +258,49 @@ interface PopupDocumentPanelProps {
   onUpdate: (content: PopupDocumentContent) => void;
 }
 
-function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, onUpdate }: PopupDocumentPanelProps) {
-  const t = useTranslations("document-detail");
-  const params = useParams() as Record<string, string | string[] | undefined>;
+function PopupDocumentPanel({
+  content,
+  canEdit,
+  teamId,
+  accessToken,
+  onClose,
+  onUpdate,
+}: PopupDocumentPanelProps) {
+  const t = useTranslations('document-detail');
+  const params = useLocalSearchParams<{ docId?: string | string[] }>();
   const routeDocId = params?.docId;
   const parentDocumentId = Array.isArray(routeDocId) ? routeDocId[0] : routeDocId;
-  const [doc, setDoc] = useState<DocumentView | null>(null);
+  const [doc, setDoc] = useState<DocFull | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCreatingInlineDoc, setIsCreatingInlineDoc] = useState(false);
   const creatingInlineDocRef = useRef(false);
   const [parentDocumentTitle, setParentDocumentTitle] = useState<string | null>(null);
-  const [teamDocuments, setTeamDocuments] = useState<DocumentSummary[]>([]);
+  const [teamDocuments, setTeamDocuments] = useState<DocSummary[]>([]);
   const [teamBoards, setTeamBoards] = useState<BoardSummary[]>([]);
-  const [teamMembers, setTeamMembers] = useState<TeamMemberSummary[]>([]);
-  const [isMobile, setIsMobile] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(860);
-  const isResizingRef = useRef(false);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
 
   const { inlineDocumentId } = content;
 
   const loadInlineDocument = useCallback(
-    async (documentId: string, titleFallback?: string): Promise<DocumentView> => {
-      const safeTitle = (titleFallback || content.title || "").trim() || t("popupDocument.untitled", { fallback: "Untitled document" });
+    async (documentId: string, titleFallback?: string): Promise<DocFull> => {
+      const safeTitle =
+        (titleFallback || content.title || '').trim() ||
+        t('popupDocument.untitled') ||
+        'Untitled document';
 
-      try {
-        const full = await withTimeout(
-          getDocument(documentId, accessToken),
-          7000,
-          t("popupDocument.loadTimeout", { fallback: "Document load timeout" }),
-        );
-        return { ...full, bricks: sanitizeBricks(full.bricks) };
-      } catch {
-        const bricks = await withTimeout(
-          getDocumentBricks(documentId, accessToken),
-          7000,
-          t("popupDocument.loadTimeout", { fallback: "Document load timeout" }),
-        );
-        return buildFallbackDocumentView(documentId, safeTitle, sanitizeBricks(bricks));
-      }
+      const full = await withTimeout(
+        getDocument(documentId),
+        7000,
+        t('popupDocument.loadTimeout') || 'Document load timeout',
+      );
+      return {
+        ...full,
+        title: full.title || safeTitle,
+        bricks: sanitizeBricks(full.bricks ?? []),
+      };
     },
-    [accessToken, content.title, t],
+    [content.title, t],
   );
 
   const fetchDoc = useCallback(async () => {
@@ -302,7 +311,7 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
       const result = await loadInlineDocument(inlineDocumentId, content.title);
       setDoc(result);
     } catch (err: any) {
-      setError(err.message ?? "Failed to load document");
+      setError(err?.message ?? 'Failed to load document');
     } finally {
       setLoading(false);
     }
@@ -320,7 +329,7 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
 
     let cancelled = false;
 
-    getDocument(parentDocumentId, accessToken)
+    getDocument(parentDocumentId)
       .then((parentDoc) => {
         if (!cancelled) {
           setParentDocumentTitle(parentDoc.title || null);
@@ -338,64 +347,6 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
   }, [parentDocumentId, accessToken]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const media = window.matchMedia("(max-width: 768px)");
-    const update = () => setIsMobile(media.matches);
-    update();
-
-    const savedWidth = window.localStorage.getItem("killio.popupDrawer.width");
-    if (savedWidth) {
-      const parsed = Number(savedWidth);
-      if (!Number.isNaN(parsed)) {
-        setPanelWidth(Math.max(700, Math.min(1400, parsed)));
-      }
-    }
-
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const onMouseMove = (event: MouseEvent) => {
-      if (!isResizingRef.current || isMobile) return;
-      const next = Math.max(700, Math.min(1400, window.innerWidth - event.clientX));
-      setPanelWidth(next);
-    };
-
-    const onMouseUp = () => {
-      if (!isResizingRef.current) return;
-      isResizingRef.current = false;
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
-      if (!isMobile) {
-        window.localStorage.setItem("killio.popupDrawer.width", String(panelWidth));
-      }
-    };
-
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, [isMobile, panelWidth]);
-
-  const startResize = (event: React.MouseEvent) => {
-    if (isMobile) return;
-    event.preventDefault();
-    isResizingRef.current = true;
-    document.body.style.userSelect = "none";
-    document.body.style.cursor = "col-resize";
-  };
-
-  useEffect(() => {
-    void loadUnifiedBrickListComponent();
-  }, []);
-
-  useEffect(() => {
     if (!teamId || !accessToken) {
       setTeamDocuments([]);
       setTeamBoards([]);
@@ -406,9 +357,9 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
     let cancelled = false;
 
     Promise.all([
-      listDocuments(teamId, accessToken).catch(() => [] as DocumentSummary[]),
-      listTeamBoards(teamId, accessToken).catch(() => [] as BoardSummary[]),
-      listTeamMembers(teamId, accessToken).catch(() => [] as TeamMemberSummary[]),
+      listDocuments(teamId).catch(() => [] as DocSummary[]),
+      listTeamBoards(teamId).catch(() => [] as BoardSummary[]),
+      listTeamMembers(teamId).catch(() => [] as TeamMember[]),
     ]).then(([docs, boards, members]) => {
       if (!cancelled) {
         setTeamDocuments(docs);
@@ -435,21 +386,12 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
       setLoading(true);
       setError(null);
       try {
-        const baseTitle = (content.title || "").trim() || t("popupDocument.untitled", { fallback: "Untitled document" });
-        const created = await createDocument(
-          {
-            teamId,
-            title: baseTitle,
-            isInlinePopup: true,
-            parentDocumentId: parentDocumentId || undefined,
-          },
-          accessToken,
-        );
-        await createDocumentBrick(
-          created.id,
-          { kind: "text", position: 1000, content: { text: "" } },
-          accessToken,
-        );
+        const baseTitle =
+          (content.title || '').trim() || t('popupDocument.untitled') || 'Untitled document';
+        // Backend gap: Vault createDocument doesn't accept isInlinePopup /
+        // parentDocumentId yet — provisions a plain document instead.
+        const created = await createDocument({ teamId, title: baseTitle });
+        await appendDocumentBlock(created.id, 'text', { text: '' });
 
         if (cancelled) return;
 
@@ -465,7 +407,11 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
         }
       } catch (err: any) {
         if (!cancelled) {
-          setError(err?.message ?? t("popupDocument.createFailed", { fallback: "Failed to create popup document" }));
+          setError(
+            err?.message ??
+              t('popupDocument.createFailed') ??
+              'Failed to create popup document',
+          );
         }
       } finally {
         creatingInlineDocRef.current = false;
@@ -481,169 +427,131 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
     return () => {
       cancelled = true;
     };
-  }, [inlineDocumentId, content.externalSource, content.title, canEdit, teamId, accessToken, onUpdate, t, loadInlineDocument, parentDocumentId]);
+  }, [
+    inlineDocumentId,
+    content.externalSource,
+    content.title,
+    canEdit,
+    teamId,
+    accessToken,
+    onUpdate,
+    t,
+    loadInlineDocument,
+    parentDocumentId,
+  ]);
 
-  // External source (Drive/OneDrive file) – show iframe viewer
+  // External source (Drive/OneDrive file) — show "open in browser" CTA.
   const externalSource = content.externalSource;
   const viewerUrl = externalSource
-    ? externalSource.provider === "google_drive" && externalSource.webViewLink
+    ? externalSource.provider === 'google_drive' && externalSource.webViewLink
       ? `https://drive.google.com/file/d/${externalSource.fileId}/preview`
       : externalSource.webUrl ?? null
     : null;
 
-  const currentTitle = doc?.title ?? externalSource?.fileName ?? content.title ?? t("popupDocument.untitled", { fallback: "Untitled" });
-  const standaloneHref = (() => {
-    if (!inlineDocumentId) return null;
-    return `/d/${inlineDocumentId}`;
-  })();
+  const currentTitle =
+    doc?.title ??
+    externalSource?.fileName ??
+    content.title ??
+    t('popupDocument.untitled') ??
+    'Untitled';
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 300,
-        display: "flex",
-        alignItems: isMobile ? "flex-end" : "stretch",
-        justifyContent: "flex-end",
-        pointerEvents: "none",
-      }}
-    >
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       {/* Backdrop */}
-      <div
-        style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(2px)", pointerEvents: "auto" }}
-        onClick={onClose}
-      />
-
-      {/* Panel */}
-      <div
-        style={{
-          position: "relative",
-          width: isMobile ? "100vw" : `min(${panelWidth}px, 96vw)`,
-          height: isMobile ? "min(86vh, 100%)" : "100%",
-          background: "#0c0e14",
-          borderLeft: isMobile ? "none" : "1px solid rgba(255,255,255,0.1)",
-          borderTop: isMobile ? "1px solid rgba(255,255,255,0.1)" : "none",
-          borderTopLeftRadius: isMobile ? 16 : 0,
-          borderTopRightRadius: isMobile ? 16 : 0,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          pointerEvents: "auto",
-          animation: isMobile ? "slideInFromBottom 0.22s ease-out" : "slideInFromRight 0.2s ease-out",
-        }}
-      >
-        {!isMobile && (
-          <div
-            onMouseDown={startResize}
-            style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: 10,
-              cursor: "col-resize",
-              zIndex: 20,
-              background: "transparent",
-            }}
-            title="Drag to resize"
-          />
-        )}
-
-        {/* Header */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: isMobile ? "12px 14px" : "14px 20px",
-            borderBottom: "1px solid rgba(255,255,255,0.08)",
-            flexShrink: 0,
-          }}
+      <Pressable onPress={onClose} className="flex-1 justify-end bg-background/70">
+        {/* Sheet */}
+        <Pressable
+          onPress={(e) => e.stopPropagation()}
+          className="rounded-t-2xl border-t border-border bg-card"
+          style={{ height: '88%' }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
-            <a href="/d" style={{ display: "flex", alignItems: "center", gap: 6, color: "rgba(255,255,255,0.58)", textDecoration: "none", fontSize: 12, padding: "4px 6px", borderRadius: 6 }}>
-              <FolderIcon style={{ width: 14, height: 14 }} />
-              <span>{t("allDocuments")}</span>
-            </a>
-
-            <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 12 }}>/</span>
-
-            {parentDocumentTitle && (
-              <>
-                <span style={{ color: "rgba(255,255,255,0.65)", fontSize: 12, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {parentDocumentTitle}
-                </span>
-                <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 12 }}>/</span>
-              </>
-            )}
-
-            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "4px 8px" }}>
-              <FileText style={{ width: 14, height: 14, color: "rgba(255,255,255,0.55)", flexShrink: 0 }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.9)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {currentTitle}
-              </span>
-            </div>
-          </div>
-
-          {standaloneHref && (
-            <a
-              href={standaloneHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 10px",
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,0.14)",
-                color: "rgba(255,255,255,0.8)",
-                textDecoration: "none",
-                fontSize: 12,
-                fontWeight: 600,
-                lineHeight: 1,
-              }}
-              title={t("popupDocument.openFull", { fallback: "Open full" })}
-            >
-              <span>{t("popupDocument.openFull", { fallback: "Open full" })}</span>
-              <ExternalLink style={{ width: 14, height: 14 }} />
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            style={{ padding: 6, background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.4)", lineHeight: 1, borderRadius: 6 }}
+          {/* Header */}
+          <View
+            className="flex-row items-center border-b border-border px-4 py-3"
+            style={{ gap: 8 }}
           >
-            <X style={{ width: 16, height: 16 }} />
-          </button>
-        </div>
+            <View className="flex-row items-center" style={{ gap: 8, minWidth: 0, flex: 1 }}>
+              <FolderIcon size={14} color={colors.mutedForeground} />
+              <Text className="text-xs text-muted-foreground">{t('allDocuments') || 'Documents'}</Text>
+              <Text className="text-xs text-muted-foreground">/</Text>
 
-        {/* Body */}
-        <div style={{ flex: 1, overflow: "auto", padding: isMobile ? "10px 8px 120px" : "16px 20px 120px" }}>
-          {loading && (
-            <div style={{ display: "flex", justifyContent: "center", paddingTop: 40 }}>
-              <Loader2 style={{ width: 20, height: 20, color: "rgba(255,255,255,0.3)", animation: "spin 1s linear infinite" }} />
-            </div>
-          )}
+              {parentDocumentTitle ? (
+                <>
+                  <Text numberOfLines={1} className="text-xs text-muted-foreground" style={{ maxWidth: 120 }}>
+                    {parentDocumentTitle}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">/</Text>
+                </>
+              ) : null}
 
-          {error && (
-            <div style={{ fontSize: 13, color: "#f87171", textAlign: "center", paddingTop: 40 }}>{error}</div>
-          )}
+              <View
+                className="flex-row items-center rounded-md border border-border bg-background px-2 py-1"
+                style={{ gap: 6, minWidth: 0 }}
+              >
+                <FileText size={14} color={colors.mutedForeground} />
+                <Text
+                  numberOfLines={1}
+                  style={{ fontFamily: fonts.semibold, flexShrink: 1 }}
+                  className="text-xs text-foreground"
+                >
+                  {currentTitle}
+                </Text>
+              </View>
+            </View>
 
-          {/* External source: iframe preview */}
-          {!loading && !error && externalSource && viewerUrl && (
-            <iframe
-              src={viewerUrl}
-              sandbox="allow-scripts allow-popups allow-same-origin allow-forms allow-top-navigation"
-              style={{ width: "100%", height: "100%", minHeight: 500, border: "none", borderRadius: 8 }}
-              title={externalSource.fileName}
-            />
-          )}
+            {inlineDocumentId ? (
+              <Pressable
+                onPress={() => Linking.openURL(`/d/${inlineDocumentId}`)}
+                className="flex-row items-center rounded-md border border-border px-2.5 py-1.5"
+                style={{ gap: 6 }}
+              >
+                <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-foreground">
+                  {t('popupDocument.openFull') || 'Open full'}
+                </Text>
+                <ExternalLink size={14} color={colors.foreground} />
+              </Pressable>
+            ) : null}
 
-          {/* Inline document: lazy-loaded brick list */}
-          {!loading && !error && doc && !externalSource && (
-            <div style={{ paddingLeft: isMobile ? 8 : 80, paddingRight: isMobile ? 8 : 32, paddingTop: 4 }}>
+            <Pressable onPress={onClose} hitSlop={6} className="rounded-md p-1.5">
+              <X size={16} color={colors.mutedForeground} />
+            </Pressable>
+          </View>
+
+          {/* Body */}
+          <ScrollView
+            contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {loading ? (
+              <View className="items-center pt-10">
+                <ActivityIndicator color={colors.mutedForeground} />
+              </View>
+            ) : null}
+
+            {error ? (
+              <Text className="pt-10 text-center text-sm text-destructive">{error}</Text>
+            ) : null}
+
+            {/* External source: open-in-browser CTA (RN can't embed iframes). */}
+            {!loading && !error && externalSource && viewerUrl ? (
+              <View className="items-center pt-10" style={{ gap: 12 }}>
+                <FileText size={32} color={colors.mutedForeground} />
+                <Text className="text-sm text-foreground">{externalSource.fileName}</Text>
+                <Pressable
+                  onPress={() => Linking.openURL(viewerUrl)}
+                  className="flex-row items-center rounded-lg bg-primary px-4 py-2.5"
+                  style={{ gap: 8 }}
+                >
+                  <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-primary-foreground">
+                    {t('popupDocument.openExternal') || 'Open in browser'}
+                  </Text>
+                  <ExternalLink size={16} color={colors.primaryForeground} />
+                </Pressable>
+              </View>
+            ) : null}
+
+            {/* Inline document: brick list */}
+            {!loading && !error && doc && !externalSource ? (
               <InlineDocumentBody
                 doc={doc}
                 canEdit={canEdit}
@@ -653,69 +561,52 @@ function PopupDocumentPanel({ content, canEdit, teamId, accessToken, onClose, on
                 users={teamMembers}
                 onDocUpdate={setDoc}
               />
-            </div>
-          )}
+            ) : null}
 
-          {/* No linked document yet */}
-          {!loading && !error && !inlineDocumentId && !externalSource && !isCreatingInlineDoc && (
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", textAlign: "center", paddingTop: 40 }}>
-              {t("popupDocument.noContent", { fallback: "No content linked yet." })}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <style>{`
-        @keyframes slideInFromRight {
-          from { transform: translateX(100%); }
-          to { transform: translateX(0); }
-        }
-
-        @keyframes slideInFromBottom {
-          from { transform: translateY(100%); }
-          to { transform: translateY(0); }
-        }
-      `}</style>
-    </div>
+            {/* No linked document yet */}
+            {!loading && !error && !inlineDocumentId && !externalSource && !isCreatingInlineDoc ? (
+              <Text className="pt-10 text-center text-sm text-muted-foreground">
+                {t('popupDocument.noContent') || 'No content linked yet.'}
+              </Text>
+            ) : null}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
 // ─── InlineDocumentBody ───────────────────────────────────────────────────────
 
 interface InlineDocumentBodyProps {
-  doc: DocumentView;
+  doc: DocFull;
   canEdit: boolean;
   accessToken: string;
-  documents: DocumentSummary[];
+  documents: DocSummary[];
   boards: BoardSummary[];
-  users: TeamMemberSummary[];
-  onDocUpdate: (doc: DocumentView) => void;
+  users: TeamMember[];
+  onDocUpdate: (doc: DocFull) => void;
 }
 
-function InlineDocumentBody({ doc, canEdit, accessToken, documents, boards, users, onDocUpdate }: InlineDocumentBodyProps) {
-  const [BrickListComponent, setBrickListComponent] = useState<React.ComponentType<any> | null>(() => cachedUnifiedBrickList);
-  const [brickListLoadError, setBrickListLoadError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (BrickListComponent) return;
-    loadUnifiedBrickListComponent()
-      .then((Component) => {
-        setBrickListComponent(() => Component);
-        setBrickListLoadError(null);
-      })
-      .catch(() => {
-        setBrickListLoadError("Failed to load document renderer");
-      });
-  }, [BrickListComponent]);
-
+function InlineDocumentBody({
+  doc,
+  canEdit,
+  accessToken,
+  documents,
+  boards,
+  users,
+  onDocUpdate,
+}: InlineDocumentBodyProps) {
   const handleBrickUpdate = useCallback(
     async (brickId: string, newContent: any) => {
       if (!canEdit) return;
       try {
-        await updateDocumentBrick(doc.id, brickId, newContent, accessToken);
+        await updateBrickContent(doc.id, brickId, newContent);
         onDocUpdate({
           ...doc,
-          bricks: doc.bricks.map((b) => (b.id === brickId ? { ...b, content: newContent } : b)),
+          bricks: doc.bricks.map((b: DocBrick) =>
+            b.id === brickId ? { ...b, content: newContent } : b,
+          ),
         });
       } catch {
         // ignore
@@ -728,21 +619,11 @@ function InlineDocumentBody({ doc, canEdit, accessToken, documents, boards, user
     async (kind: string, afterBrickId?: string, _parentProps?: any, initialContent?: any) => {
       if (!canEdit) return;
       try {
-        let position: number;
-        if (afterBrickId) {
-          const after = doc.bricks.find((b) => b.id === afterBrickId);
-          position = after ? after.position + 1000 : (doc.bricks.length + 1) * 1000;
-        } else {
-          position = (doc.bricks.length + 1) * 1000;
-        }
-        const newBrick = await createDocumentBrick(
-          doc.id,
-          { kind, position, content: initialContent ?? {} },
-          accessToken,
-        );
+        const created = await appendDocumentBlock(doc.id, kind, initialContent ?? {});
+        const newBrick: DocBrick = { id: created.id, kind, content: initialContent ?? {} };
         const updatedBricks = [...doc.bricks];
         if (afterBrickId) {
-          const idx = updatedBricks.findIndex((b) => b.id === afterBrickId);
+          const idx = updatedBricks.findIndex((b: DocBrick) => b.id === afterBrickId);
           updatedBricks.splice(idx + 1, 0, newBrick);
         } else {
           updatedBricks.push(newBrick);
@@ -759,8 +640,8 @@ function InlineDocumentBody({ doc, canEdit, accessToken, documents, boards, user
     async (brickId: string) => {
       if (!canEdit) return;
       try {
-        await deleteDocumentBrick(doc.id, brickId, accessToken);
-        onDocUpdate({ ...doc, bricks: doc.bricks.filter((b) => b.id !== brickId) });
+        await removeBrick(doc.id, brickId);
+        onDocUpdate({ ...doc, bricks: doc.bricks.filter((b: DocBrick) => b.id !== brickId) });
       } catch {
         // ignore
       }
@@ -771,17 +652,12 @@ function InlineDocumentBody({ doc, canEdit, accessToken, documents, boards, user
   const handleReorderBricks = useCallback(
     async (ids: string[]) => {
       if (!canEdit) return;
-      const updates = ids.map((id, idx) => ({ id, position: (idx + 1) * 1000 }));
       const reordered = ids
-        .map((id, idx) => {
-          const brick = doc.bricks.find((b) => b.id === id);
-          if (!brick) return null;
-          return { ...brick, position: (idx + 1) * 1000 };
-        })
-        .filter(Boolean) as typeof doc.bricks;
+        .map((bid: string) => doc.bricks.find((b: DocBrick) => b.id === bid))
+        .filter(Boolean) as DocBrick[];
       onDocUpdate({ ...doc, bricks: reordered });
       try {
-        await reorderDocumentBricks(doc.id, updates, accessToken);
+        await reorderBricks(doc.id, ids);
       } catch {
         // ignore
       }
@@ -793,7 +669,7 @@ function InlineDocumentBody({ doc, canEdit, accessToken, documents, boards, user
     async (brickId: string, patch: Record<string, any>) => {
       if (!canEdit) return;
       try {
-        await patchBrickCell(doc.id, brickId, patch as any, accessToken);
+        await patchBrickCell(doc.id, brickId, patch as any);
       } catch {
         // ignore
       }
@@ -801,30 +677,14 @@ function InlineDocumentBody({ doc, canEdit, accessToken, documents, boards, user
     [doc.id, canEdit, accessToken],
   );
 
-  if (!BrickListComponent) {
-    if (brickListLoadError) {
-      return (
-        <div style={{ fontSize: 13, color: "#f87171", textAlign: "center", paddingTop: 20 }}>
-          {brickListLoadError}
-        </div>
-      );
-    }
-
-    return (
-      <div style={{ display: "flex", justifyContent: "center", paddingTop: 20 }}>
-        <Loader2 style={{ width: 16, height: 16, color: "rgba(255,255,255,0.3)", animation: "spin 1s linear infinite" }} />
-      </div>
-    );
-  }
-
   return (
-    <BrickListComponent
+    <UnifiedBrickList
       bricks={doc.bricks}
       activeBricks={doc.bricks}
       canEdit={canEdit}
       documents={documents}
       boards={boards}
-      users={users}
+      users={users as any}
       onUpdateBrick={handleBrickUpdate}
       onAddBrick={handleAddBrick}
       onDeleteBrick={handleDeleteBrick}

@@ -1,36 +1,95 @@
-"use client";
-
-import React, { useState, useEffect } from "react";
+import React, { useMemo, useState } from 'react';
+import { Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import {
-  DndContext,
-  DragOverlay,
-  type DragEndEvent,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-  sortableKeyboardCoordinates,
-} from "@dnd-kit/sortable";
-import { Type, Table, BarChart2, CheckSquare, ChevronDown, Image as ImageIcon, LayoutGrid, FileText } from "lucide-react";
-import { UnifiedBrickRenderer } from "./brick-renderer";
-import { SortableBrick } from "./sortable-brick";
-import { Button } from "@/components/ui/button";
-import { Portal } from "../ui/portal";
-import { cn } from "@/lib/utils";
-import { getSlashCommands, type SlashCommand } from "./slash-commands";
-import { useTranslations } from "@/components/providers/i18n-provider";
-import { ReferencePicker, type ReferencePickerSelection } from "@/components/documents/reference-picker";
-import { WorkspaceMemberLike } from "@/lib/workspace-members";
+  BarChart2,
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  FileText,
+  Image as ImageIcon,
+  LayoutGrid,
+  Plus,
+  Table as TableIcon,
+  Trash2,
+  Type,
+  X,
+  type LucideIcon,
+} from 'lucide-react-native';
 
-type AddableKind = 'text' | 'table' | 'graph' | 'checklist' | 'accordion' | 'tabs' | 'columns' | 'image' | 'video' | 'audio' | 'file' | 'code' | 'bookmark' | 'math' | 'database' | 'form';
+import { BrickRenderer, type Brick as RendererBrick } from '../BrickRenderer';
+import { ReferencePicker } from '../ReferencePicker';
+import { useTranslations } from '@/i18n';
+import { colors } from '@/theme/theme';
+import { fonts } from '@/theme/fonts';
+import type {
+  MentionType,
+  PickerActiveBrick,
+  PickerBoard,
+  PickerDocument,
+  PickerFolder,
+  PickerUser,
+  ReferencePickerSelection,
+} from '@/types/picker';
+import type { WorkspaceMemberLike } from './unified-bountiful-table';
+
+/**
+ * React Native port of the web `unified-brick-list.tsx`
+ * (Killio-Frontend/src/components/bricks/unified-brick-list.tsx).
+ *
+ * The brick API and prop shape match the web file 1:1 — same component name
+ * (`UnifiedBrickList`), same callback names, same content keys — so siblings
+ * importing this list (form brick, accordion, tabs, columns, popup-document,
+ * card descriptions) keep compiling without changes.
+ *
+ * Web → Native swap notes:
+ *   • `@dnd-kit/*` → replaced with up/down chevron arrow buttons next to each
+ *     brick. Multi-select / cross-container DnD props are accepted but become
+ *     no-ops on mobile (they remain in the prop surface so siblings importing
+ *     the list don't break). // TODO: long-press DnD via
+ *     react-native-gesture-handler + react-native-reanimated — phase 2.
+ *   • `lucide-react` → `lucide-react-native`.
+ *   • `framer-motion` / `DragOverlay` → dropped (no animation while dragging).
+ *   • `Portal` → `Modal` (RN's native portal equivalent).
+ *   • `ReferencePicker` (Killio-Frontend "@-picker" popover) → the Vault
+ *     full-screen RN `ReferencePicker` modal.
+ *   • Slash command list & per-command preview → grouped command list inside
+ *     the "+" modal (categories: media, ai, layout, basic, advanced). The
+ *     web's right-pane preview is omitted on mobile (// Mobile: too cramped).
+ *   • shadcn `@/components/ui/button` → small inline `<Pressable>` pills.
+ *   • `useTranslations("document-detail")` / `useTranslations("board-detail")`
+ *     namespaces don't exist on Vault yet — we fall back to `brickEditor` for
+ *     the labels we need (Texto / Tabla / Gráfico / …).
+ *   • `window.*` / `document.*` / `localStorage` → dropped or guarded by
+ *     `Platform.OS` checks. The CSS-keyframe selection pulse is replaced by a
+ *     static cyan border for selected rows.
+ *
+ * The actual brick rendering is delegated to the shared `BrickRenderer`
+ * dispatcher (`../BrickRenderer.tsx`), which already knows how to render every
+ * supported kind including the recursive composites (accordion / tabs /
+ * columns). The list itself owns add/remove/reorder + the insert menu.
+ */
+
+type AddableKind =
+  | 'text'
+  | 'table'
+  | 'graph'
+  | 'checklist'
+  | 'accordion'
+  | 'tabs'
+  | 'columns'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'file'
+  | 'code'
+  | 'bookmark'
+  | 'math'
+  | 'database'
+  | 'form';
 
 type CrossContainerDropOptions = {
-  intent?: "move" | "merge-text";
+  intent?: 'move' | 'merge-text';
   sourceContainerToken?: string;
   targetContainerToken?: string;
 };
@@ -42,26 +101,113 @@ interface UnifiedBrickListProps {
   onUpdateBrick: (id: string, content: any) => void;
   onDeleteBrick: (id: string) => void;
   onReorderBricks: (ids: string[]) => void;
-  onAddBrick: (kind: string, afterBrickId?: string, parentProps?: any, initialContent?: any) => void;
+  onAddBrick: (
+    kind: string,
+    afterBrickId?: string,
+    parentProps?: any,
+    initialContent?: any,
+  ) => void;
   documents?: any[];
   boards?: any[];
   folders?: any[];
   users?: WorkspaceMemberLike[];
   addableKinds?: AddableKind[];
-  onPasteImageInTextBrick?: (payload: { brickId: string; file: File; cursorOffset: number; markdown: string }) => Promise<string | void> | string | void;
-  onUploadMediaFiles?: (payload: { brickId: string; files: File[] }) => Promise<void> | void;
+  /** Web-only paste/upload hooks. Kept in the prop surface for source parity. */
+  onPasteImageInTextBrick?: (payload: {
+    brickId: string;
+    file: any;
+    cursorOffset: number;
+    markdown: string;
+  }) => Promise<string | void> | string | void;
+  onUploadMediaFiles?: (payload: { brickId: string; files: any[] }) => Promise<void> | void;
+  /** Mobile: ignored — list always owns its own reorder. */
   hasExternalDndContext?: boolean;
-  onCrossContainerDrop?: (activeId: string, overId: string, options?: CrossContainerDropOptions) => void;
+  /** Mobile: no-op — DnD is not wired. */
+  onCrossContainerDrop?: (
+    activeId: string,
+    overId: string,
+    options?: CrossContainerDropOptions,
+  ) => void;
   dropContainerToken?: string;
   emptyPlaceholder?: string;
   onAiAction?: (action: string, contextText: string) => void;
   onPatchCell?: (brickId: string, patch: Record<string, any>) => void;
   onPatchColumn?: (brickId: string, patch: Record<string, any>) => void;
   isCompact?: boolean;
+  /** Mobile: no overlay during drag. */
   showDragOverlay?: boolean;
-  /** Multi-select: ids currently selected + a toggle (Ctrl/Cmd-click a brick). */
+  /** Multi-select: long-press a brick to toggle selection. Bulk ops not yet
+   *  wired on mobile but the selection set is honoured for visual styling. */
   selectedBrickIds?: Set<string>;
   onBrickSelectToggle?: (id: string) => void;
+}
+
+interface AddCommand {
+  kind: AddableKind;
+  labelKey: string;
+  icon: LucideIcon;
+  category: 'basic' | 'media' | 'layout' | 'advanced';
+}
+
+const ADD_COMMANDS: AddCommand[] = [
+  { kind: 'text', labelKey: 'kind.text', icon: Type, category: 'basic' },
+  { kind: 'checklist', labelKey: 'kind.checklist', icon: CheckSquare, category: 'basic' },
+  { kind: 'code', labelKey: 'kind.code', icon: FileText, category: 'basic' },
+  { kind: 'image', labelKey: 'kind.image', icon: ImageIcon, category: 'media' },
+  { kind: 'video', labelKey: 'kind.image', icon: ImageIcon, category: 'media' },
+  { kind: 'audio', labelKey: 'kind.image', icon: ImageIcon, category: 'media' },
+  { kind: 'file', labelKey: 'kind.image', icon: FileText, category: 'media' },
+  { kind: 'bookmark', labelKey: 'kind.bookmark', icon: FileText, category: 'media' },
+  { kind: 'accordion', labelKey: 'kind.accordion', icon: ChevronDown, category: 'layout' },
+  { kind: 'tabs', labelKey: 'kind.tabs', icon: LayoutGrid, category: 'layout' },
+  { kind: 'columns', labelKey: 'kind.columns', icon: LayoutGrid, category: 'layout' },
+  { kind: 'table', labelKey: 'kind.table', icon: TableIcon, category: 'advanced' },
+  { kind: 'database', labelKey: 'kind.database', icon: LayoutGrid, category: 'advanced' },
+  { kind: 'graph', labelKey: 'kind.mesh', icon: BarChart2, category: 'advanced' },
+  { kind: 'form', labelKey: 'kind.form', icon: FileText, category: 'advanced' },
+  { kind: 'math', labelKey: 'kind.math', icon: Type, category: 'advanced' },
+];
+
+const CATEGORY_ORDER: AddCommand['category'][] = ['basic', 'media', 'layout', 'advanced'];
+
+function categoryLabel(cat: AddCommand['category'], locale: 'es' | 'en' = 'es'): string {
+  const ES: Record<string, string> = {
+    basic: 'Básicos',
+    media: 'Media',
+    layout: 'Estructura',
+    advanced: 'Avanzados',
+  };
+  const EN: Record<string, string> = {
+    basic: 'Basic',
+    media: 'Media',
+    layout: 'Layout',
+    advanced: 'Advanced',
+  };
+  return (locale === 'en' ? EN : ES)[cat];
+}
+
+/** Normalise a brick coming from either DocumentBrick or BoardBrick into the
+ *  flat `{ id, kind, content }` shape the renderer expects — same logic as the
+ *  web `renderBrick` mapping. */
+function normaliseBrick(brick: any): RendererBrick {
+  if (!brick) return { kind: 'text', content: {} };
+  return {
+    id: brick.id,
+    kind: brick.kind,
+    position: brick.position,
+    content: {
+      text: brick.markdown || brick.content?.text || '',
+      rows: brick.rows || brick.content?.rows || [],
+      items: brick.tasks || brick.items || brick.content?.items || [],
+      title: brick.title || brick.content?.title || '',
+      body: brick.body || brick.content?.body || '',
+      isExpanded:
+        brick.isExpanded !== undefined ? brick.isExpanded : brick.content?.isExpanded,
+      ...(brick.content || {}),
+      // Top-level BoardBrick fields take precedence over content.*
+      ...brick,
+    },
+  };
 }
 
 export const UnifiedBrickList: React.FC<UnifiedBrickListProps> = ({
@@ -77,446 +223,334 @@ export const UnifiedBrickList: React.FC<UnifiedBrickListProps> = ({
   folders = [],
   users = [],
   addableKinds,
-  onPasteImageInTextBrick,
-  onUploadMediaFiles,
-  hasExternalDndContext = false,
-  onCrossContainerDrop,
-  dropContainerToken,
+  // Web-only props — accepted for source parity, unused on mobile.
+  onPasteImageInTextBrick: _onPasteImageInTextBrick,
+  onUploadMediaFiles: _onUploadMediaFiles,
+  hasExternalDndContext: _hasExternalDndContext = false,
+  onCrossContainerDrop: _onCrossContainerDrop,
+  dropContainerToken: _dropContainerToken,
   emptyPlaceholder,
-  onAiAction,
-  onPatchCell,
-  onPatchColumn,
+  onAiAction: _onAiAction,
+  onPatchCell: _onPatchCell,
+  onPatchColumn: _onPatchColumn,
   isCompact = false,
-  showDragOverlay = true,
+  showDragOverlay: _showDragOverlay = true,
   selectedBrickIds,
   onBrickSelectToggle,
 }) => {
-  const tDetail = useTranslations("document-detail");
-  const tBoardDetail = useTranslations("board-detail");
-  const slashCommands = React.useMemo(() => getSlashCommands(tDetail as any), [tDetail]);
+  const t = useTranslations('brickEditor');
 
-  useEffect(() => {
-    if (typeof document === "undefined" || document.getElementById("killio-sel-style")) return;
-    const st = document.createElement("style");
-    st.id = "killio-sel-style";
-    st.textContent = "@keyframes killioSelPulse{0%,100%{border-color:rgba(34,211,238,.45)}50%{border-color:rgba(34,211,238,.95)}}.killio-sel{border-color:rgba(34,211,238,.6);animation:killioSelPulse 1.4s ease-in-out infinite}";
-    document.head.appendChild(st);
-  }, []);
+  // Mobile: enabledKinds matches the web default if the caller doesn't restrict.
+  const enabledKinds: AddableKind[] =
+    addableKinds && addableKinds.length > 0
+      ? addableKinds
+      : (['text', 'table', 'graph', 'checklist', 'accordion', 'form'] as AddableKind[]);
 
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [plusMenuState, setPlusMenuState] = useState<{ brickId: string, top: number, left: number } | null>(null);
-  const [plusMenuHoverIndex, setPlusMenuHoverIndex] = useState<number>(0);
-  const [pickerState, setPickerState] = useState<{ isOpen: boolean; filter: string[]; triggerBrickId: string } | null>(null);
-  const enabledKinds = addableKinds && addableKinds.length > 0
-    ? addableKinds
-    : ['text', 'table', 'graph', 'checklist', 'accordion', 'form'];
+  const [plusMenuFor, setPlusMenuFor] = useState<string | null>(null);
+  // Plus menu opened at the end of the list (no afterBrickId).
+  const [plusMenuAtEnd, setPlusMenuAtEnd] = useState(false);
+  const [pickerState, setPickerState] = useState<{
+    filter: MentionType[];
+    triggerBrickId: string;
+  } | null>(null);
 
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (plusMenuState) {
-        setPlusMenuState(null);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [plusMenuState]);
-
-  const handleApplyPlusCommand = (command: SlashCommand, afterBrickId: string) => {
-    if (command.id === "mention-person" || command.id === "mention-page") {
-      setPickerState({
-        isOpen: true,
-        filter: command.id === "mention-person" ? ["user"] : ["document", "board"],
-        triggerBrickId: afterBrickId
-      });
-      setPlusMenuState(null);
-      return;
-    }
-
-    const kindToInsert = command.blockKind || "text";
-    onAddBrick(kindToInsert, afterBrickId);
-    setPlusMenuState(null);
-  };
-
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
+  // Mobile: web sorts by `position`. Keep parity.
+  const sortedBricks = useMemo(
+    () => [...bricks].sort((a, b) => (a?.position ?? 0) - (b?.position ?? 0)),
+    [bricks],
   );
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    setActiveId(null);
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
+  const ids = useMemo(() => sortedBricks.map((b) => b.id).filter(Boolean), [sortedBricks]);
 
-    const allBricks = (activeBricks && activeBricks.length > 0 ? activeBricks : bricks) as any[];
-    const activeBrick = allBricks.find((b) => b?.id === active.id);
-    const overBrick = allBricks.find((b) => b?.id === over.id);
+  const moveBrick = (id: string, dir: 'up' | 'down') => {
+    const idx = ids.indexOf(id);
+    if (idx < 0) return;
+    const target = dir === 'up' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= ids.length) return;
+    const next = [...ids];
+    [next[idx], next[target]] = [next[target], next[idx]];
+    onReorderBricks(next);
+  };
 
-    const sourceContainerToken = ((active as any)?.data?.current?.containerToken as string | undefined) || dropContainerToken;
-    const targetContainerToken = ((over as any)?.data?.current?.containerToken as string | undefined) ||
-      (typeof over.id === "string" && over.id.includes(":") ? String(over.id) : undefined);
+  const insertAfter = (kind: AddableKind, afterId?: string) => {
+    setPlusMenuFor(null);
+    setPlusMenuAtEnd(false);
+    onAddBrick(kind, afterId);
+  };
 
-    const activeRect = ((active as any)?.rect?.current?.translated || (active as any)?.rect?.current?.initial) as
-      | { left: number; right: number; top: number; bottom: number; width: number; height: number }
-      | undefined;
-    const overRect = ((over as any)?.rect) as
-      | { left: number; right: number; top: number; bottom: number; width: number; height: number }
-      | undefined;
-
-    let overlapRatio = 0;
-    if (activeRect && overRect) {
-      const overlapWidth = Math.max(0, Math.min(activeRect.right, overRect.right) - Math.max(activeRect.left, overRect.left));
-      const overlapHeight = Math.max(0, Math.min(activeRect.bottom, overRect.bottom) - Math.max(activeRect.top, overRect.top));
-      const overlapArea = overlapWidth * overlapHeight;
-      const activeArea = Math.max(1, activeRect.width * activeRect.height);
-      overlapRatio = overlapArea / activeArea;
-    }
-
-    const shouldMergeText =
-      typeof onCrossContainerDrop === "function" &&
-      activeBrick?.kind === "text" &&
-      overBrick?.kind === "text" &&
-      !activeBrick?.content?.formField &&
-      !overBrick?.content?.formField &&
-      overlapRatio >= 0.8;
-
-    if (shouldMergeText) {
-      onCrossContainerDrop(active.id as string, over.id as string, {
-        intent: "merge-text",
-        sourceContainerToken,
-        targetContainerToken,
+  const handlePickerSelect = (sel: ReferencePickerSelection) => {
+    if (!pickerState) return;
+    const target = bricks.find((b) => b?.id === pickerState.triggerBrickId);
+    if (target && target.kind === 'text') {
+      const currentText = target.content?.text || target.markdown || '';
+      const newText = currentText ? `${currentText} ${sel.token}` : sel.token;
+      onUpdateBrick(target.id, { ...target.content, text: newText, markdown: newText });
+    } else {
+      onAddBrick('text', pickerState.triggerBrickId, undefined, {
+        text: sel.token,
+        markdown: sel.token,
       });
-      return;
     }
-
-    const oldIndex = bricks.findIndex((b) => b.id === active.id);
-    if (oldIndex === -1) {
-      if (onCrossContainerDrop) {
-        onCrossContainerDrop(active.id as string, String(over.id), {
-          intent: "move",
-          sourceContainerToken,
-          targetContainerToken,
-        });
-      }
-      return;
-    }
-
-    const newIndex = bricks.findIndex((b) => b.id === over.id);
-    if (newIndex === -1) {
-      if (onCrossContainerDrop) {
-        onCrossContainerDrop(active.id as string, (over.id as string), {
-          intent: "move",
-          sourceContainerToken,
-          targetContainerToken: targetContainerToken || dropContainerToken,
-        });
-      }
-      return;
-    }
-
-    // Multi-select: dragging one selected brick moves the whole selected block.
-    if (selectedBrickIds && selectedBrickIds.size > 1 && selectedBrickIds.has(String(active.id))) {
-      const selOrdered = bricks.filter((b) => selectedBrickIds.has(b.id)); // preserve relative order
-      const rest = bricks.filter((b) => !selectedBrickIds.has(b.id));
-      let insertAt = rest.findIndex((b) => b.id === over.id);
-      if (insertAt === -1) {
-        const overOrig = bricks.findIndex((b) => b.id === over.id);
-        insertAt = bricks.slice(0, overOrig).filter((b) => !selectedBrickIds.has(b.id)).length;
-      }
-      const merged = [...rest.slice(0, insertAt), ...selOrdered, ...rest.slice(insertAt)];
-      onReorderBricks(merged.map((b) => b.id));
-      return;
-    }
-
-    const newOrder = [...bricks];
-    const [moved] = newOrder.splice(oldIndex, 1);
-    newOrder.splice(newIndex, 0, moved);
-
-    onReorderBricks(newOrder.map((b) => b.id));
+    setPickerState(null);
   };
 
-  const sortedBricks = hasExternalDndContext
-    ? [...bricks]
-    : [...bricks].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-
-  const renderBrick = (brick: any) => {
-    if (!brick) {
-      return null;
-    }
-
-    // Normalize mapping for Cards (BoardBrick) vs Documents (DocumentBrick)
-    const normalized = {
-      ...brick,
-      content: {
-        text: brick.markdown || brick.content?.text || "",
-        rows: brick.rows || brick.content?.rows || [],
-        items: brick.tasks || brick.items || brick.content?.items || [],
-        title: brick.title || brick.content?.title || "",
-        body: brick.body || brick.content?.body || "",
-        isExpanded: brick.isExpanded !== undefined ? brick.isExpanded : brick.content?.isExpanded,
-        ...(brick.content || {}),
-        ...brick // Top-level fields on BoardBrick take precedence
-      }
-    };
-
-    return (
-      <UnifiedBrickRenderer 
-        brick={normalized}
-        canEdit={canEdit}
-        onUpdate={(content) => onUpdateBrick(brick.id, content)}
-        onAddBrick={onAddBrick}
-        onDeleteBrick={onDeleteBrick}
-        onUpdateBrick={onUpdateBrick}
-        onReorderBricks={onReorderBricks}
-        documents={documents}
-        boards={boards}
-        activeBricks={activeBricks || bricks}
-        users={users}
-        onPasteImageInTextBrick={onPasteImageInTextBrick}
-        onUploadMediaFiles={onUploadMediaFiles}
-        onAiAction={onAiAction}
-        onPatchCell={onPatchCell}
-        onPatchColumn={onPatchColumn}
-        isCompact={isCompact}
-      />
-    );
-  };
-
-  const listContent = (
-    <SortableContext items={sortedBricks.map(b => b.id)} strategy={verticalListSortingStrategy}>
-      {sortedBricks.length > 0 && (
-<div className="space-y-2 min-h-[50px]" data-drop-container-token={dropContainerToken ?? undefined}>
-        {sortedBricks.map((brick, idx) => {
-          const sel = selectedBrickIds?.has(brick.id);
-          const prevSel = idx > 0 && selectedBrickIds?.has(sortedBricks[idx - 1].id);
-          const nextSel = idx < sortedBricks.length - 1 && selectedBrickIds?.has(sortedBricks[idx + 1].id);
-          // Contiguous selected bricks share one continuous, pulsing border.
-          const selClass = sel
-            ? `killio-sel relative border-l-2 border-r-2 bg-accent/[0.05] ${!prevSel ? "border-t-2 rounded-t-lg " : "-mt-2 "}${!nextSel ? "border-b-2 rounded-b-lg " : ""}`
-            : undefined;
-          return (
-          <div
-            key={brick.id}
-            className={selClass}
-            onClickCapture={(e) => {
-              if (!onBrickSelectToggle || !(e.ctrlKey || e.metaKey)) return;
-              if ((e.target as HTMLElement).closest('.mention-pill, .user-mention, .deep-pill')) return;
-              e.preventDefault(); e.stopPropagation();
-              onBrickSelectToggle(brick.id);
-            }}
-          >
-          <SortableBrick
-            id={brick.id}
-            containerToken={dropContainerToken}
-            readonly={!canEdit} 
-            isCompact={isCompact}
-            onDelete={() => onDeleteBrick(brick.id)} 
-            onAddBelow={(rect) => {
-              if (rect) {
-                let top = rect.bottom + 8;
-                let left = rect.left;
-                
-                const menuHeight = 320;
-                const menuWidth = 320;
-                if (typeof window !== "undefined") {
-                  if (top + menuHeight > window.innerHeight) {
-                    top = Math.max(12, rect.top - menuHeight - 8);
-                  }
-                  if (left + menuWidth > window.innerWidth) {
-                    left = window.innerWidth - menuWidth - 12;
-                  }
-                }
-                
-                setPlusMenuState({ brickId: brick.id, top, left });
-              } else {
-                onAddBrick('text', brick.id);
-              }
-            }}
-          >
-            {renderBrick(brick)}
-          </SortableBrick>
-          </div>
-          );
-        })}
-      </div>)}
-    </SortableContext>
-  );
+  const visibleCommands = ADD_COMMANDS.filter((c) => enabledKinds.includes(c.kind));
 
   return (
-    <div className="w-full space-y-4">
-      {hasExternalDndContext ? (
-        listContent
-      ) : (
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={(e) => {
-            const isOwnedByThisList = bricks.some((b) => b.id === e.active.id);
-            setActiveId(isOwnedByThisList ? (e.active.id as string) : null);
-          }}
-          onDragEnd={handleDragEnd}
+    <View className="w-full" style={{ gap: 8 }}>
+      {sortedBricks.length === 0 && canEdit && emptyPlaceholder ? (
+        <Pressable
+          onPress={() => onAddBrick('text')}
+          className="min-h-[40px] w-full items-start justify-center rounded-lg"
         >
-          {listContent}
-          {showDragOverlay && (
-            <DragOverlay>
-              {activeId ? (
-                 <div className="opacity-80 scale-[1.02] shadow-xl bg-background border border-border rounded-lg p-2">
-                    {renderBrick(bricks.find(b => b.id === activeId))}
-                 </div>
-              ) : null}
-            </DragOverlay>
-          )}
-        </DndContext>
-      )}
+          <Text className="text-[15px] text-muted-foreground/60">{emptyPlaceholder}</Text>
+        </Pressable>
+      ) : null}
 
-      {canEdit && bricks.length === 0 && emptyPlaceholder && (
-        <div 
-          className="flex items-center justify-start text-[15px] text-muted-foreground/50 cursor-text min-h-[40px] hover:bg-muted/10 transition-colors rounded-lg w-full"
-          onClick={() => onAddBrick('text')}
-        >
-          {emptyPlaceholder}
-        </div>
-      )}
+      {sortedBricks.map((brick, idx) => {
+        const id = brick?.id ?? String(idx);
+        const isSelected = !!selectedBrickIds?.has(id);
+        const isFirst = idx === 0;
+        const isLast = idx === sortedBricks.length - 1;
+        const normalised = normaliseBrick(brick);
 
-      {canEdit && !emptyPlaceholder && (!hasExternalDndContext || bricks.length === 0) && (
-        <div className="pt-6 border-t border-border flex flex-wrap gap-2 items-center justify-center">
-          {enabledKinds.includes('text') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('text')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <Type className="w-3.5 h-3.5 text-accent" /> Texto
-            </Button>
-          )}
-          {enabledKinds.includes('table') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('table')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <Table className="w-3.5 h-3.5 text-accent" /> Tabla
-            </Button>
-          )}
-          {enabledKinds.includes('database') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('database')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <LayoutGrid className="w-3.5 h-3.5 text-accent" /> Base de Datos
-            </Button>
-          )}
-          {enabledKinds.includes('graph') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('graph')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <BarChart2 className="w-3.5 h-3.5 text-accent" /> Gráfico
-            </Button>
-          )}
-          {enabledKinds.includes('form') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('form')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <FileText className="w-3.5 h-3.5 text-accent" /> Formulario
-            </Button>
-          )}
-          {enabledKinds.includes('checklist') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('checklist')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <CheckSquare className="w-3.5 h-3.5 text-accent" /> Lista
-            </Button>
-          )}
-          {enabledKinds.includes('accordion') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('accordion')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <ChevronDown className="w-3.5 h-3.5 text-accent" /> Acordeón
-            </Button>
-          )}
-          {enabledKinds.includes('image') && (
-            <Button variant="ghost" size="sm" onClick={() => onAddBrick('image')} className="gap-2 text-[11px] font-bold tracking-tight uppercase">
-              <ImageIcon className="w-3.5 h-3.5 text-accent" /> Imagen
-            </Button>
-          )}
-        </div>
-      )}
-
-      {plusMenuState && canEdit && (
-        <Portal>
-          <div
-            className="fixed z-[150] flex flex-row overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
-            style={{ 
-              top: plusMenuState.top, 
-              left: plusMenuState.left,
-              maxWidth: slashCommands[plusMenuHoverIndex]?.preview ? '600px' : '320px',
-              minWidth: '320px'
-            }}
-            onMouseDown={(e) => e.stopPropagation()} // Prevent closing immediately
+        return (
+          <View
+            key={id}
+            className={`rounded-lg ${
+              isSelected
+                ? 'border-2 border-cyan/60 bg-cyan/[0.05]'
+                : 'border border-transparent'
+            }`}
+            style={{ padding: isCompact ? 2 : 4 }}
           >
-            <div className="flex-1 w-[320px] flex flex-col border-r border-border/50">
-              <div className="max-h-72 overflow-y-auto p-1.5 flex-1">
-                {slashCommands.map((command, index) => {
-                  const showCategoryHeader = index === 0 || command.category !== slashCommands[index - 1].category;
-                  const catName = command.category
-                    ? (tBoardDetail(`brickCategories.${command.category}` as any) ?? command.category)
-                    : tBoardDetail("brickCategories.other");
+            <Pressable
+              // Mobile: long-press toggles multi-select (web uses Ctrl/Cmd-click).
+              onLongPress={() => {
+                if (!canEdit || !onBrickSelectToggle) return;
+                onBrickSelectToggle(id);
+              }}
+              delayLongPress={350}
+            >
+              <BrickRenderer
+                brick={normalised}
+                canEdit={canEdit}
+                onChange={
+                  canEdit
+                    ? (next) => onUpdateBrick(id, next.content)
+                    : undefined
+                }
+              />
+            </Pressable>
 
-                  return (
-                    <React.Fragment key={command.id}>
-                      {showCategoryHeader && (
-                        <div className="px-2 pt-3 pb-1">
-                          <span className="text-xs font-semibold text-muted-foreground">{catName}</span>
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onMouseEnter={() => setPlusMenuHoverIndex(index)}
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                        }}
-                        onClick={() => handleApplyPlusCommand(command, plusMenuState.brickId)}
-                        className={cn(
-                          "flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors",
-                          index === plusMenuHoverIndex ? "bg-accent/80 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
-                        )}
-                      >
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background shadow-sm text-foreground">
-                          {command.icon}
-                        </div>
-                        <div className="flex flex-col items-start gap-0.5 overflow-hidden">
-                          <span className="text-sm font-medium text-foreground">{command.label}</span>
-                          <span className="truncate text-xs text-muted-foreground/80 w-full">{command.description}</span>
-                        </div>
-                        {command.shortcut && (
-                          <div className="ml-auto text-xs text-muted-foreground/60">{command.shortcut}</div>
-                        )}
-                      </button>
-                    </React.Fragment>
-                  );
-                })}
-              </div>
-            </div>
-            {slashCommands[plusMenuHoverIndex]?.preview && (
-              <div className="hidden sm:flex w-[280px] bg-muted/10 flex-col">
-                <div className="p-4 flex-1">
-                   {slashCommands[plusMenuHoverIndex].preview}
-                </div>
-                <div className="p-4 mt-auto border-t border-border/50 bg-muted/5 text-xs text-muted-foreground">
-                   {slashCommands[plusMenuHoverIndex].description}
-                </div>
-              </div>
-            )}
-          </div>
-        </Portal>
-      )}
+            {canEdit ? (
+              <View
+                className="mt-1 flex-row items-center gap-1"
+                style={{ justifyContent: 'flex-end' }}
+              >
+                <Pressable
+                  onPress={() => moveBrick(id, 'up')}
+                  disabled={isFirst}
+                  hitSlop={6}
+                  className={`rounded-md p-1 ${isFirst ? 'opacity-30' : 'opacity-70'}`}
+                >
+                  <ChevronUp size={14} color={colors.foreground} />
+                </Pressable>
+                <Pressable
+                  onPress={() => moveBrick(id, 'down')}
+                  disabled={isLast}
+                  hitSlop={6}
+                  className={`rounded-md p-1 ${isLast ? 'opacity-30' : 'opacity-70'}`}
+                >
+                  <ChevronDown size={14} color={colors.foreground} />
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    setPlusMenuAtEnd(false);
+                    setPlusMenuFor(id);
+                  }}
+                  hitSlop={6}
+                  className="rounded-md p-1 opacity-70"
+                >
+                  <Plus size={14} color={colors.cyan} />
+                </Pressable>
+                <Pressable
+                  onPress={() => onDeleteBrick(id)}
+                  hitSlop={6}
+                  className="rounded-md p-1 opacity-70"
+                >
+                  <Trash2 size={14} color={colors.destructive} />
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
 
-      {pickerState?.isOpen && (
-        <Portal>
-          <ReferencePicker
-            boards={boards}
-            documents={documents}
-            folders={folders}
-            users={users}
-            activeBricks={activeBricks || []}
-            onClose={() => setPickerState(null)}
-            allowedTypes={pickerState.filter as any}
-            onSelect={(item: ReferencePickerSelection) => {
-              const targetBrick = bricks.find(b => b.id === pickerState.triggerBrickId);
-              if (targetBrick && targetBrick.kind === "text") {
-                const currentText = targetBrick.content?.text || targetBrick.markdown || "";
-                const newText = currentText ? `${currentText} ${item.token}` : item.token;
-                onUpdateBrick(targetBrick.id, { ...targetBrick.content, text: newText, markdown: newText });
-              } else {
-                  onAddBrick("text", pickerState.triggerBrickId, undefined, { text: item.token, markdown: item.token });
-              }
-              setPickerState(null);
-            }}
-          />
-        </Portal>
-      )}
-    </div>
+      {canEdit && !emptyPlaceholder ? (
+        <View className="mt-2 flex-row flex-wrap items-center justify-center gap-2 border-t border-border pt-4">
+          {visibleCommands.slice(0, 6).map((c) => {
+            const Icon = c.icon;
+            return (
+              <Pressable
+                key={c.kind}
+                onPress={() => insertAfter(c.kind, undefined)}
+                className="flex-row items-center gap-1 rounded-md border border-border bg-card px-3 py-1.5"
+              >
+                <Icon size={13} color={colors.cyan} />
+                <Text
+                  style={{ fontFamily: fonts.semibold }}
+                  className="text-[11px] uppercase text-foreground"
+                >
+                  {t(c.labelKey)}
+                </Text>
+              </Pressable>
+            );
+          })}
+          {visibleCommands.length > 6 ? (
+            <Pressable
+              onPress={() => {
+                setPlusMenuAtEnd(true);
+                setPlusMenuFor(null);
+              }}
+              className="flex-row items-center gap-1 rounded-md border border-border bg-card px-3 py-1.5"
+            >
+              <Plus size={13} color={colors.cyan} />
+              <Text
+                style={{ fontFamily: fonts.semibold }}
+                className="text-[11px] uppercase text-foreground"
+              >
+                {t('addBlock')}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
+      <AddBrickModal
+        visible={plusMenuFor !== null || plusMenuAtEnd}
+        commands={visibleCommands}
+        onClose={() => {
+          setPlusMenuFor(null);
+          setPlusMenuAtEnd(false);
+        }}
+        onPick={(kind) => insertAfter(kind, plusMenuFor ?? undefined)}
+        t={t}
+      />
+
+      {pickerState ? (
+        <ReferencePicker
+          visible
+          onClose={() => setPickerState(null)}
+          onPick={handlePickerSelect}
+          allowed={pickerState.filter}
+          documents={documents as PickerDocument[]}
+          boards={boards as PickerBoard[]}
+          users={users as PickerUser[]}
+          folders={folders as PickerFolder[]}
+          activeBricks={(activeBricks || bricks) as PickerActiveBrick[]}
+        />
+      ) : null}
+    </View>
   );
 };
+
+function AddBrickModal({
+  visible,
+  commands,
+  onClose,
+  onPick,
+  t,
+}: {
+  visible: boolean;
+  commands: AddCommand[];
+  onClose: () => void;
+  onPick: (kind: AddableKind) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  // Group commands by category, preserving the input order.
+  const byCategory = useMemo(() => {
+    const groups: Record<string, AddCommand[]> = {};
+    for (const c of commands) {
+      if (!groups[c.category]) groups[c.category] = [];
+      groups[c.category].push(c);
+    }
+    return groups;
+  }, [commands]);
+
+  // Mobile: language detection isn't wired here; default to ES (Vault's primary).
+  const locale: 'es' | 'en' =
+    Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.language
+      ? (navigator.language.startsWith('en') ? 'en' : 'es')
+      : 'es';
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        onPress={onClose}
+        className="flex-1 items-center justify-center bg-background/80 p-4"
+      >
+        <Pressable
+          onPress={(e) => e.stopPropagation()}
+          className="w-full max-w-md rounded-xl border border-border bg-card p-3"
+        >
+          <View className="mb-2 flex-row items-center justify-between">
+            <Text
+              style={{ fontFamily: fonts.semibold }}
+              className="text-sm text-foreground"
+            >
+              {t('addBlock')}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={6}>
+              <X size={16} color={colors.mutedForeground} />
+            </Pressable>
+          </View>
+          <ScrollView style={{ maxHeight: 360 }}>
+            {CATEGORY_ORDER.map((cat) => {
+              const list = byCategory[cat];
+              if (!list || list.length === 0) return null;
+              return (
+                <View key={cat} style={{ marginBottom: 8 }}>
+                  <Text
+                    style={{ fontFamily: fonts.semibold }}
+                    className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground"
+                  >
+                    {categoryLabel(cat, locale)}
+                  </Text>
+                  {list.map((c) => {
+                    const Icon = c.icon;
+                    return (
+                      <Pressable
+                        key={c.kind}
+                        onPress={() => onPick(c.kind)}
+                        className="flex-row items-center gap-3 rounded-md px-2 py-2 active:bg-secondary"
+                      >
+                        <View
+                          className="h-9 w-9 items-center justify-center rounded-md border border-border bg-background"
+                        >
+                          <Icon size={14} color={colors.foreground} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text
+                            style={{ fontFamily: fonts.medium }}
+                            className="text-sm text-foreground"
+                          >
+                            {t(c.labelKey)}
+                          </Text>
+                        </View>
+                        <ChevronRight size={12} color={colors.mutedForeground} />
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              );
+            })}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// Re-export prop types for siblings importing from this module.
+export type { UnifiedBrickListProps, AddableKind, CrossContainerDropOptions };

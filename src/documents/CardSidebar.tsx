@@ -5,6 +5,7 @@ import { Bot, FileText, History, MessageSquare } from 'lucide-react-native';
 import { useTranslations } from '@/i18n';
 import { useAuth } from '@/core/auth/AuthContext';
 import { listTeamMembers, type TeamMember } from '@/core/api/teams.client';
+import { me as meCall } from '@/core/api/auth.client';
 import { CopilotPanel } from './panels/CopilotPanel';
 import { CommentsPanel } from './panels/CommentsPanel';
 import { ActivityPanel } from './panels/ActivityPanel';
@@ -59,7 +60,6 @@ export function CardSidebar({ cardId, activeTab, onChangeTab, detailContent }: C
       }
       if (me == null) {
         try {
-          const { me: meCall } = await import('@/core/api/auth.client');
           const u = (await meCall()) as { id?: string } | undefined;
           if (!cancelled) setMe(u?.id ?? null);
         } catch {

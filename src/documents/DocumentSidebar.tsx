@@ -5,6 +5,7 @@ import { Bot, History, MessageSquare, X } from 'lucide-react-native';
 import { useTranslations } from '@/i18n';
 import { useAuth } from '@/core/auth/AuthContext';
 import { listTeamMembers, type TeamMember } from '@/core/api/teams.client';
+import { me as meCall } from '@/core/api/auth.client';
 import { CopilotPanel } from './panels/CopilotPanel';
 import { CommentsPanel } from './panels/CommentsPanel';
 import { ActivityPanel } from './panels/ActivityPanel';
@@ -64,7 +65,6 @@ export function DocumentSidebar({
       try {
         // Identify the current user so the comments panel can offer edit/delete
         // on own comments. We use the /auth/me endpoint via the existing client.
-        const { me: meCall } = await import('@/core/api/auth.client');
         const u = (await meCall()) as { id?: string } | undefined;
         if (!cancelled) setMe(u?.id ?? null);
       } catch {

@@ -1,28 +1,31 @@
-"use client";
-
-import { useTranslations } from "@/components/providers/i18n-provider";
 import React, { useMemo, useState } from "react";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import Svg, {
+  Circle,
+  G,
+  Line as SvgLine,
+  Path,
+  Polyline,
+  Rect,
+  Text as SvgText,
+} from "react-native-svg";
 import {
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-} from "recharts";
-import { BarChart2, LineChart as LineChartIcon, PieChart as PieChartIcon, AreaChart as AreaChartIcon, Settings2 } from "lucide-react";
-import { sheetEngine } from "@/lib/sheetEngine";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+  BarChart2,
+  LineChart as LineChartIcon,
+  PieChart as PieChartIcon,
+  AreaChart as AreaChartIcon,
+  Settings2,
+  type LucideIcon,
+} from "lucide-react-native";
+import { useTranslations } from "@/i18n";
+import { sheetEngine } from "../sheet-engine";
+import { colors } from "@/theme/theme";
+import { fonts } from "@/theme/fonts";
+
+// Mobile: recharts is not available in React Native. The four chart types
+// (bar / line / area / pie) are re-implemented below with minimal react-native-svg
+// renderers. The data shape (chartData: Array<{ name, [series]: number }>) and the
+// table/manual data-binding are preserved 1:1 with the web brick.
 
 type GraphType = "line" | "bar" | "pie" | "area";
 
@@ -54,6 +57,21 @@ const DEFAULT_MANUAL_DATA = [
   { name: "B", value: 20 },
   { name: "C", value: 15 },
 ];
+
+// Fixed drawing surface; the SVG scales responsively via viewBox on the parent.
+const CHART_W = 320;
+const CHART_H = 220;
+const PAD = { top: 12, right: 12, bottom: 28, left: 36 };
+const PLOT_W = CHART_W - PAD.left - PAD.right;
+const PLOT_H = CHART_H - PAD.top - PAD.bottom;
+
+const niceMax = (max: number): number => {
+  if (max <= 0) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(max)));
+  const norm = max / mag;
+  const step = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return step * mag;
+};
 
 export const UnifiedGraphBrick: React.FC<GraphBrickProps> = ({ id, config, onUpdate, readonly, activeBricks = [] }) => {
   const t = useTranslations("document-detail");
@@ -118,7 +136,7 @@ export const UnifiedGraphBrick: React.FC<GraphBrickProps> = ({ id, config, onUpd
       const xIndex = safeConfig.tableSource.xAxisColumn ?? 0;
       const selectedColumns = safeConfig.tableSource.dataColumns?.length ? safeConfig.tableSource.dataColumns : [1];
 
-      return dataRows.map((row, rowIndex) => {
+      return dataRows.map((row: string[], rowIndex: number) => {
         const item: Record<string, any> = {
           name: row[xIndex] || `Fila ${rowIndex + 1}`,
         };
@@ -183,256 +201,483 @@ export const UnifiedGraphBrick: React.FC<GraphBrickProps> = ({ id, config, onUpd
     setIsConfiguring(false);
   };
 
-  const renderChart = () => {
-    if (chartData.length === 0) {
-      return (
-        <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
-          No hay datos para renderizar.
-        </div>
-      );
-    }
+  // Numeric series matrix [seriesIndex][pointIndex] used by every renderer.
+  const series = useMemo(
+    () =>
+      dataKeys.map((key) =>
+        chartData.map((d) => {
+          const v = Number(d[key]);
+          return Number.isFinite(v) ? v : 0;
+        }),
+      ),
+    [dataKeys, chartData],
+  );
 
-    switch (safeConfig.type) {
-      case "bar":
+  const labels = chartData.map((d, i) => String(d.name ?? i + 1));
+  const yMax = niceMax(Math.max(1, ...series.flat()));
+
+  const renderEmpty = () => (
+    <View style={{ height: CHART_H, alignItems: "center", justifyContent: "center" }}>
+      <Text style={{ color: colors.mutedForeground, fontSize: 12, fontFamily: fonts.regular }}>
+        No hay datos para renderizar.
+      </Text>
+    </View>
+  );
+
+  const renderAxes = () => (
+    <>
+      {[0, 0.25, 0.5, 0.75, 1].map((f) => {
+        const y = PAD.top + PLOT_H * (1 - f);
         return (
-          <BarChart data={chartData} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--muted-foreground))" opacity={0.15} />
-            <XAxis dataKey="name" fontSize={11} axisLine={false} tickLine={false} />
-            <YAxis fontSize={11} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
-            <Legend />
-            {dataKeys.map((key, idx) => (
-              <Bar key={key} dataKey={key} fill={COLORS[idx % COLORS.length]} radius={[4, 4, 0, 0]} />
-            ))}
-          </BarChart>
+          <G key={`grid-${f}`}>
+            <SvgLine
+              x1={PAD.left}
+              y1={y}
+              x2={PAD.left + PLOT_W}
+              y2={y}
+              stroke={colors.mutedForeground}
+              strokeOpacity={0.15}
+              strokeWidth={1}
+            />
+            <SvgText
+              x={PAD.left - 4}
+              y={y + 3}
+              fontSize={9}
+              fill={colors.mutedForeground}
+              textAnchor="end"
+            >
+              {Math.round(yMax * f)}
+            </SvgText>
+          </G>
         );
-      case "area":
-        return (
-          <AreaChart data={chartData} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--muted-foreground))" opacity={0.15} />
-            <XAxis dataKey="name" fontSize={11} axisLine={false} tickLine={false} />
-            <YAxis fontSize={11} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
-            <Legend />
-            {dataKeys.map((key, idx) => (
-              <Area key={key} type="monotone" dataKey={key} stroke={COLORS[idx % COLORS.length]} fill={COLORS[idx % COLORS.length]} fillOpacity={0.2} />
-            ))}
-          </AreaChart>
-        );
-      case "pie":
-        return (
-          <PieChart>
-            <Pie data={chartData} dataKey={dataKeys[0]} nameKey="name" cx="50%" cy="50%" outerRadius={95} label>
-              {chartData.map((_, idx) => (
-                <Cell key={`slice-${idx}`} fill={COLORS[idx % COLORS.length]} />
-              ))}
-            </Pie>
-            <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
-            <Legend />
-          </PieChart>
-        );
-      case "line":
-      default:
-        return (
-          <LineChart data={chartData} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--muted-foreground))" opacity={0.15} />
-            <XAxis dataKey="name" fontSize={11} axisLine={false} tickLine={false} />
-            <YAxis fontSize={11} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
-            <Legend />
-            {dataKeys.map((key, idx) => (
-              <Line key={key} type="monotone" dataKey={key} stroke={COLORS[idx % COLORS.length]} strokeWidth={2.25} dot={{ r: 3, fill: "hsl(var(--card))", strokeWidth: 2 }} />
-            ))}
-          </LineChart>
-        );
-    }
+      })}
+    </>
+  );
+
+  const renderXLabels = () => {
+    const n = labels.length || 1;
+    const step = PLOT_W / n;
+    return labels.map((lbl, i) => (
+      <SvgText
+        key={`xl-${i}`}
+        x={PAD.left + step * (i + 0.5)}
+        y={CHART_H - 8}
+        fontSize={9}
+        fill={colors.mutedForeground}
+        textAnchor="middle"
+      >
+        {lbl.length > 6 ? `${lbl.slice(0, 6)}…` : lbl}
+      </SvgText>
+    ));
   };
 
-  return (
-    <div className="w-full rounded-xl border border-border bg-card/60 p-4 shadow-sm space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="rounded-md bg-accent/10 p-1.5 text-accent">
-            <BarChart2 className="h-4 w-4" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-foreground">{safeConfig.title || t("graph.defaultTitle")}</p>
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              {safeConfig.tableSource ? "Fuente: tabla" : "Fuente: manual"}
-            </p>
-          </div>
-        </div>
-        {!readonly && (
-          <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setIsConfiguring((prev) => !prev)}>
-            <Settings2 className="h-3.5 w-3.5" /> Configurar
-          </Button>
+  const renderBars = () => {
+    const n = labels.length || 1;
+    const groupW = PLOT_W / n;
+    const sCount = series.length || 1;
+    const barW = (groupW * 0.7) / sCount;
+    return (
+      <>
+        {renderAxes()}
+        {series.map((s, si) =>
+          s.map((val, pi) => {
+            const h = (val / yMax) * PLOT_H;
+            const x = PAD.left + groupW * pi + groupW * 0.15 + barW * si;
+            return (
+              <Rect
+                key={`bar-${si}-${pi}`}
+                x={x}
+                y={PAD.top + PLOT_H - h}
+                width={Math.max(1, barW - 1)}
+                height={Math.max(0, h)}
+                rx={2}
+                fill={COLORS[si % COLORS.length]}
+              />
+            );
+          }),
         )}
-      </div>
+        {renderXLabels()}
+      </>
+    );
+  };
+
+  const pointsFor = (s: number[]): string => {
+    const n = s.length || 1;
+    const step = PLOT_W / n;
+    return s
+      .map((val, i) => {
+        const x = PAD.left + step * (i + 0.5);
+        const y = PAD.top + PLOT_H - (val / yMax) * PLOT_H;
+        return `${x},${y}`;
+      })
+      .join(" ");
+  };
+
+  const renderLine = (filled: boolean) => (
+    <>
+      {renderAxes()}
+      {series.map((s, si) => {
+        const pts = pointsFor(s);
+        const color = COLORS[si % COLORS.length];
+        const n = s.length || 1;
+        const step = PLOT_W / n;
+        const areaPath =
+          filled && s.length > 0
+            ? `M ${PAD.left + step * 0.5},${PAD.top + PLOT_H} ${s
+                .map((val, i) => {
+                  const x = PAD.left + step * (i + 0.5);
+                  const y = PAD.top + PLOT_H - (val / yMax) * PLOT_H;
+                  return `L ${x},${y}`;
+                })
+                .join(" ")} L ${PAD.left + step * (s.length - 0.5)},${PAD.top + PLOT_H} Z`
+            : "";
+        return (
+          <G key={`line-${si}`}>
+            {filled && areaPath ? <Path d={areaPath} fill={color} fillOpacity={0.2} /> : null}
+            <Polyline points={pts} fill="none" stroke={color} strokeWidth={2.25} />
+            {s.map((val, i) => {
+              const x = PAD.left + step * (i + 0.5);
+              const y = PAD.top + PLOT_H - (val / yMax) * PLOT_H;
+              return <Circle key={`dot-${si}-${i}`} cx={x} cy={y} r={3} fill={color} />;
+            })}
+          </G>
+        );
+      })}
+      {renderXLabels()}
+    </>
+  );
+
+  const renderPie = () => {
+    const key = dataKeys[0];
+    const values = chartData.map((d) => {
+      const v = Number(d[key]);
+      return Number.isFinite(v) ? Math.max(0, v) : 0;
+    });
+    const total = values.reduce((a, b) => a + b, 0) || 1;
+    const cx = CHART_W / 2;
+    const cy = CHART_H / 2;
+    const r = Math.min(PLOT_H, PLOT_W) / 2;
+    let angle = -Math.PI / 2;
+    return (
+      <>
+        {values.map((val, i) => {
+          const slice = (val / total) * Math.PI * 2;
+          const x1 = cx + r * Math.cos(angle);
+          const y1 = cy + r * Math.sin(angle);
+          angle += slice;
+          const x2 = cx + r * Math.cos(angle);
+          const y2 = cy + r * Math.sin(angle);
+          const large = slice > Math.PI ? 1 : 0;
+          const d = `M ${cx},${cy} L ${x1},${y1} A ${r},${r} 0 ${large} 1 ${x2},${y2} Z`;
+          return <Path key={`slice-${i}`} d={d} fill={COLORS[i % COLORS.length]} />;
+        })}
+      </>
+    );
+  };
+
+  const renderChart = () => {
+    if (chartData.length === 0) return renderEmpty();
+
+    let body: React.ReactNode;
+    switch (safeConfig.type) {
+      case "bar":
+        body = renderBars();
+        break;
+      case "area":
+        body = renderLine(true);
+        break;
+      case "pie":
+        body = renderPie();
+        break;
+      case "line":
+      default:
+        body = renderLine(false);
+        break;
+    }
+
+    return (
+      <Svg width="100%" height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`}>
+        {body}
+      </Svg>
+    );
+  };
+
+  // Legend mirrors recharts' <Legend />: a chip per series key.
+  const renderLegend = () => {
+    if (chartData.length === 0) return null;
+    const keys = safeConfig.type === "pie" ? labels : dataKeys;
+    return (
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 6, justifyContent: "center" }}>
+        {keys.map((k, i) => (
+          <View key={`leg-${k}-${i}`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <View style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: COLORS[i % COLORS.length] }} />
+            <Text style={{ fontSize: 10, color: colors.mutedForeground, fontFamily: fonts.regular }}>{k}</Text>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
+  const typeButton = (type: GraphType, Icon: LucideIcon) => {
+    const active = safeConfig.type === type;
+    return (
+      <Pressable
+        onPress={() => updateConfig({ type })}
+        style={{
+          height: 34,
+          paddingHorizontal: 10,
+          borderRadius: 8,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: active ? colors.primary : "transparent",
+          borderWidth: 1,
+          borderColor: active ? colors.primary : colors.border,
+        }}
+      >
+        <Icon size={15} color={active ? colors.primaryForeground : colors.foreground} />
+      </Pressable>
+    );
+  };
+
+  const sourceButton = (label: string, active: boolean, onPress: () => void, disabled?: boolean) => (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={{
+        height: 34,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: disabled ? 0.5 : 1,
+        backgroundColor: active ? colors.primary : "transparent",
+        borderWidth: 1,
+        borderColor: active ? colors.primary : colors.border,
+      }}
+    >
+      <Text
+        style={{
+          fontSize: 12,
+          fontFamily: fonts.medium,
+          color: active ? colors.primaryForeground : colors.foreground,
+        }}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+
+  return (
+    <View
+      style={{
+        width: "100%",
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+        padding: 16,
+        gap: 16,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+          <View style={{ borderRadius: 6, backgroundColor: colors.indigo + "1a", padding: 6 }}>
+            <BarChart2 size={16} color={colors.indigo} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 14, fontFamily: fonts.semibold, color: colors.foreground }} numberOfLines={1}>
+              {safeConfig.title || t("graph.defaultTitle")}
+            </Text>
+            <Text style={{ fontSize: 10, color: colors.mutedForeground, fontFamily: fonts.regular, letterSpacing: 0.5 }}>
+              {safeConfig.tableSource ? "Fuente: tabla" : "Fuente: manual"}
+            </Text>
+          </View>
+        </View>
+        {!readonly && (
+          <Pressable
+            onPress={() => setIsConfiguring((prev) => !prev)}
+            style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 32, paddingHorizontal: 8 }}
+          >
+            <Settings2 size={14} color={colors.foreground} />
+            <Text style={{ fontSize: 12, color: colors.foreground, fontFamily: fonts.medium }}>Configurar</Text>
+          </Pressable>
+        )}
+      </View>
 
       {!readonly && isConfiguring && (
-        <div className="rounded-lg border border-border/70 bg-background/70 p-3 space-y-3">
-          <label className="block text-xs font-semibold text-muted-foreground">{t("graph.titleLabel")}</label>
-          <input
-            className="w-full rounded-md border border-input bg-card px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-accent"
+        <View
+          style={{
+            borderRadius: 8,
+            borderWidth: 1,
+            borderColor: colors.border,
+            backgroundColor: colors.background,
+            padding: 12,
+            gap: 12,
+          }}
+        >
+          <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.mutedForeground }}>
+            {t("graph.titleLabel")}
+          </Text>
+          <TextInput
+            style={{
+              width: "100%",
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+              paddingHorizontal: 8,
+              paddingVertical: 8,
+              fontSize: 14,
+              color: colors.foreground,
+              fontFamily: fonts.regular,
+            }}
             value={safeConfig.title || ""}
-            onChange={(e) => updateConfig({ title: e.target.value })}
+            onChangeText={(text) => updateConfig({ title: text })}
             placeholder={t("graph.titlePlaceholder")}
+            placeholderTextColor={colors.mutedForeground}
           />
 
-          <div className="space-y-1">
-            <label className="block text-xs font-semibold text-muted-foreground">{t("graph.chartType")}</label>
-            <div className="flex flex-wrap gap-2">
-              <Button variant={safeConfig.type === "line" ? "default" : "ghost"} size="sm" className="h-8 px-2" onClick={() => updateConfig({ type: "line" })}>
-                <LineChartIcon className="h-3.5 w-3.5" />
-              </Button>
-              <Button variant={safeConfig.type === "bar" ? "default" : "ghost"} size="sm" className="h-8 px-2" onClick={() => updateConfig({ type: "bar" })}>
-                <BarChart2 className="h-3.5 w-3.5" />
-              </Button>
-              <Button variant={safeConfig.type === "area" ? "default" : "ghost"} size="sm" className="h-8 px-2" onClick={() => updateConfig({ type: "area" })}>
-                <AreaChartIcon className="h-3.5 w-3.5" />
-              </Button>
-              <Button variant={safeConfig.type === "pie" ? "default" : "ghost"} size="sm" className="h-8 px-2" onClick={() => updateConfig({ type: "pie" })}>
-                <PieChartIcon className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
+          <View style={{ gap: 4 }}>
+            <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.mutedForeground }}>
+              {t("graph.chartType")}
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {typeButton("line", LineChartIcon)}
+              {typeButton("bar", BarChart2)}
+              {typeButton("area", AreaChartIcon)}
+              {typeButton("pie", PieChartIcon)}
+            </View>
+          </View>
 
-          <div className="flex flex-wrap gap-2 pt-1">
-            <Button variant={!safeConfig.tableSource ? "default" : "outline"} size="sm" className="h-8 text-xs" onClick={() => updateConfig({ tableSource: undefined })}>
-              Datos manuales
-            </Button>
-            <Button
-              variant={safeConfig.tableSource ? "default" : "outline"}
-              size="sm"
-              className="h-8 text-xs"
-              onClick={() => {
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 4 }}>
+            {sourceButton("Datos manuales", !safeConfig.tableSource, () => updateConfig({ tableSource: undefined }))}
+            {sourceButton(
+              "Datos desde tabla",
+              !!safeConfig.tableSource,
+              () => {
                 if (!availableTables.length) return;
                 const target = safeConfig.tableSource?.brickId || availableTables[0].id;
                 updateConfig({
-                  tableSource: {
-                    brickId: target,
-                    xAxisColumn: 0,
-                    dataColumns: [1],
-                  },
+                  tableSource: { brickId: target, xAxisColumn: 0, dataColumns: [1] },
                 });
-              }}
-              disabled={!availableTables.length}
-            >
-              Datos desde tabla
-            </Button>
-          </div>
+              },
+              !availableTables.length,
+            )}
+          </View>
 
           {safeConfig.tableSource ? (
-            <div className="rounded-md border border-border p-2 space-y-2">
+            <View style={{ borderRadius: 6, borderWidth: 1, borderColor: colors.border, padding: 8, gap: 8 }}>
               {availableTables.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No hay bricks de tabla en este contexto.</p>
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, fontFamily: fonts.regular }}>
+                  No hay bricks de tabla en este contexto.
+                </Text>
               ) : (
                 <>
-                  <label className="block text-xs font-semibold text-muted-foreground">Tabla fuente</label>
-                  <select
-                    className="w-full rounded-md border border-input bg-card px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-accent"
-                    value={safeConfig.tableSource.brickId}
-                    onChange={(e) => {
-                      const selectedId = e.target.value;
-                      const table = availableTables.find((item) => item.id === selectedId);
-                      const cols = table?.rows?.[0]?.length || 1;
-                      updateConfig({
-                        tableSource: {
-                          brickId: selectedId,
-                          xAxisColumn: 0,
-                          dataColumns: cols > 1 ? [1] : [0],
-                        },
+                  <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.mutedForeground }}>
+                    Tabla fuente
+                  </Text>
+                  {/* Mobile: <select> replaced by a horizontal chip picker. */}
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                    {availableTables.map((table) =>
+                      sourceButton(table.title, safeConfig.tableSource?.brickId === table.id, () => {
+                        const cols = table.rows?.[0]?.length || 1;
+                        updateConfig({
+                          tableSource: { brickId: table.id, xAxisColumn: 0, dataColumns: cols > 1 ? [1] : [0] },
+                        });
+                      }),
+                    )}
+                  </ScrollView>
+
+                  <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.mutedForeground, marginTop: 4 }}>
+                    Eje X
+                  </Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                    {tableHeaders.map((header, idx) =>
+                      sourceButton(header || `Col ${idx + 1}`, safeConfig.tableSource?.xAxisColumn === idx, () => {
+                        const filtered = (safeConfig.tableSource?.dataColumns || []).filter((i) => i !== idx);
+                        updateConfig({
+                          tableSource: {
+                            ...safeConfig.tableSource!,
+                            xAxisColumn: idx,
+                            dataColumns: filtered.length ? filtered : [0].filter((i) => i !== idx),
+                          },
+                        });
+                      }),
+                    )}
+                  </ScrollView>
+
+                  <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.mutedForeground, marginTop: 4 }}>
+                    Series
+                  </Text>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                    {tableHeaders.map((header, idx) => {
+                      const disabled = idx === safeConfig.tableSource?.xAxisColumn;
+                      const checked = safeConfig.tableSource?.dataColumns?.includes(idx);
+                      if (disabled) return null;
+                      return sourceButton(header || `Col ${idx + 1}`, !!checked, () => {
+                        const base = safeConfig.tableSource?.dataColumns || [];
+                        const next = checked ? base.filter((i) => i !== idx) : [...base, idx];
+                        updateConfig({
+                          tableSource: { ...safeConfig.tableSource!, dataColumns: next.length ? next : base },
+                        });
                       });
-                    }}
-                  >
-                    {availableTables.map((table) => (
-                      <option key={table.id} value={table.id}>{table.title}</option>
-                    ))}
-                  </select>
+                    })}
+                  </View>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-xs font-semibold text-muted-foreground">Eje X</label>
-                      <select
-                        className="mt-1 w-full rounded-md border border-input bg-card px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-accent"
-                        value={safeConfig.tableSource.xAxisColumn}
-                        onChange={(e) => {
-                          const xAxisColumn = Number(e.target.value);
-                          const filtered = (safeConfig.tableSource?.dataColumns || []).filter((idx) => idx !== xAxisColumn);
-                          updateConfig({
-                            tableSource: {
-                              ...safeConfig.tableSource!,
-                              xAxisColumn,
-                              dataColumns: filtered.length ? filtered : [0].filter((idx) => idx !== xAxisColumn),
-                            },
-                          });
-                        }}
-                      >
-                        {tableHeaders.map((header, idx) => (
-                          <option key={`x-${idx}`} value={idx}>{header || `Col ${idx + 1}`}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-muted-foreground">Series</label>
-                      <div className="mt-1 max-h-24 overflow-y-auto rounded-md border border-input bg-card p-1.5 space-y-1">
-                        {tableHeaders.map((header, idx) => {
-                          const disabled = idx === safeConfig.tableSource?.xAxisColumn;
-                          const checked = safeConfig.tableSource?.dataColumns?.includes(idx);
-                          return (
-                            <label key={`series-${idx}`} className={cn("flex items-center gap-2 text-xs", disabled && "opacity-50") }>
-                              <input
-                                type="checkbox"
-                                checked={!!checked}
-                                disabled={disabled}
-                                onChange={() => {
-                                  const base = safeConfig.tableSource?.dataColumns || [];
-                                  const next = checked ? base.filter((i) => i !== idx) : [...base, idx];
-                                  updateConfig({
-                                    tableSource: {
-                                      ...safeConfig.tableSource!,
-                                      dataColumns: next.length ? next : base,
-                                    },
-                                  });
-                                }}
-                              />
-                              <span>{header || `Col ${idx + 1}`}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end">
-                    <Button size="sm" className="h-8 text-xs" onClick={saveTableSource}>{t("graph.applyTableConfig")}</Button>
-                  </div>
+                  <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+                    {sourceButton(t("graph.applyTableConfig"), true, saveTableSource)}
+                  </View>
                 </>
               )}
-            </div>
+            </View>
           ) : (
-            <div className="rounded-md border border-border p-2 space-y-2">
-              <label className="block text-xs font-semibold text-muted-foreground">JSON de datos</label>
-              <textarea
-                className="min-h-[120px] w-full rounded-md border border-input bg-card px-2 py-1.5 font-mono text-xs outline-none focus:ring-1 focus:ring-accent"
+            <View style={{ borderRadius: 6, borderWidth: 1, borderColor: colors.border, padding: 8, gap: 8 }}>
+              <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.mutedForeground }}>
+                JSON de datos
+              </Text>
+              <TextInput
+                multiline
+                style={{
+                  minHeight: 120,
+                  width: "100%",
+                  borderRadius: 6,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  backgroundColor: colors.surface,
+                  paddingHorizontal: 8,
+                  paddingVertical: 8,
+                  fontSize: 12,
+                  color: colors.foreground,
+                  fontFamily: fonts.mono,
+                  textAlignVertical: "top",
+                }}
                 value={manualJson}
-                onChange={(e) => setManualJson(e.target.value)}
+                onChangeText={setManualJson}
               />
-              {jsonError && <p className="text-xs text-destructive">{jsonError}</p>}
-              <div className="flex justify-end">
-                <Button size="sm" className="h-8 text-xs" onClick={applyManualJson}>Aplicar datos manuales</Button>
-              </div>
-            </div>
+              {jsonError ? (
+                <Text style={{ fontSize: 12, color: colors.destructive, fontFamily: fonts.regular }}>{jsonError}</Text>
+              ) : null}
+              <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+                {sourceButton("Aplicar datos manuales", true, applyManualJson)}
+              </View>
+            </View>
           )}
-        </div>
+        </View>
       )}
 
-      <div className="h-72 w-full rounded-lg border border-border/50 bg-background/50 p-2">
-        <ResponsiveContainer width="100%" height="100%">
-          {renderChart()}
-        </ResponsiveContainer>
-      </div>
-    </div>
+      <View
+        style={{
+          width: "100%",
+          borderRadius: 8,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+          padding: 8,
+        }}
+      >
+        {renderChart()}
+        {renderLegend()}
+      </View>
+    </View>
   );
 };
