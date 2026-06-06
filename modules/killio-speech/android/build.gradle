@@ -4,6 +4,7 @@ apply plugin: 'kotlin-android'
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
 applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
 
 group = 'dev.killio.speech'
 version = '0.0.1'
