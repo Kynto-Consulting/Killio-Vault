@@ -205,17 +205,24 @@ export async function updateBoardListColor(
 
 // ─── Card timer (web ActiveCardTimer parity) ────────────────────────────────
 //
-// Backend gap (2026-06): no /cards/:id/timer/start|stop route on
-// cards.controller. Only GET /cards/active-timer/* readers. These helpers POST
-// to the expected paths and surface a clear error; once the backend adds the
-// route, the UI starts working automatically.
+// The "timer" model = a card with start_at + due_at set and completed_at null
+// (CardsRepository.getActiveTimerForUser). There is NO separate timer table /
+// route — start/stop are just targeted PATCH /cards/:id field writes:
+//   start → start_at=now (+ due_at=now+1h if missing), completed_at=null
+//   stop  → completed_at=now
+// This matches the backend agent tools card_timer_start / card_timer_stop.
 
-export async function startCardTimer(cardId: string): Promise<void> {
-  await api.post(`/cards/${cardId}/timer/start`);
+export async function startCardTimer(cardId: string, dueAt?: string): Promise<void> {
+  const due = dueAt ?? new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  await api.patch(`/cards/${cardId}`, {
+    start_at: new Date().toISOString(),
+    due_at: due,
+    completed_at: null,
+  });
 }
 
 export async function stopCardTimer(cardId: string): Promise<void> {
-  await api.post(`/cards/${cardId}/timer/stop`);
+  await api.patch(`/cards/${cardId}`, { completed_at: new Date().toISOString() });
 }
 
 export interface ActiveTimer {
