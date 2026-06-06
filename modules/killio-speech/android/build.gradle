@@ -1,4 +1,4 @@
-﻿apply plugin: 'com.android.library'
+apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
