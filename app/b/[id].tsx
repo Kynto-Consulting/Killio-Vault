@@ -1710,9 +1710,16 @@ function GanttView({
                       if (clampedEnd <= weekStartMs || clampedStart >= weekStartMs + weekDurationMs)
                         return null;
                       const leftPct = ((clampedStart - weekStartMs) / weekDurationMs) * 100;
-                      const widthPct = ((clampedEnd - clampedStart) / weekDurationMs) * 100;
+                      // Web parity: clamp to a 3.5% floor so single-day bars stay
+                      // visible/tappable at week/month/quarter scales.
+                      const widthPct = Math.max(
+                        3.5,
+                        ((clampedEnd - clampedStart) / weekDurationMs) * 100,
+                      );
                       const top = 6 + (ci % 3) * 18;
-                      const barColor = list.color ?? colors.cyan;
+                      // Web parity: overdue cards (dueAt in the past) render red.
+                      const isOverdue = endMs < Date.now();
+                      const barColor = isOverdue ? '#ef4444' : list.color ?? colors.cyan;
                       return (
                         <Pressable
                           key={card.id}
