@@ -1,0 +1,27 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Visibility of the on-device speech recognizer (Android 11+ package filtering). -->
+  <queries>
+    <intent>
+      <action android:name="android.speech.RecognitionService" />
+    </intent>
+  </queries>
+
+  <application>
+    <service
+      android:name="dev.killio.speech.VaultSpeechService"
+      android:exported="false"
+      android:foregroundServiceType="microphone" />
+
+    <!-- Re-launch capture after a reboot (RECEIVE_BOOT_COMPLETED). Without this
+         receiver the declared boot permission does nothing. -->
+    <receiver
+      android:name="dev.killio.speech.BootReceiver"
+      android:enabled="true"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

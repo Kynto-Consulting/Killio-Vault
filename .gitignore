@@ -7,9 +7,16 @@ dist/
 web-build/
 expo-env.d.ts
 
-# native
-android/
-ios/
+# native — ignore the ROOT prebuild output only, NOT the custom Expo modules'
+# Kotlin/Swift sources under modules/*/android|ios (those MUST ship to EAS or
+# the foreground-service / wake-lock / screen-capture native code is absent
+# and 24/7 capture silently no-ops).
+/android/
+/ios/
+!modules/**/android/
+!modules/**/android/**
+!modules/**/ios/
+!modules/**/ios/**
 
 # misc
 *.log

@@ -1,0 +1,19 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    MediaProjection-typed foreground service + the invisible consent Activity.
+    The FOREGROUND_SERVICE_MEDIA_PROJECTION permission is declared by the app
+    manifest via the withVaultCapture config plugin so it merges into the APK.
+  -->
+  <application>
+    <activity
+      android:name="dev.killio.screen.ProjectionConsentActivity"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar"
+      android:excludeFromRecents="true"
+      android:exported="false" />
+
+    <service
+      android:name="dev.killio.screen.ScreenCaptureService"
+      android:exported="false"
+      android:foregroundServiceType="mediaProjection" />
+  </application>
+</manifest>
