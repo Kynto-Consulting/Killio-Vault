@@ -33,6 +33,8 @@ interface AuthState {
   activeTeam: Team | null;
   /** All workspaces the user can use with Vault (personal + Pro+ shared). */
   workspaces: Team[];
+  /** Authenticated user's id. `null` until /auth/me resolves on launch. */
+  currentUserId: string | null;
   /** Switch the active workspace. Persists the choice across launches. */
   setActiveTeam(teamId: string): Promise<void>;
   /** Re-fetches workspaces from backend (after creating a new team). */
@@ -51,6 +53,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [personalTeam, setPersonalTeam] = useState<Team | null>(null);
   const [activeTeam, setActiveTeamState] = useState<Team | null>(null);
   const [workspaces, setWorkspaces] = useState<Team[]>([]);
+  // Mobile: cache the signed-in user's id so screens that need to identify
+  // "this is me" (read receipts, own message bubble color, etc.) don't have
+  // to re-call /auth/me on mount.
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   const hydrateWorkspaces = useCallback(async () => {
     const teams = await listTeams();
@@ -77,6 +83,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       accessToken: auth.accessToken,
       refreshToken: auth.refreshToken,
     });
+    // Mobile: cache the freshly authenticated user id (used by rooms read
+    // receipts to mark own messages).
+    try {
+      const profile = await authApi.me();
+      const uid = typeof profile?.id === 'string' ? (profile.id as string) : null;
+      setCurrentUserId(uid);
+    } catch {
+      setCurrentUserId(null);
+    }
     await hydrateWorkspaces();
     setStatus('signedIn');
     // Register for Killio push so normal notifications reach Vault.
@@ -89,6 +104,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setPersonalTeam(null);
     setActiveTeamState(null);
     setWorkspaces([]);
+    setCurrentUserId(null);
     setStatus('signedOut');
   }, []);
 
@@ -125,7 +141,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       try {
-        await authApi.me();
+        const profile = await authApi.me();
+        const uid = typeof profile?.id === 'string' ? (profile.id as string) : null;
+        setCurrentUserId(uid);
         try {
           await hydrateWorkspaces();
         } catch {
@@ -189,6 +207,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       personalTeam,
       activeTeam,
       workspaces,
+      currentUserId,
       setActiveTeam,
       refreshWorkspaces,
       loginWithPassword,
@@ -201,6 +220,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       personalTeam,
       activeTeam,
       workspaces,
+      currentUserId,
       setActiveTeam,
       refreshWorkspaces,
       loginWithPassword,

@@ -21,10 +21,38 @@ export interface RoomMessage {
   userId: string;
   content: string;
   createdAt: string;
+  editedAt?: string | null;
   reactions?: Array<{ emoji: string; userIds: string[] }>;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> & {
+    /** Optional reference to the message this is replying to. */
+    replyTo?: { id: string; authorName?: string; preview?: string };
+    /** Inline attachments (uploaded to /uploads with usage=chat_attachment). */
+    attachments?: Array<{
+      url: string;
+      name: string;
+      kind: 'image' | 'video' | 'audio' | 'document';
+      size?: number;
+      mimeType?: string;
+      durationMs?: number;
+    }>;
+    /** Pinned-message marker (set via PATCH metadata). */
+    pinned?: boolean;
+    /** Soft-delete marker (renderer hides body, shows tombstone). */
+    deleted?: boolean;
+  };
   authorName?: string;
   authorAvatarUrl?: string | null;
+  /** ISO timestamp at which the current user (or anyone) marked the message read. */
+  status?: 'sent' | 'read';
+}
+
+export interface RoomMember {
+  userId: string;
+  role: 'admin' | 'member' | 'readonly';
+  displayName?: string;
+  email?: string;
+  avatarUrl?: string | null;
+  joinedAt?: string;
 }
 
 export async function findRoomByEntity(
@@ -63,11 +91,42 @@ export async function listRoomMessages(roomId: string, limit = 50): Promise<Room
 export async function sendRoomMessage(
   roomId: string,
   content: string,
+  metadata?: RoomMessage['metadata'],
 ): Promise<RoomMessage> {
   const { data } = await api.post<RoomMessage>(`/rooms/${roomId}/messages`, {
     content,
+    ...(metadata ? { metadata } : {}),
   });
   return data;
+}
+
+/**
+ * Patches a message's metadata. The backend merges, so callers can flip a
+ * single flag (pinned, deleted, etc.) without round-tripping the whole blob.
+ */
+export async function updateRoomMessageMetadata(
+  roomId: string,
+  messageId: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  await api.patch(`/rooms/${roomId}/messages/${messageId}/metadata`, { metadata });
+}
+
+export async function markRoomMessagesRead(
+  roomId: string,
+  messageIds: string[],
+): Promise<void> {
+  if (!messageIds.length) return;
+  await api.post(`/rooms/${roomId}/messages/read`, { messageIds });
+}
+
+export async function markAllRoomMessagesRead(roomId: string): Promise<void> {
+  await api.post(`/rooms/${roomId}/messages/read/all`, {});
+}
+
+export async function listRoomMembers(roomId: string): Promise<RoomMember[]> {
+  const { data } = await api.get<RoomMember[]>(`/rooms/${roomId}/members`);
+  return data ?? [];
 }
 
 export async function reactRoomMessage(

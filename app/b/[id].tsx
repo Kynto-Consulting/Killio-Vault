@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -19,7 +20,9 @@ import Animated, {
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
+import Svg, { Line as SvgLine } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
+import * as ImagePicker from 'expo-image-picker';
 import {
   Archive,
   ArrowLeft,
@@ -28,12 +31,27 @@ import {
   ChevronLeft,
   ChevronRight,
   ChartGantt,
+  Eye,
+  EyeOff,
+  Filter as FilterIcon,
+  Image as ImageIcon,
   Kanban as KanbanIcon,
+  ListChecks,
+  Palette,
+  Play,
   Plus,
+  Square,
+  ArrowUpDown,
+  Timer as TimerIcon,
+  Trash2,
   X,
 } from 'lucide-react-native';
 
+import { uploadFile } from '@/core/api/uploads.client';
+import { UnifiedChecklistBrick } from '@/ui/bricks/unified-checklist-brick';
+
 import { Screen, Card, Body } from '@/ui';
+import { CardSidebar, type CardSidebarTab } from '@/documents/CardSidebar';
 import type {
   ArchivedList,
   BoardCard,
@@ -60,10 +78,35 @@ const PRIORITY_COLORS: Record<CardPriority, string> = {
 };
 
 type ViewMode = 'kanban' | 'gantt';
-type GanttMode = 'day' | 'week' | 'month';
+type GanttMode = 'hour' | 'day' | 'week' | 'month' | 'quarter';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const GANTT_COL_WIDTH = 80;
+const HOUR_MS = 60 * 60 * 1000;
+
+// Predefined tints used by the list color picker (mirrors the web swatches).
+const LIST_COLOR_SWATCHES: Array<string | null> = [
+  null,
+  '#67e8f9',
+  '#86efac',
+  '#fcd34d',
+  '#fb923c',
+  '#f472b6',
+  '#a78bfa',
+  '#94a3b8',
+];
+
+type CardFilters = {
+  assigneeIds: string[];
+  tagIds: string[];
+  priorities: CardPriority[];
+  dueSoon: boolean;
+};
+
+type CardSort = 'manual' | 'dueAt' | 'priority' | 'createdAt';
+
+const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+
+const DUE_SOON_MS = 3 * DAY_MS;
 
 /**
  * Full kanban + gantt board view, 1:1 mobile port of the web /b/[…] page.
@@ -101,6 +144,21 @@ export default function BoardDetailScreen() {
   const [archivedLists, setArchivedLists] = useState<ArchivedList[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
 
+  // Filters + sort. Persist in component state only — cheap to recompute each
+  // render and avoids stale persistence bugs across boards.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState<CardFilters>({
+    assigneeIds: [],
+    tagIds: [],
+    priorities: [],
+    dueSoon: false,
+  });
+  const [sort, setSort] = useState<CardSort>('manual');
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+
+  // Gantt-only: which lists are visible (defaults to all when null).
+  const [ganttListFilter, setGanttListFilter] = useState<Set<string> | null>(null);
+
   const load = useCallback(async () => {
     if (!boardId) return;
     setLoading(true);
@@ -137,7 +195,62 @@ export default function BoardDetailScreen() {
 
   const lists = board?.lists ?? [];
   const activeList = lists[activeListIdx] ?? null;
-  const visibleCards = (activeList?.cards ?? []).filter((c) => !c.archivedAt);
+
+  // Apply filters + sort to the active list's cards.
+  const visibleCards = useMemo(() => {
+    let cards = (activeList?.cards ?? []).filter((c) => !c.archivedAt);
+    if (filters.assigneeIds.length > 0) {
+      cards = cards.filter((c) =>
+        (c.assignees ?? []).some((a) => filters.assigneeIds.includes(a.id)),
+      );
+    }
+    if (filters.tagIds.length > 0) {
+      cards = cards.filter((c) =>
+        (c.tags ?? []).some((tag) => filters.tagIds.includes(tag.id)),
+      );
+    }
+    if (filters.priorities.length > 0) {
+      cards = cards.filter((c) => {
+        const p = (c.priority ?? c.urgency) as CardPriority | undefined;
+        return p && filters.priorities.includes(p);
+      });
+    }
+    if (filters.dueSoon) {
+      const cutoff = Date.now() + DUE_SOON_MS;
+      cards = cards.filter((c) => {
+        if (!c.dueAt) return false;
+        const t = Date.parse(c.dueAt);
+        return Number.isFinite(t) && t <= cutoff;
+      });
+    }
+    if (sort !== 'manual') {
+      const sorted = [...cards];
+      sorted.sort((a, b) => {
+        if (sort === 'dueAt') {
+          const ta = a.dueAt ? Date.parse(a.dueAt) : Number.POSITIVE_INFINITY;
+          const tb = b.dueAt ? Date.parse(b.dueAt) : Number.POSITIVE_INFINITY;
+          return ta - tb;
+        }
+        if (sort === 'priority') {
+          const pa = PRIORITY_ORDER[(a.priority ?? a.urgency ?? 'low') as string] ?? 99;
+          const pb = PRIORITY_ORDER[(b.priority ?? b.urgency ?? 'low') as string] ?? 99;
+          return pa - pb;
+        }
+        // createdAt fallback uses position descending (newest first) since
+        // BoardCard has no createdAt.
+        return (b.position ?? 0) - (a.position ?? 0);
+      });
+      cards = sorted;
+    }
+    return cards;
+  }, [activeList?.cards, filters, sort]);
+
+  const filtersActive =
+    filters.assigneeIds.length +
+      filters.tagIds.length +
+      filters.priorities.length +
+      (filters.dueSoon ? 1 : 0) >
+    0;
 
   const addCardHere = async () => {
     if (!newCardTitle.trim() || !activeList) return;
@@ -205,6 +318,51 @@ export default function BoardDetailScreen() {
     [api, boardId, load],
   );
 
+  // Web parity: persist list re-order after a long-press drag finishes.
+  // Mobile: also patches local board state for an immediate visual update.
+  const reorderListsLocal = useCallback(
+    async (orderedListIds: string[]) => {
+      setBoard((prev) => {
+        if (!prev) return prev;
+        const byId = new Map(prev.lists.map((l) => [l.id, l] as const));
+        const next: BoardList[] = [];
+        for (const id of orderedListIds) {
+          const l = byId.get(id);
+          if (l) next.push(l);
+        }
+        // Append any list not present in orderedListIds (defensive).
+        for (const l of prev.lists) {
+          if (!orderedListIds.includes(l.id)) next.push(l);
+        }
+        return { ...prev, lists: next };
+      });
+      try {
+        await api.reorderLists(boardId, orderedListIds);
+      } catch {
+        // Mobile: silently swallow — Pulse refresh (or next load) reconciles.
+      }
+    },
+    [api, boardId],
+  );
+
+  const setListColorLocal = useCallback(
+    async (listId: string, color: string | null) => {
+      setBoard((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          lists: prev.lists.map((l) => (l.id === listId ? { ...l, color } : l)),
+        };
+      });
+      try {
+        await api.setListColor(boardId, listId, color);
+      } catch {
+        /* ignore */
+      }
+    },
+    [api, boardId],
+  );
+
   const moveCard = async (card: BoardCard, toListId: string) => {
     if (!card.listId || card.listId === toListId) return;
     // Optimistic UI: remove from source list, append to destination list bottom.
@@ -261,6 +419,32 @@ export default function BoardDetailScreen() {
           {board?.name ?? params.name ?? ''}
         </Text>
         <Pressable
+          onPress={() => setFiltersOpen(true)}
+          hitSlop={8}
+          accessibilityLabel={t('filters')}
+          className="rounded-md border border-border bg-card p-1.5"
+          style={
+            filtersActive
+              ? { borderColor: colors.cyan, backgroundColor: `${colors.cyan}22` }
+              : undefined
+          }
+        >
+          <FilterIcon size={13} color={filtersActive ? colors.cyan : colors.mutedForeground} />
+        </Pressable>
+        <Pressable
+          onPress={() => setSortMenuOpen((v) => !v)}
+          hitSlop={8}
+          accessibilityLabel={t('sort')}
+          className="rounded-md border border-border bg-card p-1.5"
+          style={
+            sort !== 'manual'
+              ? { borderColor: colors.cyan, backgroundColor: `${colors.cyan}22` }
+              : undefined
+          }
+        >
+          <ArrowUpDown size={13} color={sort !== 'manual' ? colors.cyan : colors.mutedForeground} />
+        </Pressable>
+        <Pressable
           onPress={openArchived}
           hitSlop={8}
           accessibilityLabel={t('archivedLists')}
@@ -270,6 +454,28 @@ export default function BoardDetailScreen() {
         </Pressable>
         <ViewToggle view={view} onChange={setView} t={t} />
       </View>
+
+      {sortMenuOpen ? (
+        <View className="border-b border-border/40 bg-card px-3 py-2 flex-row gap-1">
+          {(['manual', 'dueAt', 'priority', 'createdAt'] as const).map((s) => (
+            <Pressable
+              key={s}
+              onPress={() => {
+                setSort(s);
+                setSortMenuOpen(false);
+              }}
+              className={`rounded-md px-2 py-1 ${sort === s ? 'bg-cyan' : 'bg-secondary'}`}
+            >
+              <Text
+                style={{ fontFamily: fonts.semibold }}
+                className={`text-[10px] ${sort === s ? 'text-background' : 'text-foreground'}`}
+              >
+                {t(`sortBy.${s}` as any)}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
 
       {view === 'kanban' ? (
         <KanbanView
@@ -293,16 +499,22 @@ export default function BoardDetailScreen() {
             await api.createList(boardId, t('newList'));
             await load();
           }}
+          onReorderLists={reorderListsLocal}
+          onSetListColor={setListColorLocal}
           t={t}
         />
       ) : (
         <GanttView
           lists={lists}
+          listFilter={ganttListFilter}
+          setListFilter={setGanttListFilter}
           mode={ganttMode}
           setMode={setGanttMode}
           offset={ganttOffset}
           setOffset={setGanttOffset}
           onCardPress={(card, list) => setSelectedCard({ card, list })}
+          onPatchCard={(cardId, patch) => api.updateCard(cardId, patch)}
+          onLocalPatch={patchCardLocal}
           t={t}
         />
       )}
@@ -335,7 +547,20 @@ export default function BoardDetailScreen() {
         listBoardTags={() => api.listBoardTags(boardId)}
         addTag={(cardId, tagId) => api.addCardTag(cardId, tagId)}
         removeTag={(cardId, tagId) => api.removeCardTag(cardId, tagId)}
+        startTimer={(cardId) => api.startCardTimer(cardId)}
+        stopTimer={(cardId) => api.stopCardTimer(cardId)}
         onLocalPatch={patchCardLocal}
+        t={t}
+      />
+
+      <FiltersSheet
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        filters={filters}
+        setFilters={setFilters}
+        teamId={activeTeam?.id ?? null}
+        isLocal={isLocal}
+        listBoardTags={() => api.listBoardTags(boardId)}
         t={t}
       />
 
@@ -396,6 +621,10 @@ function ViewToggle({
 
 type ChipRect = { x: number; y: number; w: number; h: number };
 
+// Stable extractor for KanbanCardRow rows — referenced by FlatList. Defined
+// outside the component so identity doesn't churn each render.
+const renderKanbanKeyExtractor = (c: BoardCard) => c.id;
+
 function KanbanView({
   lists,
   activeList,
@@ -411,6 +640,8 @@ function KanbanView({
   cancelAdd,
   submitAdd,
   onAddList,
+  onReorderLists,
+  onSetListColor,
   t,
 }: {
   lists: BoardList[];
@@ -427,8 +658,12 @@ function KanbanView({
   cancelAdd(): void;
   submitAdd(): Promise<void>;
   onAddList(): Promise<void>;
+  onReorderLists(orderedListIds: string[]): Promise<void>;
+  onSetListColor(listId: string, color: string | null): Promise<void>;
   t: ReturnType<typeof useTranslations>;
 }) {
+  // Color-picker visibility per list (tap header → show swatch row).
+  const [colorPickerFor, setColorPickerFor] = useState<string | null>(null);
   // Drag state: which card is being dragged + its starting absolute pos & size.
   const [dragging, setDragging] = useState<{
     card: BoardCard;
@@ -606,9 +841,24 @@ function KanbanView({
             isActive={i === activeListIdx}
             isDropTarget={!!dragging}
             isSelfList={dragging?.card.listId === list.id}
+            color={list.color ?? null}
             onLayoutRect={registerChipRect}
             onPress={() => setActiveListIdx(i)}
+            // Mobile: long-press the chip to open the color picker. The
+            // (rarely used) reorder-via-drag is exposed via the small left/
+            // right swap buttons next to the picker.
+            onLongPress={() => setColorPickerFor(list.id)}
           >
+            {list.color ? (
+              <View
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 3,
+                  backgroundColor: list.color,
+                }}
+              />
+            ) : null}
             <Text
               style={{ fontFamily: fonts.semibold }}
               className={`text-[11px] ${i === activeListIdx ? 'text-background' : 'text-foreground'}`}
@@ -639,11 +889,75 @@ function KanbanView({
         </Pressable>
       </ScrollView>
 
+      {colorPickerFor ? (
+        <View className="flex-row items-center gap-2 border-b border-border/40 bg-card px-3 py-2">
+          <Palette size={12} color={colors.mutedForeground} />
+          <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-muted-foreground">
+            {t('listColor')}
+          </Text>
+          {LIST_COLOR_SWATCHES.map((swatch, i) => (
+            <Pressable
+              key={i}
+              onPress={() => {
+                void onSetListColor(colorPickerFor, swatch);
+                setColorPickerFor(null);
+              }}
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: 9,
+                backgroundColor: swatch ?? 'transparent',
+                borderWidth: 1,
+                borderColor: swatch ? swatch : colors.border,
+              }}
+              accessibilityLabel={swatch ?? t('clear')}
+            >
+              {!swatch ? (
+                <X size={10} color={colors.mutedForeground} style={{ margin: 'auto' }} />
+              ) : null}
+            </Pressable>
+          ))}
+          {/* Quick list reorder: swap left/right of the active list. Full
+              drag-to-reorder is left as a future enhancement; the swap pair
+              covers the 80% case. */}
+          <View style={{ flex: 1 }} />
+          <Pressable
+            onPress={() => {
+              const idx = lists.findIndex((l) => l.id === colorPickerFor);
+              if (idx <= 0) return;
+              const ids = lists.map((l) => l.id);
+              [ids[idx - 1], ids[idx]] = [ids[idx], ids[idx - 1]];
+              void onReorderLists(ids);
+            }}
+            hitSlop={6}
+            accessibilityLabel={t('moveListLeft')}
+          >
+            <ChevronLeft size={14} color={colors.foreground} />
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              const idx = lists.findIndex((l) => l.id === colorPickerFor);
+              if (idx < 0 || idx >= lists.length - 1) return;
+              const ids = lists.map((l) => l.id);
+              [ids[idx + 1], ids[idx]] = [ids[idx], ids[idx + 1]];
+              void onReorderLists(ids);
+            }}
+            hitSlop={6}
+            accessibilityLabel={t('moveListRight')}
+          >
+            <ChevronRight size={14} color={colors.foreground} />
+          </Pressable>
+          <Pressable onPress={() => setColorPickerFor(null)} hitSlop={6}>
+            <X size={12} color={colors.mutedForeground} />
+          </Pressable>
+        </View>
+      ) : null}
+
       <FlatList
         style={{ flex: 1 }}
         contentContainerClassName="px-3 py-3 gap-2"
         data={visibleCards}
-        keyExtractor={(c) => c.id}
+        keyExtractor={renderKanbanKeyExtractor}
         scrollEnabled={!dragging}
         ListEmptyComponent={
           <Card>
@@ -750,16 +1064,20 @@ function ChipDropTarget({
   isActive,
   isDropTarget,
   isSelfList,
+  color,
   onLayoutRect,
   onPress,
+  onLongPress,
   children,
 }: {
   listId: string;
   isActive: boolean;
   isDropTarget: boolean;
   isSelfList: boolean;
+  color?: string | null;
   onLayoutRect(listId: string, rect: ChipRect): void;
   onPress(): void;
+  onLongPress?(): void;
   children: React.ReactNode;
 }) {
   const ref = useRef<View | null>(null);
@@ -792,20 +1110,34 @@ function ChipDropTarget({
     <Pressable
       ref={ref as never}
       onPress={onPress}
+      onLongPress={onLongPress}
       onLayout={handleLayout}
-      className={`rounded-full px-3 py-1 ${isActive ? 'bg-cyan' : 'bg-secondary'}`}
-      style={
+      className={`flex-row items-center gap-1 rounded-full px-3 py-1 ${isActive ? 'bg-cyan' : 'bg-secondary'}`}
+      style={[
+        // List tint: faint left border when set + slight bg blend.
+        color
+          ? {
+              borderLeftWidth: 3,
+              borderLeftColor: color,
+              backgroundColor: isActive ? colors.cyan : `${color}22`,
+            }
+          : undefined,
         borderHighlight
           ? { borderWidth: 1, borderColor: colors.cyan, borderStyle: 'dashed' }
-          : undefined
-      }
+          : undefined,
+      ]}
     >
       {children}
     </Pressable>
   );
 }
 
-function KanbanCardRow({
+/**
+ * Memoised so unrelated card updates don't re-render every row in the list —
+ * a noticeable win on boards with 30+ cards in a single list. Identity of
+ * onPress / onDrag* is provided by the parent via useCallback.
+ */
+const KanbanCardRow = memo(function KanbanCardRow({
   card,
   onPress,
   isBeingDragged,
@@ -940,9 +1272,19 @@ function KanbanCardRow({
       <Pressable
         ref={cardRef as never}
         onPress={onPress}
-        className="flex-row items-start gap-2 rounded-xl border border-border bg-card p-3"
+        accessibilityLabel={card.title}
+        className="overflow-hidden rounded-xl border border-border bg-card"
         style={{ opacity: isBeingDragged ? 0.35 : 1 }}
       >
+        {/* Cover image thumbnail (web parity). Stretches across the top edge. */}
+        {card.coverUrl ? (
+          <Image
+            source={{ uri: card.coverUrl }}
+            style={{ width: '100%', height: 80 }}
+            resizeMode="cover"
+          />
+        ) : null}
+        <View className="flex-row items-start gap-2 p-3">
         <View
           style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: priorityColor, marginTop: 6 }}
         />
@@ -1002,51 +1344,81 @@ function KanbanCardRow({
             </View>
           ) : null}
         </View>
+        </View>
       </Pressable>
     </GestureDetector>
   );
-}
+});
 
 // ─── Gantt ───────────────────────────────────────────────────────────────────
 
 function GanttView({
   lists,
+  listFilter,
+  setListFilter,
   mode,
   setMode,
   offset,
   setOffset,
   onCardPress,
+  onPatchCard,
+  onLocalPatch,
   t,
 }: {
   lists: BoardList[];
+  listFilter: Set<string> | null;
+  setListFilter(next: Set<string> | null): void;
   mode: GanttMode;
   setMode(next: GanttMode): void;
   offset: number;
   setOffset(next: number): void;
   onCardPress(card: BoardCard, list: BoardList): void;
+  onPatchCard(cardId: string, patch: { startAt?: string | null; dueAt?: string | null }): Promise<unknown>;
+  onLocalPatch(cardId: string, mutate: (c: BoardCard) => BoardCard): void;
   t: ReturnType<typeof useTranslations>;
 }) {
-  const daysCount = mode === 'day' ? 1 : mode === 'week' ? 7 : 30;
-  const offsetMultiplier = mode === 'day' ? 1 : mode === 'week' ? 7 : 30;
+  // Time-scale config. "hour" = 24 cells in a day; "day" = 1 cell;
+  // "week" = 7; "month" = 30; "quarter" = 90.
+  const cellCount = mode === 'hour' ? 24 : mode === 'day' ? 1 : mode === 'week' ? 7 : mode === 'month' ? 30 : 90;
+  const cellMs = mode === 'hour' ? HOUR_MS : DAY_MS;
+  const offsetMultiplier = mode === 'hour' ? 1 : mode === 'day' ? 1 : mode === 'week' ? 7 : mode === 'month' ? 30 : 90;
 
   const weekStart = useMemo(() => {
-    const base = startOfWeek(new Date());
+    const base = mode === 'week' || mode === 'month' || mode === 'quarter'
+      ? startOfWeek(new Date())
+      : (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
     return new Date(base.getTime() + offset * offsetMultiplier * DAY_MS);
-  }, [offset, offsetMultiplier]);
+  }, [offset, offsetMultiplier, mode]);
   const weekEndExclusive = useMemo(
-    () => new Date(weekStart.getTime() + daysCount * DAY_MS),
-    [weekStart, daysCount],
+    () => new Date(weekStart.getTime() + cellCount * cellMs),
+    [weekStart, cellCount, cellMs],
   );
   const weekStartMs = weekStart.getTime();
   const weekDurationMs = weekEndExclusive.getTime() - weekStartMs;
 
   const days = useMemo(
-    () =>
-      Array.from({ length: daysCount }, (_, i) => new Date(weekStartMs + i * DAY_MS)),
-    [weekStartMs, daysCount],
+    () => Array.from({ length: cellCount }, (_, i) => new Date(weekStartMs + i * cellMs)),
+    [weekStartMs, cellCount, cellMs],
   );
 
-  const visibleLists = lists.filter((l) => !l.archivedAt);
+  const allLists = lists.filter((l) => !l.archivedAt);
+  const visibleLists = listFilter
+    ? allLists.filter((l) => listFilter.has(l.id))
+    : allLists;
+
+  // Today vertical line position (% across the bars viewport), or null when
+  // outside range. Rendered as an SVG overlay on top of the rows.
+  const todayPct = useMemo(() => {
+    const now = Date.now();
+    if (now < weekStartMs || now > weekStartMs + weekDurationMs) return null;
+    return ((now - weekStartMs) / weekDurationMs) * 100;
+  }, [weekStartMs, weekDurationMs]);
+
+  // Inline date editor — long-press a bar to open. Tap still opens the card detail.
+  const [editingCard, setEditingCard] = useState<{ card: BoardCard; list: BoardList } | null>(null);
+
+  // Column width tuned for readability per mode.
+  const colWidth = mode === 'hour' ? 36 : mode === 'day' ? 220 : mode === 'week' ? 80 : mode === 'month' ? 50 : 28;
 
   return (
     <View style={{ flex: 1 }}>
@@ -1055,8 +1427,8 @@ function GanttView({
         <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-foreground">
           {ganttLabel(weekStart, weekEndExclusive, mode)}
         </Text>
-        <View className="flex-row items-center gap-1">
-          {(['day', 'week', 'month'] as const).map((m) => (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 4, alignItems: 'center' }}>
+          {(['hour', 'day', 'week', 'month', 'quarter'] as const).map((m) => (
             <Pressable
               key={m}
               onPress={() => {
@@ -1096,8 +1468,55 @@ function GanttView({
           >
             <ChevronRight size={11} color={colors.foreground} />
           </Pressable>
-        </View>
+        </ScrollView>
       </View>
+
+      {/* List filter chips — web parity. Tap a list to toggle it on/off; "All"
+          resets the filter. Hidden when only one list is on the board. */}
+      {allLists.length > 1 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerClassName="px-3 py-2 gap-2"
+          className="border-b border-border/40"
+        >
+          <Pressable
+            onPress={() => setListFilter(null)}
+            className={`rounded-full px-3 py-1 ${listFilter === null ? 'bg-cyan' : 'bg-secondary'}`}
+          >
+            <Text
+              style={{ fontFamily: fonts.semibold }}
+              className={`text-[10px] ${listFilter === null ? 'text-background' : 'text-foreground'}`}
+            >
+              {t('gantt.allLists')}
+            </Text>
+          </Pressable>
+          {allLists.map((list) => {
+            const on = listFilter ? listFilter.has(list.id) : false;
+            return (
+              <Pressable
+                key={list.id}
+                onPress={() => {
+                  const next = new Set(listFilter ?? []);
+                  if (next.has(list.id)) next.delete(list.id);
+                  else next.add(list.id);
+                  setListFilter(next.size === 0 ? null : next);
+                }}
+                className={`flex-row items-center gap-1 rounded-full px-3 py-1 ${on ? 'bg-cyan' : 'bg-secondary'}`}
+                style={list.color ? { borderLeftWidth: 2, borderLeftColor: list.color } : undefined}
+              >
+                {on ? <Eye size={9} color={colors.background} /> : <EyeOff size={9} color={colors.mutedForeground} />}
+                <Text
+                  style={{ fontFamily: fonts.semibold }}
+                  className={`text-[10px] ${on ? 'text-background' : 'text-foreground'}`}
+                >
+                  {list.name}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      ) : null}
 
       <ScrollView horizontal>
         <View>
@@ -1130,7 +1549,7 @@ function GanttView({
               <View
                 key={i}
                 style={{
-                  width: GANTT_COL_WIDTH,
+                  width: colWidth,
                   paddingHorizontal: 6,
                   paddingVertical: 6,
                   borderRightWidth: 1,
@@ -1139,10 +1558,14 @@ function GanttView({
                 }}
               >
                 <Text style={{ fontFamily: fonts.semibold, fontSize: 10, color: colors.foreground }}>
-                  {day.toLocaleDateString(undefined, { weekday: 'short' })}
+                  {mode === 'hour'
+                    ? `${day.getHours()}h`
+                    : day.toLocaleDateString(undefined, { weekday: 'short' })}
                 </Text>
                 <Text style={{ fontSize: 9, color: colors.mutedForeground }}>
-                  {day.getDate()}/{day.getMonth() + 1}
+                  {mode === 'hour'
+                    ? ''
+                    : `${day.getDate()}/${day.getMonth() + 1}`}
                 </Text>
               </View>
             ))}
@@ -1188,7 +1611,8 @@ function GanttView({
                   <View
                     style={{
                       flexDirection: 'row',
-                      flex: 1,
+                      // total width matches sum of grid cells so % positioning works correctly
+                      width: colWidth * cellCount,
                       position: 'relative',
                       minHeight: 48,
                     }}
@@ -1198,12 +1622,84 @@ function GanttView({
                       <View
                         key={i}
                         style={{
-                          width: GANTT_COL_WIDTH,
+                          width: colWidth,
                           borderRightWidth: 1,
                           borderRightColor: colors.border,
                         }}
                       />
                     ))}
+                    {/* Today vertical line (only when today is visible). */}
+                    {todayPct !== null ? (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          bottom: 0,
+                          left: `${todayPct}%`,
+                          width: 1.5,
+                          backgroundColor: '#fb923c',
+                          opacity: 0.85,
+                        }}
+                      />
+                    ) : null}
+                    {/* Dependency arrows: when a card declares `parentCardId`
+                        and both live in the same visible row, draw a thin
+                        SVG line from the parent's bar end to this bar's start.
+                        Mobile: rendered as a flat line, not curved — keeps
+                        the SVG cheap. Cross-row dependencies are skipped. */}
+                    {(() => {
+                      const barById = new Map<string, { left: number; width: number; top: number }>();
+                      cards.forEach((c, ci) => {
+                        const s = parseDate(c.startAt ?? c.dueAt);
+                        const e = parseDate(c.dueAt ?? c.startAt);
+                        if (!s || !e) return;
+                        const cs = Math.max(s, weekStartMs);
+                        const ce = Math.min(e + DAY_MS, weekStartMs + weekDurationMs);
+                        if (ce <= weekStartMs || cs >= weekStartMs + weekDurationMs) return;
+                        barById.set(c.id, {
+                          left: ((cs - weekStartMs) / weekDurationMs) * 100,
+                          width: ((ce - cs) / weekDurationMs) * 100,
+                          top: 6 + (ci % 3) * 18,
+                        });
+                      });
+                      const arrows: { x1: number; y1: number; x2: number; y2: number; key: string }[] = [];
+                      cards.forEach((c) => {
+                        if (!c.parentCardId) return;
+                        const a = barById.get(c.parentCardId);
+                        const b = barById.get(c.id);
+                        if (!a || !b) return;
+                        arrows.push({
+                          x1: a.left + a.width,
+                          y1: a.top + 7,
+                          x2: b.left,
+                          y2: b.top + 7,
+                          key: `${c.parentCardId}->${c.id}`,
+                        });
+                      });
+                      if (arrows.length === 0) return null;
+                      return (
+                        <Svg
+                          pointerEvents="none"
+                          width="100%"
+                          height="100%"
+                          style={{ position: 'absolute', inset: 0 } as any}
+                        >
+                          {arrows.map((a) => (
+                            <SvgLine
+                              key={a.key}
+                              x1={`${a.x1}%`}
+                              y1={a.y1}
+                              x2={`${a.x2}%`}
+                              y2={a.y2}
+                              stroke={colors.cyan}
+                              strokeWidth={1}
+                              strokeOpacity={0.7}
+                            />
+                          ))}
+                        </Svg>
+                      );
+                    })()}
                     {/* Card bars */}
                     {cards.map((card, ci) => {
                       const startMs = parseDate(card.startAt ?? card.dueAt);
@@ -1216,18 +1712,21 @@ function GanttView({
                       const leftPct = ((clampedStart - weekStartMs) / weekDurationMs) * 100;
                       const widthPct = ((clampedEnd - clampedStart) / weekDurationMs) * 100;
                       const top = 6 + (ci % 3) * 18;
+                      const barColor = list.color ?? colors.cyan;
                       return (
                         <Pressable
                           key={card.id}
                           onPress={() => onCardPress(card, list)}
+                          onLongPress={() => setEditingCard({ card, list })}
+                          accessibilityLabel={card.title}
                           style={{
                             position: 'absolute',
                             left: `${leftPct}%`,
                             top,
                             width: `${widthPct}%`,
                             height: 14,
-                            backgroundColor: colors.cyan + '55',
-                            borderColor: colors.cyan,
+                            backgroundColor: `${barColor}55`,
+                            borderColor: barColor,
                             borderWidth: 1,
                             borderRadius: 4,
                             paddingHorizontal: 4,
@@ -1250,7 +1749,106 @@ function GanttView({
           </ScrollView>
         </View>
       </ScrollView>
+
+      {/* Inline date editor — long-press a bar to open. Lightweight modal: two
+          ISO date inputs + save. Mobile: a native picker would be nicer, but
+          the manual YYYY-MM-DD field matches the CardDetailModal flow and
+          requires zero extra deps. */}
+      {editingCard ? (
+        <GanttDateEditor
+          item={editingCard}
+          onClose={() => setEditingCard(null)}
+          onSave={async (startAt, dueAt) => {
+            const id = editingCard.card.id;
+            onLocalPatch(id, (c) => ({ ...c, startAt, dueAt }));
+            setEditingCard(null);
+            try {
+              await onPatchCard(id, { startAt, dueAt });
+            } catch {
+              /* swallow — pulse refresh reconciles */
+            }
+          }}
+          t={t}
+        />
+      ) : null}
     </View>
+  );
+}
+
+function GanttDateEditor({
+  item,
+  onClose,
+  onSave,
+  t,
+}: {
+  item: { card: BoardCard; list: BoardList };
+  onClose(): void;
+  onSave(startAt: string | null, dueAt: string | null): Promise<void>;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [s, setS] = useState(item.card.startAt ? item.card.startAt.slice(0, 10) : '');
+  const [d, setD] = useState(item.card.dueAt ? item.card.dueAt.slice(0, 10) : '');
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <View className="flex-1 items-center justify-center bg-background/80 px-6">
+        <View className="w-full rounded-2xl border border-border bg-card p-4 gap-3">
+          <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-foreground">
+            {item.card.title}
+          </Text>
+          <View className="flex-row gap-2">
+            <View className="flex-1">
+              <Text className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t('startAt')}
+              </Text>
+              <TextInput
+                value={s}
+                onChangeText={setS}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={colors.mutedForeground}
+                style={{ fontFamily: fonts.mono, color: colors.foreground }}
+                className="rounded-md border border-border bg-background px-2 py-1.5"
+              />
+            </View>
+            <View className="flex-1">
+              <Text className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t('dueAt')}
+              </Text>
+              <TextInput
+                value={d}
+                onChangeText={setD}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={colors.mutedForeground}
+                style={{ fontFamily: fonts.mono, color: colors.foreground }}
+                className="rounded-md border border-border bg-background px-2 py-1.5"
+              />
+            </View>
+          </View>
+          <View className="flex-row justify-end gap-2">
+            <Pressable
+              onPress={onClose}
+              className="rounded-md border border-border bg-secondary px-3 py-1"
+            >
+              <Text style={{ fontFamily: fonts.medium }} className="text-xs text-foreground">
+                {t('cancel')}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() =>
+                void onSave(
+                  s ? new Date(s).toISOString() : null,
+                  d ? new Date(d).toISOString() : null,
+                )
+              }
+              className="rounded-md bg-cyan px-3 py-1"
+            >
+              <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-background">
+                {t('add')}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -1271,6 +1869,8 @@ function CardDetailModal({
   listBoardTags,
   addTag,
   removeTag,
+  startTimer,
+  stopTimer,
   onLocalPatch,
   t,
 }: {
@@ -1288,12 +1888,15 @@ function CardDetailModal({
     startAt?: string | null;
     dueAt?: string | null;
     priority?: string;
+    coverUrl?: string | null;
   }): Promise<void>;
   addAssignee(cardId: string, userId: string): Promise<void>;
   removeAssignee(cardId: string, userId: string): Promise<void>;
   listBoardTags(): Promise<BoardTag[]>;
   addTag(cardId: string, tagId: string): Promise<void>;
   removeTag(cardId: string, tagId: string): Promise<void>;
+  startTimer(cardId: string): Promise<void>;
+  stopTimer(cardId: string): Promise<void>;
   onLocalPatch(cardId: string, mutate: (c: BoardCard) => BoardCard): void;
   t: ReturnType<typeof useTranslations>;
 }) {
@@ -1306,6 +1909,9 @@ function CardDetailModal({
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [boardTags, setBoardTags] = useState<BoardTag[]>([]);
+  // Mobile: which tab the card sidebar shows — 'detail' is the existing form,
+  // 'copilot' / 'comments' / 'activity' swap in the 3 reusable panels.
+  const [sidebarTab, setSidebarTab] = useState<CardSidebarTab>('detail');
 
   useEffect(() => {
     if (item) {
@@ -1316,6 +1922,10 @@ function CardDetailModal({
       setMoveOpen(false);
       setAssigneePickerOpen(false);
       setTagPickerOpen(false);
+      // Mobile: each newly-opened card starts on the Detail tab. Carrying
+      // the previous selection forward would surprise users opening a fresh
+      // card and seeing it stuck on someone else's chat.
+      setSidebarTab('detail');
     }
   }, [item]);
 
@@ -1361,22 +1971,22 @@ function CardDetailModal({
     if (Object.keys(patch).length > 0) await onPatch(patch);
   };
 
-  return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <View className="flex-1 bg-background/80">
-        <Pressable onPress={onClose} style={{ flex: 1 }} />
-        <View className="rounded-t-2xl border-t border-border bg-card p-4 gap-3">
-          <View className="flex-row items-center justify-between">
-            <Text
-              style={{ fontFamily: fonts.semibold }}
-              className="text-[10px] uppercase tracking-widest text-muted-foreground"
-            >
-              {item.list.name}
-            </Text>
-            <Pressable onPress={onClose} hitSlop={8}>
-              <X size={16} color={colors.foreground} />
-            </Pressable>
-          </View>
+  // Mobile: the card detail sheet now hosts 4 tabs (Detail + 3 panels).
+  // We keep the existing detail-form markup intact as the `Detail` tab body,
+  // wrapped in a ScrollView so it scrolls inside the sheet's fixed height.
+  const detailBody = (
+    <ScrollView
+      contentContainerClassName="p-4 gap-3"
+      keyboardShouldPersistTaps="handled"
+    >
+      <View className="flex-row items-center justify-between">
+        <Text
+          style={{ fontFamily: fonts.semibold }}
+          className="text-[10px] uppercase tracking-widest text-muted-foreground"
+        >
+          {item.list.name}
+        </Text>
+      </View>
           <TextInput
             value={title}
             onChangeText={setTitle}
@@ -1422,6 +2032,37 @@ function CardDetailModal({
               />
             </View>
           </View>
+
+          {/* ── Cover image (web parity) ──────────────────────────── */}
+          <CardCoverSlot
+            cardId={item.card.id}
+            coverUrl={item.card.coverUrl ?? null}
+            isLocal={isLocal}
+            onChange={async (next) => {
+              onLocalPatch(item.card.id, (c) => ({ ...c, coverUrl: next }));
+              try {
+                await onPatch({ coverUrl: next });
+              } catch {
+                /* ignore */
+              }
+            }}
+            t={t}
+          />
+
+          {/* ── Card timer + watch toggle ─────────────────────────── */}
+          <View className="flex-row items-center gap-2">
+            <CardTimerButton
+              cardId={item.card.id}
+              startTimer={startTimer}
+              stopTimer={stopTimer}
+              t={t}
+            />
+            <CardWatchToggle cardId={item.card.id} t={t} />
+          </View>
+
+          {/* ── Inline checklist (web sub-brick port) ─────────────── */}
+          <CardChecklistInline cardId={item.card.id} t={t} />
+
           {/* ── Assignees ─────────────────────────────────────────── */}
           <View className="gap-1">
             <Text
@@ -1747,6 +2388,40 @@ function CardDetailModal({
               ))}
             </View>
           ) : null}
+    </ScrollView>
+  );
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View className="flex-1 bg-background/80">
+        <Pressable onPress={onClose} style={{ flex: 1 }} />
+        {/* Mobile: card detail sheet — 88% height bottom-sheet hosting the
+            4-tab Detail / Copilot / Comments / Activity layout. */}
+        <View
+          style={{ height: '88%' }}
+          className="rounded-t-2xl border-t border-border bg-card"
+        >
+          <View className="items-center pt-2 pb-1">
+            <View className="h-1 w-10 rounded-full bg-border" />
+          </View>
+          <View className="flex-row items-center justify-between border-b border-border/40 px-3 pb-2">
+            <Text
+              style={{ fontFamily: fonts.semibold }}
+              className="flex-1 text-sm text-foreground"
+              numberOfLines={1}
+            >
+              {item.card.title || item.list.name}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+              <X size={16} color={colors.foreground} />
+            </Pressable>
+          </View>
+          <CardSidebar
+            cardId={item.card.id}
+            activeTab={sidebarTab}
+            onChangeTab={setSidebarTab}
+            detailContent={detailBody}
+          />
         </View>
       </View>
     </Modal>
@@ -1836,6 +2511,461 @@ function ArchivedListsModal({
   );
 }
 
+// ─── Card cover slot ────────────────────────────────────────────────────────
+
+/**
+ * Cover image picker: tap to choose, tap "X" to clear. Cloud mode uploads to
+ * the backend (POST /uploads) then stores the returned URL; local mode keeps
+ * the picked URI verbatim — it's served straight from disk.
+ *
+ * Mobile: expo-image-picker requests permission lazily, so the first tap on
+ * a cold install pops the OS prompt.
+ */
+function CardCoverSlot({
+  cardId,
+  coverUrl,
+  isLocal,
+  onChange,
+  t,
+}: {
+  cardId: string;
+  coverUrl: string | null;
+  isLocal: boolean;
+  onChange(next: string | null): Promise<void>;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const pick = useCallback(async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) return;
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+      });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      const asset = res.assets[0];
+      if (isLocal) {
+        // Mobile: local boards point at the file URI directly — the .boards.json
+        // schemaVersion already serialises strings, so no extra plumbing.
+        await onChange(asset.uri);
+        return;
+      }
+      const uploaded = await uploadFile({
+        uri: asset.uri,
+        name: asset.fileName ?? `cover-${Date.now()}.jpg`,
+        type: asset.mimeType ?? 'image/jpeg',
+        ownerScopeType: 'card',
+        ownerScopeId: cardId,
+        usage: 'card-cover',
+      });
+      if (typeof uploaded.url === 'string') {
+        await onChange(uploaded.url);
+      }
+    } catch {
+      /* swallow — the user can retry from the same slot */
+    }
+  }, [cardId, isLocal, onChange]);
+
+  return (
+    <View className="gap-1">
+      <Text
+        style={{ fontFamily: fonts.semibold }}
+        className="text-[10px] uppercase tracking-widest text-muted-foreground"
+      >
+        {t('cover')}
+      </Text>
+      {coverUrl ? (
+        <View className="relative overflow-hidden rounded-md border border-border">
+          <Image
+            source={{ uri: coverUrl }}
+            style={{ width: '100%', height: 120 }}
+            resizeMode="cover"
+          />
+          <Pressable
+            onPress={() => void onChange(null)}
+            accessibilityLabel={t('clearCover')}
+            className="absolute right-2 top-2 rounded-full bg-background/80 p-1.5"
+          >
+            <Trash2 size={11} color={colors.destructive} />
+          </Pressable>
+        </View>
+      ) : (
+        <Pressable
+          onPress={() => void pick()}
+          accessibilityLabel={t('addCover')}
+          className="flex-row items-center justify-center gap-2 rounded-md border border-dashed border-border bg-background py-3"
+        >
+          <ImageIcon size={13} color={colors.cyan} />
+          <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-cyan">
+            {t('addCover')}
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+// ─── Card timer ─────────────────────────────────────────────────────────────
+
+/**
+ * Start / stop time tracking on a card. Backend gap (2026-06): the
+ * /cards/:id/timer/start|stop routes don't exist yet on cards.controller —
+ * the dual router in cloud mode will throw, the UI swallows. Local mode is a
+ * no-op so the buttons still render and look right.
+ */
+function CardTimerButton({
+  cardId,
+  startTimer,
+  stopTimer,
+  t,
+}: {
+  cardId: string;
+  startTimer(cardId: string): Promise<void>;
+  stopTimer(cardId: string): Promise<void>;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [running, setRunning] = useState(false);
+  const toggle = useCallback(async () => {
+    setRunning((v) => !v);
+    try {
+      if (running) await stopTimer(cardId);
+      else await startTimer(cardId);
+    } catch {
+      // Revert optimistic state.
+      setRunning((v) => !v);
+    }
+  }, [cardId, running, startTimer, stopTimer]);
+  return (
+    <Pressable
+      onPress={() => void toggle()}
+      accessibilityLabel={running ? t('stopTimer') : t('startTimer')}
+      className="flex-row items-center gap-1 rounded-md border border-border bg-secondary px-3 py-2"
+      style={running ? { borderColor: '#fb923c', backgroundColor: '#fb923c22' } : undefined}
+    >
+      {running ? (
+        <Square size={11} color="#fb923c" />
+      ) : (
+        <Play size={11} color={colors.foreground} />
+      )}
+      <Text
+        style={{ fontFamily: fonts.semibold }}
+        className={`text-xs ${running ? 'text-foreground' : 'text-foreground'}`}
+      >
+        {running ? t('stopTimer') : t('startTimer')}
+      </Text>
+    </Pressable>
+  );
+}
+
+// ─── Card watch toggle ──────────────────────────────────────────────────────
+
+/**
+ * Watch / unwatch a card. The web exposes this as a subscription toggle for
+ * notifications; mobile keeps it as local state for now (no backend wiring —
+ * the Pulse `card.subscribe` event isn't surfaced through Vault yet).
+ */
+function CardWatchToggle({
+  cardId: _cardId,
+  t,
+}: {
+  cardId: string;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [watching, setWatching] = useState(false);
+  return (
+    <Pressable
+      onPress={() => setWatching((v) => !v)}
+      accessibilityLabel={watching ? t('unwatch') : t('watch')}
+      className="flex-row items-center gap-1 rounded-md border border-border bg-secondary px-3 py-2"
+      style={watching ? { borderColor: colors.cyan, backgroundColor: `${colors.cyan}22` } : undefined}
+    >
+      {watching ? (
+        <Eye size={11} color={colors.cyan} />
+      ) : (
+        <EyeOff size={11} color={colors.foreground} />
+      )}
+      <Text
+        style={{ fontFamily: fonts.semibold }}
+        className={`text-xs ${watching ? 'text-cyan' : 'text-foreground'}`}
+      >
+        {watching ? t('unwatch') : t('watch')}
+      </Text>
+    </Pressable>
+  );
+}
+
+// ─── Card checklist (inline brick) ──────────────────────────────────────────
+
+/**
+ * Renders the UnifiedChecklistBrick inline in the card detail. State is kept
+ * locally — wiring to the card brick endpoint (`POST /cards/:id/bricks`) is
+ * a follow-up; this exists so users can sketch a checklist immediately and
+ * we can persist via the brick endpoint once the BrickList wiring lands.
+ * // TODO: Persist via POST /cards/:cardId/bricks — backend route exists.
+ */
+function CardChecklistInline({
+  cardId: _cardId,
+  t,
+}: {
+  cardId: string;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [items, setItems] = useState<{ id: string; label: string; checked: boolean }[]>([]);
+  if (items.length === 0) {
+    return (
+      <Pressable
+        onPress={() =>
+          setItems([
+            { id: `chk_${Date.now()}`, label: '', checked: false },
+          ])
+        }
+        accessibilityLabel={t('addChecklist')}
+        className="flex-row items-center gap-1 rounded-md border border-dashed border-border bg-background px-3 py-2"
+      >
+        <ListChecks size={11} color={colors.cyan} />
+        <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-cyan">
+          {t('addChecklist')}
+        </Text>
+      </Pressable>
+    );
+  }
+  return (
+    <View className="rounded-md border border-border bg-background p-2">
+      <UnifiedChecklistBrick id="card-inline" items={items} onUpdate={setItems} />
+    </View>
+  );
+}
+
+// ─── Filters sheet ──────────────────────────────────────────────────────────
+
+/**
+ * Bottom-sheet for filtering cards by tag / priority / due-soon. Web parity
+ * for the top FilterButton on the kanban toolbar.
+ *
+ * Mobile: tag list comes from `listBoardTags()` (cloud or local). Assignee
+ * filter is omitted in local mode because there's no team list to enumerate.
+ */
+function FiltersSheet({
+  open,
+  onClose,
+  filters,
+  setFilters,
+  teamId,
+  isLocal,
+  listBoardTags,
+  t,
+}: {
+  open: boolean;
+  onClose(): void;
+  filters: CardFilters;
+  setFilters(next: CardFilters): void;
+  teamId: string | null;
+  isLocal: boolean;
+  listBoardTags(): Promise<BoardTag[]>;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [tags, setTags] = useState<BoardTag[]>([]);
+  const [members, setMembers] = useState<TeamMember[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    listBoardTags()
+      .then((next) => {
+        if (!cancelled) setTags(next);
+      })
+      .catch(() => undefined);
+    if (!isLocal && teamId) {
+      listTeamMembers(teamId)
+        .then((m) => {
+          if (!cancelled) setMembers(m);
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isLocal, teamId, listBoardTags]);
+
+  if (!open) return null;
+  const togglePriority = (p: CardPriority) => {
+    const next = filters.priorities.includes(p)
+      ? filters.priorities.filter((x) => x !== p)
+      : [...filters.priorities, p];
+    setFilters({ ...filters, priorities: next });
+  };
+  const toggleTag = (id: string) => {
+    const next = filters.tagIds.includes(id)
+      ? filters.tagIds.filter((x) => x !== id)
+      : [...filters.tagIds, id];
+    setFilters({ ...filters, tagIds: next });
+  };
+  const toggleAssignee = (id: string) => {
+    const next = filters.assigneeIds.includes(id)
+      ? filters.assigneeIds.filter((x) => x !== id)
+      : [...filters.assigneeIds, id];
+    setFilters({ ...filters, assigneeIds: next });
+  };
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View className="flex-1 bg-background/80">
+        <Pressable onPress={onClose} style={{ flex: 1 }} />
+        <View className="rounded-t-2xl border-t border-border bg-card p-4 gap-3">
+          <View className="flex-row items-center justify-between">
+            <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-foreground">
+              {t('filters')}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={8}>
+              <X size={16} color={colors.foreground} />
+            </Pressable>
+          </View>
+
+          <ScrollView style={{ maxHeight: 480 }} contentContainerClassName="gap-3">
+            <View className="gap-1">
+              <Text
+                style={{ fontFamily: fonts.semibold }}
+                className="text-[10px] uppercase tracking-widest text-muted-foreground"
+              >
+                {t('priorityLabel')}
+              </Text>
+              <View className="flex-row gap-1">
+                {(['low', 'medium', 'high', 'urgent'] as const).map((p) => {
+                  const on = filters.priorities.includes(p);
+                  return (
+                    <Pressable
+                      key={p}
+                      onPress={() => togglePriority(p)}
+                      className="flex-1 rounded-md border px-2 py-1.5"
+                      style={{
+                        backgroundColor: on ? PRIORITY_COLORS[p] : 'transparent',
+                        borderColor: on ? PRIORITY_COLORS[p] : colors.border,
+                      }}
+                    >
+                      <Text
+                        style={{ fontFamily: fonts.semibold }}
+                        className={`text-center text-[10px] ${on ? 'text-background' : 'text-foreground'}`}
+                      >
+                        {p === 'low'
+                          ? t('priorityLow')
+                          : p === 'medium'
+                            ? t('priorityMed')
+                            : p === 'high'
+                              ? t('priorityHigh')
+                              : t('priorityUrgent')}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            {tags.length > 0 ? (
+              <View className="gap-1">
+                <Text
+                  style={{ fontFamily: fonts.semibold }}
+                  className="text-[10px] uppercase tracking-widest text-muted-foreground"
+                >
+                  {t('tagsLabel')}
+                </Text>
+                <View className="flex-row flex-wrap gap-1">
+                  {tags.map((tag) => {
+                    const on = filters.tagIds.includes(tag.id);
+                    return (
+                      <Pressable
+                        key={tag.id}
+                        onPress={() => toggleTag(tag.id)}
+                        className="flex-row items-center gap-1 rounded-full px-2 py-1"
+                        style={{
+                          backgroundColor: on
+                            ? tag.color ?? colors.cyan
+                            : `${tag.color ?? colors.mutedForeground}22`,
+                          borderWidth: 1,
+                          borderColor: tag.color ?? colors.mutedForeground,
+                        }}
+                      >
+                        <Text
+                          style={{ fontFamily: fonts.semibold }}
+                          className={`text-[10px] ${on ? 'text-background' : 'text-foreground'}`}
+                        >
+                          {tag.name}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+
+            {!isLocal && members.length > 0 ? (
+              <View className="gap-1">
+                <Text
+                  style={{ fontFamily: fonts.semibold }}
+                  className="text-[10px] uppercase tracking-widest text-muted-foreground"
+                >
+                  {t('assigneesLabel')}
+                </Text>
+                <View className="flex-row flex-wrap gap-1">
+                  {members.map((m) => {
+                    const on = filters.assigneeIds.includes(m.id);
+                    return (
+                      <Pressable
+                        key={m.id}
+                        onPress={() => toggleAssignee(m.id)}
+                        className={`rounded-full px-3 py-1 ${on ? 'bg-cyan' : 'bg-secondary'}`}
+                      >
+                        <Text
+                          style={{ fontFamily: fonts.semibold }}
+                          className={`text-[10px] ${on ? 'text-background' : 'text-foreground'}`}
+                        >
+                          {m.displayName ?? m.name ?? m.email ?? m.id}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+
+            <Pressable
+              onPress={() =>
+                setFilters({ ...filters, dueSoon: !filters.dueSoon })
+              }
+              className="flex-row items-center gap-2 rounded-md border border-border bg-background px-3 py-2"
+              style={
+                filters.dueSoon
+                  ? { borderColor: colors.cyan, backgroundColor: `${colors.cyan}22` }
+                  : undefined
+              }
+            >
+              <TimerIcon size={11} color={filters.dueSoon ? colors.cyan : colors.foreground} />
+              <Text
+                style={{ fontFamily: fonts.semibold }}
+                className={`text-xs ${filters.dueSoon ? 'text-cyan' : 'text-foreground'}`}
+              >
+                {t('dueSoon')}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() =>
+                setFilters({ assigneeIds: [], tagIds: [], priorities: [], dueSoon: false })
+              }
+              className="rounded-md border border-border bg-secondary px-3 py-2"
+            >
+              <Text
+                style={{ fontFamily: fonts.semibold }}
+                className="text-center text-xs text-foreground"
+              >
+                {t('clearFilters')}
+              </Text>
+            </Pressable>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function parseDate(iso: string | null | undefined): number | null {
@@ -1853,7 +2983,9 @@ function startOfWeek(d: Date): Date {
 }
 
 function ganttLabel(start: Date, endExclusive: Date, mode: GanttMode): string {
-  if (mode === 'day') return start.toLocaleDateString();
+  if (mode === 'day' || mode === 'hour') return start.toLocaleDateString();
+  // Use full-day granularity for the end label since the gantt range is
+  // exclusive of the last unit boundary.
   const lastDay = new Date(endExclusive.getTime() - DAY_MS);
   return `${start.toLocaleDateString()} — ${lastDay.toLocaleDateString()}`;
 }

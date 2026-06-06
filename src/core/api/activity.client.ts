@@ -33,3 +33,18 @@ export async function listTeamActivity(teamId: string): Promise<ActivityLogEntry
   const { data } = await api.get<ActivityLogEntry[]>(`/activity/team/${teamId}`);
   return data ?? [];
 }
+
+/** Activity feed scoped to a single card — mirrors the web's getCardActivity.
+ *  Used by the CardSidebar activity tab so users see exactly what changed
+ *  on the card (status moves, assignee + tag adds, comments, etc.). */
+export async function listCardActivity(cardId: string): Promise<ActivityLogEntry[]> {
+  const { data } = await api.get<ActivityLogEntry[]>(`/activity/card/${cardId}`);
+  return data ?? [];
+}
+
+/** Activity feed scoped to a board — handy when the card-level feed is empty
+ *  but the user wants context from the surrounding board. */
+export async function listBoardActivity(boardId: string): Promise<ActivityLogEntry[]> {
+  const { data } = await api.get<ActivityLogEntry[]>(`/activity/board/${boardId}`);
+  return data ?? [];
+}

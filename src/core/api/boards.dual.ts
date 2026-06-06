@@ -58,6 +58,14 @@ export interface BoardsApi {
   listBoardTags(boardId: string): Promise<BoardTag[]>;
   addCardTag(cardId: string, tagId: string): Promise<void>;
   removeCardTag(cardId: string, tagId: string): Promise<void>;
+  /** Reorder lists within a board (web parity). Local: persists positions; cloud: best-effort. */
+  reorderLists(boardId: string, orderedListIds: string[]): Promise<void>;
+  /** Set per-list tint color. */
+  setListColor(boardId: string, listId: string, color: string | null): Promise<void>;
+  /** Start tracking time on a card (backend may not be wired yet — see boards.client). */
+  startCardTimer(cardId: string): Promise<void>;
+  /** Stop tracking time. */
+  stopCardTimer(cardId: string): Promise<void>;
 }
 
 export function useBoardsApi(cloudTeamId?: string | null): BoardsApi {
@@ -86,6 +94,17 @@ export function useBoardsApi(cloudTeamId?: string | null): BoardsApi {
         listBoardTags: (boardId) => local.listLocalBoardTags(boardId),
         addCardTag: (cardId, tagId) => local.addLocalCardTag(cardId, tagId),
         removeCardTag: (cardId, tagId) => local.removeLocalCardTag(cardId, tagId),
+        reorderLists: (boardId, ids) => local.reorderLocalLists(boardId, ids),
+        setListColor: (boardId, listId, color) =>
+          local.setLocalListColor(boardId, listId, color),
+        // Mobile: local mode has no real timer backend — these are no-ops so
+        // the UI doesn't have to branch. The buttons still render.
+        startCardTimer: async () => {
+          /* local: no timer persistence yet */
+        },
+        stopCardTimer: async () => {
+          /* local: no timer persistence yet */
+        },
       };
     }
     const workspaceId = cloudTeamId ?? null;
@@ -114,6 +133,11 @@ export function useBoardsApi(cloudTeamId?: string | null): BoardsApi {
       listBoardTags: (boardId) => cloud.listBoardTags(boardId),
       addCardTag: (cardId, tagId) => cloud.addCardTag(cardId, tagId),
       removeCardTag: (cardId, tagId) => cloud.removeCardTag(cardId, tagId),
+      reorderLists: (boardId, ids) => cloud.reorderLists(boardId, ids),
+      setListColor: (boardId, listId, color) =>
+        cloud.updateBoardListColor(boardId, listId, color),
+      startCardTimer: (cardId) => cloud.startCardTimer(cardId),
+      stopCardTimer: (cardId) => cloud.stopCardTimer(cardId),
     };
   }, [localWs.mode, localWs.active?.id, cloudTeamId]);
 }

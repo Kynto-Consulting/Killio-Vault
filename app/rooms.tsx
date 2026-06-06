@@ -85,6 +85,8 @@ export default function RoomsScreen() {
         <Pressable
           onPress={() => setDmPickerOpen(true)}
           className="h-9 flex-row items-center gap-1 rounded-md bg-primary px-3"
+          accessibilityRole="button"
+          accessibilityLabel={t('newDm')}
         >
           <Users size={13} color={colors.primaryForeground ?? '#171717'} />
           <Text
@@ -120,6 +122,8 @@ export default function RoomsScreen() {
                 })
               }
               className="flex-row items-center gap-3 rounded-xl border border-border bg-card p-3"
+              accessibilityRole="button"
+              accessibilityLabel={item.name}
             >
               <View className="h-9 w-9 items-center justify-center rounded-md bg-cyan/10">
                 <Icon size={14} color={colors.cyan} />

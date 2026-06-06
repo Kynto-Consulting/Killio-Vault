@@ -50,6 +50,8 @@ interface LocalCard {
   position: number;
   assignees: LocalAssignee[];
   tags: { id: string; name: string; color?: string; tagKind?: string }[];
+  coverUrl?: string | null;
+  parentCardId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -60,6 +62,8 @@ interface LocalList {
   name: string;
   position: number;
   archivedAt?: string | null;
+  /** Per-list tint colour (hex). Mirrors web `themeCustom.listColors[id]`. */
+  color?: string | null;
   createdAt: string;
 }
 
@@ -253,6 +257,8 @@ function toBoardCard(c: LocalCard): BoardCard {
     position: c.position,
     assignees: c.assignees ?? [],
     tags: c.tags ?? [],
+    coverUrl: c.coverUrl ?? null,
+    parentCardId: c.parentCardId ?? null,
     listId: c.listId,
   };
 }
@@ -263,6 +269,7 @@ function toBoardList(l: LocalList, cards: LocalCard[]): BoardList {
     name: l.name,
     position: l.position,
     archivedAt: l.archivedAt ?? null,
+    color: l.color ?? null,
     cards: cards
       .filter((c) => c.listId === l.id)
       .sort((a, b) => a.position - b.position)
@@ -434,6 +441,8 @@ export async function updateLocalCard(
     list_id?: string;
     listId?: string;
     position?: number;
+    coverUrl?: string | null;
+    parentCardId?: string | null;
   },
 ): Promise<BoardCard> {
   const wsId = await resolveWorkspaceForCard(cardId);
@@ -454,6 +463,12 @@ export async function updateLocalCard(
     priority: patch.priority ?? existing.priority,
     listId: targetListId ?? existing.listId,
     position: patch.position ?? existing.position,
+    coverUrl:
+      patch.coverUrl !== undefined ? patch.coverUrl : existing.coverUrl,
+    parentCardId:
+      patch.parentCardId !== undefined
+        ? patch.parentCardId
+        : existing.parentCardId,
     updatedAt: new Date().toISOString(),
   };
   const cards = [...file.cards];
@@ -587,6 +602,53 @@ export async function removeLocalCardTag(cardId: string, tagId: string): Promise
             updatedAt: new Date().toISOString(),
           }
         : c,
+    ),
+  };
+  await writeStore(wsId, next);
+}
+
+// ─── List reorder + color (web parity) ──────────────────────────────────────
+
+/**
+ * Reorder lists within a single local board. Positions are reassigned to the
+ * index in `orderedListIds`; any list belonging to the board but not present
+ * in the array keeps its existing position bumped past the explicit ones.
+ */
+export async function reorderLocalLists(
+  boardId: string,
+  orderedListIds: string[],
+): Promise<void> {
+  const wsId = await resolveWorkspaceForBoard(boardId);
+  if (!wsId) throw new Error(`Local board not found: ${boardId}`);
+  const file = await readStore(wsId);
+  const positionByList = new Map(orderedListIds.map((id, i) => [id, i] as const));
+  const tail = orderedListIds.length;
+  let nextTail = tail;
+  const next: BoardsFile = {
+    ...file,
+    lists: file.lists.map((l) => {
+      if (l.boardId !== boardId) return l;
+      const pos = positionByList.get(l.id);
+      if (pos !== undefined) return { ...l, position: pos };
+      return { ...l, position: nextTail++ };
+    }),
+  };
+  await writeStore(wsId, next);
+}
+
+/** Set a per-list tint color in the local store. Null clears it. */
+export async function setLocalListColor(
+  boardId: string,
+  listId: string,
+  color: string | null,
+): Promise<void> {
+  const wsId = await resolveWorkspaceForBoard(boardId);
+  if (!wsId) throw new Error(`Local board not found: ${boardId}`);
+  const file = await readStore(wsId);
+  const next: BoardsFile = {
+    ...file,
+    lists: file.lists.map((l) =>
+      l.id === listId && l.boardId === boardId ? { ...l, color } : l,
     ),
   };
   await writeStore(wsId, next);
