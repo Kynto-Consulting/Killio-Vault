@@ -74,6 +74,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       integration: 'Acción de integración',
       computed: 'Calculó datos',
       attachmentRead: 'Leyó adjunto',
+      subAgent: 'Sub-agente',
       completeStep: 'Paso completado',
       // Vault-only
       ttsSearch: 'Buscar en diario "{{target}}"',
@@ -1214,6 +1215,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       integration: 'Integration action',
       computed: 'Computed data',
       attachmentRead: 'Read attachment',
+      subAgent: 'Sub-agent',
       completeStep: 'Step completed',
       ttsSearch: 'Search diary "{{target}}"',
       docSearchKeyword: 'Search docs "{{target}}"',

@@ -30,7 +30,7 @@ const TOOLCALL_RE = /<tool_call\b([^>]*?)(?:\/>|>([\s\S]*?)<\/tool_call>)/gi;
 const PRETHINK_RE = /<pre_think>([\s\S]*?)<\/pre_think>/gi;
 // Master splitter — any tag we render or strip, in document order.
 const MASTER_RE =
-  /<pre_think>[\s\S]*?<\/pre_think>|<(?:async_)?invoke\s+[^>]*?>[\s\S]*?<\/(?:async_)?invoke>|<tool_call\b[^>]*?(?:\/>|>[\s\S]*?<\/tool_call>)|<tool_status\s+[^>]*?\/?>|<tool_output\s+[^>]*?>[\s\S]*?<\/tool_output>|<\/?batch_(?:tool|invoke)>|<plan>[\s\S]*?<\/plan>|<complete_step\b[^>]*?\/?>|<asset\b[^>]*?(?:\/>|>[\s\S]*?<\/asset>)/gi;
+  /<pre_think>[\s\S]*?<\/pre_think>|<(?:async_)?invoke\s+[^>]*?>[\s\S]*?<\/(?:async_)?invoke>|<tool_call\b[^>]*?(?:\/>|>[\s\S]*?<\/tool_call>)|<tool_status\s+[^>]*?\/?>|<tool_output\s+[^>]*?>[\s\S]*?<\/tool_output>|<\/?batch_(?:tool|invoke)>|<plan>[\s\S]*?<\/plan>|<complete_step\b[^>]*?\/?>|<end_agent\b[^>]*?>[\s\S]*?<\/end_agent>|<asset\b[^>]*?(?:\/>|>[\s\S]*?<\/asset>)/gi;
 
 function unescapeHtml(s: string): string {
   return s
@@ -155,7 +155,9 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
   MASTER_RE.lastIndex = 0;
 
   const pushText = (txt: string) => {
-    const t = txt.trim();
+    // Strip any dangling/unclosed <end_agent> control token (the closed form is
+    // already consumed by MASTER_RE) so it never renders as raw text.
+    const t = txt.replace(/<end_agent\b[^>]*>[\s\S]*$/i, '').trim();
     if (t) blocks.push({ type: 'text', text: t });
   };
 

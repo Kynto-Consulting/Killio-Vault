@@ -114,6 +114,7 @@ export const TOOL_CATALOG: Record<string, ToolMeta> = {
   card_tag_add: { icon: 'tag', i18nKey: 'tagAttached' },
   // ─── Misc ─────────────────────────────────────────────────────────────────
   killio_import: { icon: 'download', i18nKey: 'killioImport' },
+  sub_agent: { icon: 'bot', i18nKey: 'subAgent' },
   chat_read_attachment: { icon: 'paperclip', i18nKey: 'attachmentRead' },
   data_manipulate: { icon: 'sigma', i18nKey: 'computed' },
 };

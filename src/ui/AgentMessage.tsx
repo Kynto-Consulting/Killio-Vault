@@ -38,6 +38,7 @@ import {
   Search,
   Send,
   Sigma,
+  Bot,
   Sparkles,
   SquareArrowOutUpRight,
   Tag,
@@ -99,6 +100,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   list: List,
   sigma: Sigma,
   paperclip: Paperclip,
+  bot: Bot,
 };
 
 function iconFor(name: string): LucideIcon {
