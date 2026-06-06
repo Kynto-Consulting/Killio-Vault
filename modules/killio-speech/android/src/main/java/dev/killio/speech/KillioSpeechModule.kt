@@ -73,21 +73,29 @@ class KillioSpeechModule : Module() {
     }
 
     AsyncFunction("stop") {
-      val ctx: Context = appContext.reactContext ?: return@AsyncFunction
-      // Clear the boot-resume flag so we don't auto-restart after the user
-      // explicitly stopped capture.
-      ctx.getSharedPreferences(BootReceiver.PREFS, Context.MODE_PRIVATE)
-        .edit()
-        .putBoolean(BootReceiver.KEY_ENABLED, false)
-        .apply()
-      ctx.stopService(Intent(ctx, VaultSpeechService::class.java))
+      val ctx: Context? = appContext.reactContext
+      if (ctx != null) {
+        // Clear the boot-resume flag so we don't auto-restart after the user
+        // explicitly stopped capture.
+        ctx.getSharedPreferences(BootReceiver.PREFS, Context.MODE_PRIVATE)
+          .edit()
+          .putBoolean(BootReceiver.KEY_ENABLED, false)
+          .apply()
+        ctx.stopService(Intent(ctx, VaultSpeechService::class.java))
+      }
+      // Explicit Unit — stopService() returns Boolean and would otherwise make
+      // Kotlin infer a non-Unit lambda type, clashing with the no-context path.
+      Unit
     }
 
     // One-shot recognition for push-to-talk in the assistant. Resolves with the
     // recognized text (or '' if nothing heard); rejects on hard errors.
     AsyncFunction("recognizeOnce") { language: String, promise: Promise ->
-      val ctx: Context = appContext.reactContext
-        ?: return@AsyncFunction promise.reject("no_context", "No React context", null)
+      val ctx: Context? = appContext.reactContext
+      if (ctx == null) {
+        promise.reject("no_context", "No React context", null)
+        return@AsyncFunction
+      }
       Handler(Looper.getMainLooper()).post {
         if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
           promise.reject("unavailable", "Speech recognition not available", null)
@@ -138,6 +146,9 @@ class KillioSpeechModule : Module() {
           finish(null, "start_failed")
         }
       }
+      // Handler.post() returns Boolean; pin the lambda to Unit so it matches
+      // the early no-context return path.
+      Unit
     }
   }
 }

@@ -1,0 +1,26 @@
+-- Merging decision tree log ---
+manifest
+ADDED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:1:1-13:12
+INJECTED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:1:1-13:12
+	package
+		INJECTED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml
+	xmlns:android
+		ADDED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:1:11-69
+application
+ADDED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:7:3-12:17
+service#dev.killio.capture.VaultCaptureService
+ADDED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:8:5-11:52
+	android:exported
+		ADDED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:10:7-31
+	android:foregroundServiceType
+		ADDED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:11:7-49
+	android:name
+		ADDED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:9:7-60
+uses-sdk
+INJECTED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml
+INJECTED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml

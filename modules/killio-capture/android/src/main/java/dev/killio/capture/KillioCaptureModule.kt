@@ -56,8 +56,13 @@ class KillioCaptureModule : Module() {
     }
 
     AsyncFunction("stop") {
-      val ctx: Context = appContext.reactContext ?: return@AsyncFunction
-      ctx.stopService(Intent(ctx, VaultCaptureService::class.java))
+      val ctx: Context? = appContext.reactContext
+      if (ctx != null) {
+        ctx.stopService(Intent(ctx, VaultCaptureService::class.java))
+      }
+      // Explicit Unit so Kotlin doesn't infer the lambda's return type from
+      // stopService()'s Boolean (which conflicts with the early-return path).
+      Unit
     }
 
     /**
@@ -79,25 +84,34 @@ class KillioCaptureModule : Module() {
      * not kill the screen-off capture service. No-op if already exempt.
      */
     AsyncFunction("requestIgnoreBatteryOptimizations") {
-      val ctx: Context = appContext.reactContext ?: return@AsyncFunction
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return@AsyncFunction
-      val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-      if (pm.isIgnoringBatteryOptimizations(ctx.packageName)) return@AsyncFunction
-      val intent = Intent(
-        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-        Uri.parse("package:${ctx.packageName}"),
-      ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-      try {
-        ctx.startActivity(intent)
-      } catch (_: Exception) {
-        // Fall back to the generic battery-optimization settings list.
+      val ctx: Context? = appContext.reactContext
+      val pm = ctx?.getSystemService(Context.POWER_SERVICE) as? PowerManager
+      // Only act when we have a context, are on M+, and aren't already exempt.
+      // No bare early-returns — those make Kotlin infer a non-Unit lambda type
+      // from the trailing expression and the build fails.
+      if (
+        ctx != null &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+        pm != null &&
+        !pm.isIgnoringBatteryOptimizations(ctx.packageName)
+      ) {
+        val intent = Intent(
+          Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+          Uri.parse("package:${ctx.packageName}"),
+        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         try {
-          ctx.startActivity(
-            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-          )
-        } catch (_: Exception) {}
+          ctx.startActivity(intent)
+        } catch (_: Exception) {
+          // Fall back to the generic battery-optimization settings list.
+          try {
+            ctx.startActivity(
+              Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+          } catch (_: Exception) {}
+        }
       }
+      Unit
     }
   }
 }

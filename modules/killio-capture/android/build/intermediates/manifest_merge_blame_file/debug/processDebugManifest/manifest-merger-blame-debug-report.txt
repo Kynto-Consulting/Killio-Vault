@@ -1,0 +1,23 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="dev.killio.capture" >
+4
+5    <uses-sdk android:minSdkVersion="24" />
+6    <!--
+7    The microphone-typed foreground service. Permissions themselves are declared
+8    on the app manifest by the withVaultCapture config plugin so they merge into
+9    the final APK.
+10    -->
+11    <application>
+11-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:7:3-12:17
+12        <service
+12-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:8:5-11:52
+13            android:name="dev.killio.capture.VaultCaptureService"
+13-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:9:7-60
+14            android:exported="false"
+14-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:10:7-31
+15            android:foregroundServiceType="microphone" />
+15-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-capture\android\src\main\AndroidManifest.xml:11:7-49
+16    </application>
+17
+18</manifest>

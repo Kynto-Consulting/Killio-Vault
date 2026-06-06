@@ -1,0 +1,52 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="dev.killio.speech" >
+4
+5    <uses-sdk android:minSdkVersion="24" />
+6    <!-- Visibility of the on-device speech recognizer (Android 11+ package filtering). -->
+7    <queries>
+7-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:3:3-7:13
+8        <intent>
+8-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:4:5-6:14
+9            <action android:name="android.speech.RecognitionService" />
+9-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:5:7-66
+9-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:5:15-63
+10        </intent>
+11    </queries>
+12
+13    <application>
+13-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:9:3-26:17
+14        <service
+14-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:10:5-13:52
+15            android:name="dev.killio.speech.VaultSpeechService"
+15-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:11:7-58
+16            android:exported="false"
+16-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:12:7-31
+17            android:foregroundServiceType="microphone" />
+17-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:13:7-49
+18
+19        <!--
+20         Re-launch capture after a reboot (RECEIVE_BOOT_COMPLETED). Without this
+21         receiver the declared boot permission does nothing.
+22        -->
+23        <receiver
+23-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:17:5-25:16
+24            android:name="dev.killio.speech.BootReceiver"
+24-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:18:7-52
+25            android:enabled="true"
+25-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:19:7-29
+26            android:exported="true" >
+26-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:20:7-30
+27            <intent-filter>
+27-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:21:7-24:23
+28                <action android:name="android.intent.action.BOOT_COMPLETED" />
+28-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:22:9-71
+28-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:22:17-68
+29                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+29-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:23:9-74
+29-->D:\Github\Kynto\Killio\Killio-Vault\modules\killio-speech\android\src\main\AndroidManifest.xml:23:17-71
+30            </intent-filter>
+31        </receiver>
+32    </application>
+33
+34</manifest>
