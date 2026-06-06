@@ -18,7 +18,16 @@ export interface Room {
 export interface RoomMessage {
   id: string;
   roomId: string;
-  userId: string;
+  /**
+   * Author user id. NULL for AI/bot messages (kind 'ai'): the backend stores
+   * `userId: null` for the AI Copilot author to avoid FK violations, so any
+   * render logic must treat a missing userId as "not me / bot side".
+   */
+  userId: string | null;
+  /** Message kind. 'ai' = AI Copilot reply, otherwise a normal user message. */
+  type?: 'text' | 'ai' | string;
+  /** Backend author block. For kind 'ai' this is { displayName: 'AI Copilot' }. */
+  user?: { displayName?: string; email?: string; avatarUrl?: string | null };
   content: string;
   createdAt: string;
   editedAt?: string | null;

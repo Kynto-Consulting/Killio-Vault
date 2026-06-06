@@ -108,6 +108,14 @@ export class CaptureController {
     const speechOk = Speech.isAvailable() && Speech.isRecognitionAvailable();
     const nativeOk = Native.isAvailable();
 
+    // First-start Doze exemption: if a native capture path exists but the app
+    // isn't battery-optimization-exempt, prompt the system dialog once. Without
+    // this exemption Android can suspend the foreground service with the screen
+    // off and 24/7 capture silently dies. Fire-and-forget — never blocks start.
+    if ((speechOk || nativeOk) && !Native.isIgnoringBatteryOptimizations()) {
+      void Native.requestIgnoreBatteryOptimizations();
+    }
+
     if (speechOk) {
       this.transcriptSub = Speech.onTranscript((e) => this.handleTranscript(e));
       this.errSub = Speech.onError(() => this.setStatus('error'));

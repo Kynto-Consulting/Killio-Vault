@@ -1159,6 +1159,13 @@ const MessageRow = memo(function MessageRow({
   const replyTo = message.metadata?.replyTo;
   const pinned = !!message.metadata?.pinned;
   const isRead = message.status === 'read';
+  // AI/bot messages arrive with userId = null and kind 'ai'. Resolve a safe
+  // author label (never .slice() a null userId) and render the AI Copilot name.
+  const isAi = message.type === 'ai' || message.userId == null;
+  const authorLabel =
+    message.authorName ??
+    message.user?.displayName ??
+    (isAi ? 'AI Copilot' : (message.userId ?? '').slice(0, 6));
 
   // Mobile: swipe-right to reply. We render a thin cyan reveal so users get
   // visual feedback while swiping; releasing past ~60px triggers the callback.
@@ -1192,10 +1199,10 @@ const MessageRow = memo(function MessageRow({
         <View className="flex-row items-center justify-between">
           <Text
             style={{ fontFamily: fonts.semibold }}
-            className="text-[11px] text-foreground"
+            className={`text-[11px] ${isAi ? 'text-cyan' : 'text-foreground'}`}
             numberOfLines={1}
           >
-            {message.authorName ?? message.userId.slice(0, 6)}
+            {isAi ? '🤖 ' : ''}{authorLabel}
             {pinned ? '  📌' : ''}
           </Text>
           <Text className="text-[9px] text-muted-foreground">

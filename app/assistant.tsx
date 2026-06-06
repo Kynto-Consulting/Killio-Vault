@@ -1,4 +1,35 @@
-﻿import { useEffect, useRef, useState } from 'react';
+﻿/*
+ * ── Assistant → rooms persistence: end-to-end flow ──────────────────────────
+ *
+ * One Vault assistant conversation = ONE room, reused for every turn. The bot
+ * reply is stored as an AI message (kind 'ai', userId null), not as the user's
+ * own message.
+ *
+ *  1. User sends `send()` → runTurn(message, { userTurn: true }).
+ *  2. streamAgentChat posts /agent/chat/stream with conversationId =
+ *     convId.current (undefined on the very first turn). The backend agent loop
+ *     resolves/creates the conversation and returns its id in the `done` event.
+ *  3. onDone sets convId.current = cid (STABLE id, reused for every later turn).
+ *  4. Mirror to rooms: logConversation({ conversationId: cid, userText,
+ *     assistantText, title }) → POST /vault/conversation/log →
+ *     VaultService.logConversationTurn:
+ *       a. findRoomByEntity('vault_conversation', cid) — looks up the room by
+ *          conversation id. Created as kind 'thread' so the lookup (which
+ *          filters kind='thread') matches on every subsequent turn → exactly
+ *          ONE room per conversation (was a NEW room per message when it was
+ *          created as 'channel' and never re-found).
+ *       b. userText  → rooms.sendMessage   (kind 'text', userId = me)  → right side.
+ *       c. assistantText → rooms.sendAiMessage (kind 'ai', userId null,
+ *          author 'AI Copilot') → left / bot side (was sendMessage with my id,
+ *          so the bot reply showed as mine).
+ *  5. Render: app/rooms/[id].tsx — isOwn = (userId === currentUserId); an AI
+ *     message has userId null so isOwn is false and isAi is true → bot styling,
+ *     "🤖 AI Copilot" author. Plain text messages keep the user side.
+ *  6. Reload / resume: getConversationMessages(cid) repopulates this screen;
+ *     opening the linked room calls findRoomByEntity → same single room, full
+ *     history (alternating user + AI Copilot messages).
+ */
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,

@@ -15,6 +15,11 @@ const PERMISSIONS = [
   'android.permission.POST_NOTIFICATIONS',
   'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
   'android.permission.RECEIVE_BOOT_COMPLETED',
+  // REQUIRED for screen-off / Doze: a PARTIAL_WAKE_LOCK keeps the CPU running
+  // so AudioRecord / SpeechRecognizer keep producing frames while the display
+  // is off. Without this the capture services are suspended within seconds of
+  // the screen turning off and 24/7 capture silently dies.
+  'android.permission.WAKE_LOCK',
   // open_app needs to resolve other apps' launch intents.
   'android.permission.QUERY_ALL_PACKAGES',
   // Device convenience integrations.
