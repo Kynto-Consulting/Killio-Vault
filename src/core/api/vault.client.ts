@@ -57,6 +57,8 @@ export interface VaultEntitlements {
     screenCapture: boolean;
     localAgents: number | null;
     wakeWord: boolean;
+    /** Custom (Cartesia) neural voice for agents. Pro+ only. */
+    customVoice?: boolean;
   };
 }
 

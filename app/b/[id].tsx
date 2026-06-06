@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Component,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -34,6 +43,7 @@ import {
   Eye,
   EyeOff,
   Filter as FilterIcon,
+  Flag,
   Image as ImageIcon,
   Kanban as KanbanIcon,
   ListChecks,
@@ -41,9 +51,11 @@ import {
   Play,
   Plus,
   Square,
+  Tag as TagIcon,
   ArrowUpDown,
   Timer as TimerIcon,
   Trash2,
+  Users,
   X,
 } from 'lucide-react-native';
 
@@ -109,6 +121,80 @@ const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, 
 const DUE_SOON_MS = 3 * DAY_MS;
 
 /**
+ * Lightweight error boundary so a render-time throw inside the board body
+ * shows a retry affordance instead of unmounting to a blank screen (which in
+ * a release build looks like the navigation "did nothing"). `resetKey` lets a
+ * parent force a remount of the children after the user taps Retry — we bump
+ * it via a small wrapper state below.
+ */
+class BoardErrorBoundary extends Component<
+  { children: ReactNode; onRetry: () => void; retryLabel: string; message: string },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+  componentDidCatch(error: unknown) {
+    // Surface in dev / device logs; release builds otherwise swallow this.
+    console.error('[BoardDetailScreen] render error:', error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Screen>
+          <View className="flex-1 items-center justify-center gap-3 px-6">
+            <Body muted>{this.props.message}</Body>
+            <Pressable
+              onPress={() => {
+                this.setState({ hasError: false });
+                this.props.onRetry();
+              }}
+              className="rounded-md bg-cyan px-4 py-2"
+            >
+              <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-background">
+                {this.props.retryLabel}
+              </Text>
+            </Pressable>
+          </View>
+        </Screen>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/**
+ * Route entry for `/b/[id]`. Wraps the real screen body in an error boundary
+ * so a hook/gesture/render throw degrades to a retry button rather than a
+ * blank navigation.
+ *
+ * Mount path (first paint, before `board` loads):
+ *   1. params parse → boardId = String(params.id ?? '')  (empty string if missing — never throws)
+ *   2. useBoardsApi(activeTeam?.id ?? null) → memoised, never throws on construction
+ *   3. board === null, loading === true  →  early-return ActivityIndicator
+ *   4. useRealtimeChannel(... | null)  →  short-circuits in local mode / empty id
+ *   5. load() runs in an effect; getBoard errors are caught → board stays null,
+ *      loading flips false → main render runs with board=null (lists default to [])
+ * Nothing dereferences board/lists/cards without a `?.`/`?? []` guard, so the
+ * first paint is crash-safe.
+ */
+export default function BoardDetailScreen() {
+  const t = useTranslations('board');
+  const [boundaryKey, setBoundaryKey] = useState(0);
+  return (
+    <BoardErrorBoundary
+      key={boundaryKey}
+      onRetry={() => setBoundaryKey((k) => k + 1)}
+      retryLabel={t('retry')}
+      message={t('loadError')}
+    >
+      <BoardDetailScreenInner />
+    </BoardErrorBoundary>
+  );
+}
+
+/**
  * Full kanban + gantt board view, 1:1 mobile port of the web /b/[…] page.
  * The view toggle in the header switches between the kanban list-of-lists
  * (horizontal scroll, list chips selector, add card inline) and the gantt
@@ -116,7 +202,7 @@ const DUE_SOON_MS = 3 * DAY_MS;
  * and dueAt). Real-time card/list updates arrive over the Pulse
  * `board:<id>` channel.
  */
-export default function BoardDetailScreen() {
+function BoardDetailScreenInner() {
   const router = useRouter();
   const t = useTranslations('board');
   const params = useLocalSearchParams<{ id: string; name?: string }>();
@@ -819,8 +905,14 @@ function KanbanView({
         ref={chipsScrollRef}
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerClassName="px-3 py-2 gap-2"
+        contentContainerClassName="px-3 py-2 gap-2 items-center"
         className="border-b border-border/40"
+        // Mobile: a horizontal ScrollView placed as a flex child of a column
+        // stretches to fill the column's height by default — that's what made
+        // the list-title header swallow ~70% of the screen and squash the
+        // cards FlatList. flexGrow:0 + flexShrink:0 pins it to its intrinsic
+        // (single-row chip) height so the FlatList below keeps the rest.
+        style={{ flexGrow: 0, flexShrink: 0 }}
         scrollEventThrottle={16}
         onScroll={(e) => {
           chipsScrollX.current = e.nativeEvent.contentOffset.x;
@@ -1911,9 +2003,16 @@ function CardDetailModal({
   const [summary, setSummary] = useState('');
   const [startAt, setStartAt] = useState('');
   const [dueAt, setDueAt] = useState('');
-  const [moveOpen, setMoveOpen] = useState(false);
-  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
-  const [tagPickerOpen, setTagPickerOpen] = useState(false);
+  // Mobile: the Detail tab used to stack EVERY property editor (assignees,
+  // tags, priority, dates, cover, move, archive) inline, all expanded at once,
+  // which was overwhelming. Web shows a compact card whose properties are
+  // BUTTONS that each open a focused popover. We mirror that: `propertySheet`
+  // tracks which single property editor is open as a focused bottom-sheet
+  // Modal (null = none). The Detail body itself only shows the inline title, a
+  // row of property buttons, compact value chips, and the description/checklist.
+  const [propertySheet, setPropertySheet] = useState<
+    'assignees' | 'tags' | 'priority' | 'dates' | 'cover' | 'move' | null
+  >(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [boardTags, setBoardTags] = useState<BoardTag[]>([]);
   // Mobile: which tab the card sidebar shows — 'detail' is the existing form,
@@ -1926,9 +2025,7 @@ function CardDetailModal({
       setSummary(item.card.summary ?? '');
       setStartAt(item.card.startAt ? item.card.startAt.slice(0, 10) : '');
       setDueAt(item.card.dueAt ? item.card.dueAt.slice(0, 10) : '');
-      setMoveOpen(false);
-      setAssigneePickerOpen(false);
-      setTagPickerOpen(false);
+      setPropertySheet(null);
       // Mobile: each newly-opened card starts on the Detail tab. Carrying
       // the previous selection forward would surprise users opening a fresh
       // card and seeing it stuck on someone else's chat.
@@ -1978,37 +2075,444 @@ function CardDetailModal({
     if (Object.keys(patch).length > 0) await onPatch(patch);
   };
 
-  // Mobile: the card detail sheet now hosts 4 tabs (Detail + 3 panels).
-  // We keep the existing detail-form markup intact as the `Detail` tab body,
-  // wrapped in a ScrollView so it scrolls inside the sheet's fixed height.
+  // ── Compact value summaries shown as chips in the Detail body ──────────
+  const currentPriority = (item.card.priority ?? item.card.urgency) as
+    | CardPriority
+    | undefined;
+  const cardAssignees = item.card.assignees ?? [];
+  const cardTags = item.card.tags ?? [];
+  const dueLabel = item.card.dueAt
+    ? new Date(item.card.dueAt).toLocaleDateString()
+    : null;
+
+  // Mobile: each property is now a BUTTON that opens a focused bottom-sheet
+  // (mirrors the web's button→popover pattern). This is the compact button
+  // row that lives under the title.
+  const propertyButtons: Array<{
+    key: NonNullable<typeof propertySheet>;
+    icon: typeof Users;
+    label: string;
+  }> = [
+    { key: 'assignees', icon: Users, label: t('assigneesLabel') },
+    { key: 'tags', icon: TagIcon, label: t('tagsLabel') },
+    { key: 'priority', icon: Flag, label: t('priorityLabel') },
+    { key: 'dates', icon: CalendarDays, label: t('dates') },
+    { key: 'cover', icon: ImageIcon, label: t('cover') },
+    { key: 'move', icon: ArrowRight, label: t('move') },
+  ];
+
+  // Mobile: the Detail tab is now COMPACT. Title (inline) + a row of property
+  // buttons + value chips at the top; the description + checklist form the
+  // scrollable body (that's the card's actual content). Every property editor
+  // lives behind its button in `propertySheet` (rendered as a Modal below).
   const detailBody = (
     <ScrollView
       contentContainerClassName="p-4 gap-3"
       keyboardShouldPersistTaps="handled"
     >
-      <View className="flex-row items-center justify-between">
+      <Text
+        style={{ fontFamily: fonts.semibold }}
+        className="text-[10px] uppercase tracking-widest text-muted-foreground"
+      >
+        {item.list.name}
+      </Text>
+
+      {/* Inline-editable title */}
+      <TextInput
+        value={title}
+        onChangeText={setTitle}
+        onBlur={commit}
+        style={{ fontFamily: fonts.bold, fontSize: 18, color: colors.foreground, padding: 0 }}
+      />
+
+      {/* Property buttons row (button → focused bottom-sheet) + Archive */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerClassName="gap-2 items-center"
+        style={{ flexGrow: 0 }}
+      >
+        {propertyButtons.map(({ key, icon: Icon, label }) => (
+          <Pressable
+            key={key}
+            onPress={() => setPropertySheet(key)}
+            className="flex-row items-center gap-1 rounded-md border border-border bg-secondary px-2.5 py-1.5"
+          >
+            <Icon size={12} color={colors.foreground} />
+            <Text style={{ fontFamily: fonts.semibold }} className="text-[11px] text-foreground">
+              {label}
+            </Text>
+          </Pressable>
+        ))}
+        <Pressable
+          onPress={() => void onArchive()}
+          className="flex-row items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5"
+        >
+          <Archive size={12} color={colors.destructive} />
+          <Text style={{ fontFamily: fonts.semibold }} className="text-[11px] text-destructive">
+            {t('archive')}
+          </Text>
+        </Pressable>
+      </ScrollView>
+
+      {/* Compact value chips — tap any to open its editor. Mirrors web's
+          inline metadata strip (priority dot, assignee avatars, tag pills,
+          due date) where each value doubles as the property trigger. */}
+      <View className="flex-row flex-wrap items-center gap-1.5">
+        {/* Priority */}
+        <Pressable
+          onPress={() => setPropertySheet('priority')}
+          className="flex-row items-center gap-1 rounded-full border border-border bg-background px-2 py-1"
+        >
+          <View
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              backgroundColor: currentPriority
+                ? PRIORITY_COLORS[currentPriority]
+                : colors.mutedForeground,
+            }}
+          />
+          <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-foreground">
+            {currentPriority
+              ? currentPriority === 'low'
+                ? t('priorityLow')
+                : currentPriority === 'medium'
+                  ? t('priorityMed')
+                  : currentPriority === 'high'
+                    ? t('priorityHigh')
+                    : t('priorityUrgent')
+              : t('priorityLabel')}
+          </Text>
+        </Pressable>
+
+        {/* Due date */}
+        {dueLabel ? (
+          <Pressable
+            onPress={() => setPropertySheet('dates')}
+            className="flex-row items-center gap-1 rounded-full border border-border bg-background px-2 py-1"
+          >
+            <CalendarDays size={10} color={colors.mutedForeground} />
+            <Text className="text-[10px] text-foreground">{dueLabel}</Text>
+          </Pressable>
+        ) : null}
+
+        {/* Assignee avatars */}
+        {cardAssignees.length > 0 ? (
+          <Pressable
+            onPress={() => setPropertySheet('assignees')}
+            className="flex-row items-center gap-1 rounded-full border border-border bg-background px-1.5 py-1"
+          >
+            {cardAssignees.slice(0, 3).map((a) => (
+              <View
+                key={a.id}
+                className="h-5 w-5 items-center justify-center rounded-full bg-cyan/20"
+              >
+                <Text style={{ fontFamily: fonts.semibold }} className="text-[8px] text-cyan">
+                  {(a.name ?? a.email ?? '?').charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            ))}
+            {cardAssignees.length > 3 ? (
+              <Text className="text-[10px] text-muted-foreground">+{cardAssignees.length - 3}</Text>
+            ) : null}
+          </Pressable>
+        ) : null}
+
+        {/* Tag pills */}
+        {cardTags.slice(0, 3).map((tag) => (
+          <Pressable
+            key={tag.id}
+            onPress={() => setPropertySheet('tags')}
+            className="rounded-full px-2 py-1"
+            style={{
+              backgroundColor: `${tag.color ?? colors.mutedForeground}22`,
+              borderWidth: 1,
+              borderColor: `${tag.color ?? colors.mutedForeground}55`,
+            }}
+          >
+            <Text
+              style={{ fontFamily: fonts.semibold, color: tag.color ?? colors.mutedForeground }}
+              className="text-[10px]"
+            >
+              {tag.name}
+            </Text>
+          </Pressable>
+        ))}
+        {cardTags.length > 3 ? (
+          <Pressable onPress={() => setPropertySheet('tags')} className="px-1 py-1">
+            <Text className="text-[10px] text-muted-foreground">+{cardTags.length - 3}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      {/* Cover preview (only when set) — tap opens the cover sheet. */}
+      {item.card.coverUrl ? (
+        <Pressable onPress={() => setPropertySheet('cover')} className="overflow-hidden rounded-lg">
+          <Image
+            source={{ uri: item.card.coverUrl }}
+            style={{ width: '100%', height: 120 }}
+            resizeMode="cover"
+          />
+        </Pressable>
+      ) : null}
+
+      {/* ── Card content body: description + timer + checklist ────────────
+          These stay inline because they ARE the card's content, not just
+          editable metadata. */}
+      <View className="gap-1">
         <Text
           style={{ fontFamily: fonts.semibold }}
           className="text-[10px] uppercase tracking-widest text-muted-foreground"
         >
-          {item.list.name}
+          {t('description')}
         </Text>
+        <TextInput
+          value={summary}
+          onChangeText={setSummary}
+          onBlur={commit}
+          placeholder={t('cardSummaryPlaceholder')}
+          placeholderTextColor={colors.mutedForeground}
+          multiline
+          style={{ fontFamily: fonts.regular, color: colors.foreground, padding: 0, minHeight: 60 }}
+        />
       </View>
-          <TextInput
-            value={title}
-            onChangeText={setTitle}
-            onBlur={commit}
-            style={{ fontFamily: fonts.bold, fontSize: 18, color: colors.foreground, padding: 0 }}
-          />
-          <TextInput
-            value={summary}
-            onChangeText={setSummary}
-            onBlur={commit}
-            placeholder={t('cardSummaryPlaceholder')}
-            placeholderTextColor={colors.mutedForeground}
-            multiline
-            style={{ fontFamily: fonts.regular, color: colors.foreground, padding: 0, minHeight: 60 }}
-          />
+
+      {/* ── Card timer + watch toggle ─────────────────────────── */}
+      <View className="flex-row items-center gap-2">
+        <CardTimerButton
+          cardId={item.card.id}
+          startTimer={startTimer}
+          stopTimer={stopTimer}
+          t={t}
+        />
+        <CardWatchToggle cardId={item.card.id} t={t} />
+      </View>
+
+      {/* ── Inline checklist (web sub-brick port) ─────────────── */}
+      <CardChecklistInline cardId={item.card.id} t={t} />
+    </ScrollView>
+  );
+
+  // ── Focused property editor bodies, keyed by `propertySheet`. Each renders
+  //    inside the shared CardPropertySheet bottom-sheet (web popover parity). ─
+  const renderPropertyEditor = () => {
+    switch (propertySheet) {
+      case 'assignees':
+        return (
+          <View className="gap-2">
+            <View className="flex-row flex-wrap items-center gap-1">
+              {cardAssignees.length === 0 ? (
+                <Text className="text-xs text-muted-foreground">{t('noAssignees')}</Text>
+              ) : (
+                cardAssignees.map((a) => (
+                  <Pressable
+                    key={a.id}
+                    onPress={async () => {
+                      const cardId = item.card.id;
+                      onLocalPatch(cardId, (c) => ({
+                        ...c,
+                        assignees: (c.assignees ?? []).filter((x) => x.id !== a.id),
+                      }));
+                      try {
+                        await removeAssignee(cardId, a.id);
+                      } catch {
+                        /* Pulse refresh will reconcile */
+                      }
+                    }}
+                    className="flex-row items-center gap-1 rounded-full bg-cyan/20 px-2 py-0.5"
+                  >
+                    <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-cyan">
+                      {a.name ?? a.email ?? a.id}
+                    </Text>
+                    <X size={8} color={colors.cyan} />
+                  </Pressable>
+                ))
+              )}
+            </View>
+            <View className="rounded-xl border border-border bg-background p-2 gap-1">
+              {teamMembers.length === 0 ? (
+                <Text className="px-2 py-1 text-xs text-muted-foreground">{t('noAssignees')}</Text>
+              ) : (
+                teamMembers.map((m) => {
+                  const already = cardAssignees.some((a) => a.id === m.id);
+                  return (
+                    <Pressable
+                      key={m.id}
+                      disabled={already}
+                      onPress={async () => {
+                        const cardId = item.card.id;
+                        onLocalPatch(cardId, (c) => ({
+                          ...c,
+                          assignees: [
+                            ...(c.assignees ?? []),
+                            {
+                              id: m.id,
+                              name: m.displayName ?? m.name,
+                              email: m.email,
+                              avatarUrl: m.avatarUrl ?? undefined,
+                            },
+                          ],
+                        }));
+                        try {
+                          await addAssignee(cardId, m.id);
+                        } catch {
+                          /* Pulse refresh will reconcile */
+                        }
+                      }}
+                      className={`rounded-md px-3 py-2 ${already ? 'bg-cyan/10' : ''}`}
+                    >
+                      <Text
+                        style={{ fontFamily: fonts.medium }}
+                        className={`text-sm ${already ? 'text-cyan' : 'text-foreground'}`}
+                      >
+                        {m.displayName ?? m.name ?? m.email ?? m.id}
+                      </Text>
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+          </View>
+        );
+      case 'tags':
+        return (
+          <View className="gap-2">
+            <View className="flex-row flex-wrap items-center gap-1">
+              {cardTags.length === 0 ? (
+                <Text className="text-xs text-muted-foreground">{t('noTags')}</Text>
+              ) : (
+                cardTags.map((tag) => (
+                  <Pressable
+                    key={tag.id}
+                    onPress={async () => {
+                      const cardId = item.card.id;
+                      onLocalPatch(cardId, (c) => ({
+                        ...c,
+                        tags: (c.tags ?? []).filter((x) => x.id !== tag.id),
+                      }));
+                      try {
+                        await removeTag(cardId, tag.id);
+                      } catch {
+                        /* Pulse refresh will reconcile */
+                      }
+                    }}
+                    className="flex-row items-center gap-1 rounded-full px-2 py-0.5"
+                    style={{
+                      backgroundColor: `${tag.color ?? colors.mutedForeground}22`,
+                      borderWidth: 1,
+                      borderColor: `${tag.color ?? colors.mutedForeground}55`,
+                    }}
+                  >
+                    <Text
+                      style={{ fontFamily: fonts.semibold, color: tag.color ?? colors.mutedForeground }}
+                      className="text-[10px]"
+                    >
+                      {tag.name}
+                    </Text>
+                    <X size={8} color={tag.color ?? colors.mutedForeground} />
+                  </Pressable>
+                ))
+              )}
+            </View>
+            <View className="rounded-xl border border-border bg-background p-2 gap-1">
+              {boardTags.length === 0 ? (
+                <Text className="px-2 py-1 text-xs text-muted-foreground">{t('noTags')}</Text>
+              ) : (
+                boardTags.map((tag) => {
+                  const already = cardTags.some((t2) => t2.id === tag.id);
+                  return (
+                    <Pressable
+                      key={tag.id}
+                      disabled={already}
+                      onPress={async () => {
+                        const cardId = item.card.id;
+                        onLocalPatch(cardId, (c) => ({
+                          ...c,
+                          tags: [
+                            ...(c.tags ?? []),
+                            { id: tag.id, name: tag.name, color: tag.color, tagKind: tag.tagKind },
+                          ],
+                        }));
+                        try {
+                          await addTag(cardId, tag.id);
+                        } catch {
+                          /* Pulse refresh will reconcile */
+                        }
+                      }}
+                      className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${already ? 'opacity-50' : ''}`}
+                    >
+                      <View
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: 4,
+                          backgroundColor: tag.color ?? colors.mutedForeground,
+                        }}
+                      />
+                      <Text style={{ fontFamily: fonts.medium }} className="text-sm text-foreground">
+                        {tag.name}
+                      </Text>
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+          </View>
+        );
+      case 'priority':
+        return (
+          <View className="flex-row gap-1">
+            {PRIORITY_VALUES.map((p) => {
+              const active = currentPriority === p;
+              const colorHex = PRIORITY_COLORS[p];
+              return (
+                <Pressable
+                  key={p}
+                  onPress={async () => {
+                    const cardId = item.card.id;
+                    onLocalPatch(cardId, (c) => ({ ...c, priority: p }));
+                    setPropertySheet(null);
+                    try {
+                      await onPatch({ priority: p });
+                    } catch {
+                      /* Pulse refresh will reconcile */
+                    }
+                  }}
+                  className="flex-1 flex-row items-center justify-center gap-1 rounded-md border px-2 py-2"
+                  style={{
+                    backgroundColor: active ? colorHex : 'transparent',
+                    borderColor: active ? colorHex : colors.border,
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: 3,
+                      backgroundColor: active ? '#0a0a0a' : colorHex,
+                    }}
+                  />
+                  <Text
+                    style={{ fontFamily: fonts.semibold }}
+                    className={`text-[10px] ${active ? 'text-background' : 'text-foreground'}`}
+                  >
+                    {p === 'low'
+                      ? t('priorityLow')
+                      : p === 'medium'
+                        ? t('priorityMed')
+                        : p === 'high'
+                          ? t('priorityHigh')
+                          : t('priorityUrgent')}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        );
+      case 'dates':
+        return (
           <View className="flex-row gap-2">
             <View className="flex-1">
               <Text className="text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -2039,8 +2543,9 @@ function CardDetailModal({
               />
             </View>
           </View>
-
-          {/* ── Cover image (web parity) ──────────────────────────── */}
+        );
+      case 'cover':
+        return (
           <CardCoverSlot
             cardId={item.card.id}
             coverUrl={item.card.coverUrl ?? null}
@@ -2055,348 +2560,48 @@ function CardDetailModal({
             }}
             t={t}
           />
-
-          {/* ── Card timer + watch toggle ─────────────────────────── */}
-          <View className="flex-row items-center gap-2">
-            <CardTimerButton
-              cardId={item.card.id}
-              startTimer={startTimer}
-              stopTimer={stopTimer}
-              t={t}
-            />
-            <CardWatchToggle cardId={item.card.id} t={t} />
-          </View>
-
-          {/* ── Inline checklist (web sub-brick port) ─────────────── */}
-          <CardChecklistInline cardId={item.card.id} t={t} />
-
-          {/* ── Assignees ─────────────────────────────────────────── */}
-          <View className="gap-1">
-            <Text
-              style={{ fontFamily: fonts.semibold }}
-              className="text-[10px] uppercase tracking-widest text-muted-foreground"
-            >
-              {t('assigneesLabel')}
-            </Text>
-            <View className="flex-row flex-wrap items-center gap-1">
-              {(item.card.assignees ?? []).length === 0 ? (
-                <Text className="text-xs text-muted-foreground">
-                  {t('noAssignees')}
-                </Text>
-              ) : (
-                (item.card.assignees ?? []).map((a) => (
-                  <Pressable
-                    key={a.id}
-                    onPress={async () => {
-                      const cardId = item.card.id;
-                      // Optimistic
-                      onLocalPatch(cardId, (c) => ({
-                        ...c,
-                        assignees: (c.assignees ?? []).filter((x) => x.id !== a.id),
-                      }));
-                      try {
-                        await removeAssignee(cardId, a.id);
-                      } catch {
-                        /* Pulse refresh will reconcile */
-                      }
-                    }}
-                    className="flex-row items-center gap-1 rounded-full bg-cyan/20 px-2 py-0.5"
-                  >
-                    <Text
-                      style={{ fontFamily: fonts.semibold }}
-                      className="text-[10px] text-cyan"
-                    >
-                      {a.name ?? a.email ?? a.id}
-                    </Text>
-                    <X size={8} color={colors.cyan} />
-                  </Pressable>
-                ))
-              )}
+        );
+      case 'move':
+        return (
+          <View className="rounded-xl border border-border bg-background p-2 gap-1">
+            {lists.map((list) => (
               <Pressable
-                onPress={() => setAssigneePickerOpen((v) => !v)}
-                className="rounded-full border border-dashed border-border bg-background px-2 py-0.5"
+                key={list.id}
+                onPress={() => {
+                  setPropertySheet(null);
+                  void onMove(list.id);
+                }}
+                disabled={list.id === item.list.id}
+                className={`rounded-md px-3 py-2 ${list.id === item.list.id ? 'bg-cyan/10' : ''}`}
               >
                 <Text
-                  style={{ fontFamily: fonts.semibold }}
-                  className="text-[10px] text-cyan"
+                  style={{ fontFamily: fonts.medium }}
+                  className={`text-sm ${list.id === item.list.id ? 'text-cyan' : 'text-foreground'}`}
                 >
-                  {t('addAssignee')}
+                  {list.name}
                 </Text>
               </Pressable>
-            </View>
-            {assigneePickerOpen ? (
-              <View className="mt-1 rounded-xl border border-border bg-background p-2 gap-1">
-                {teamMembers.length === 0 ? (
-                  <Text className="px-2 py-1 text-xs text-muted-foreground">
-                    {t('noAssignees')}
-                  </Text>
-                ) : (
-                  teamMembers.map((m) => {
-                    const already = (item.card.assignees ?? []).some(
-                      (a) => a.id === m.id,
-                    );
-                    return (
-                      <Pressable
-                        key={m.id}
-                        disabled={already}
-                        onPress={async () => {
-                          const cardId = item.card.id;
-                          onLocalPatch(cardId, (c) => ({
-                            ...c,
-                            assignees: [
-                              ...(c.assignees ?? []),
-                              {
-                                id: m.id,
-                                name: m.displayName ?? m.name,
-                                email: m.email,
-                                avatarUrl: m.avatarUrl ?? undefined,
-                              },
-                            ],
-                          }));
-                          setAssigneePickerOpen(false);
-                          try {
-                            await addAssignee(cardId, m.id);
-                          } catch {
-                            /* Pulse refresh will reconcile */
-                          }
-                        }}
-                        className={`rounded-md px-3 py-2 ${already ? 'bg-cyan/10' : ''}`}
-                      >
-                        <Text
-                          style={{ fontFamily: fonts.medium }}
-                          className={`text-sm ${already ? 'text-cyan' : 'text-foreground'}`}
-                        >
-                          {m.displayName ?? m.name ?? m.email ?? m.id}
-                        </Text>
-                      </Pressable>
-                    );
-                  })
-                )}
-              </View>
-            ) : null}
+            ))}
           </View>
+        );
+      default:
+        return null;
+    }
+  };
 
-          {/* ── Tags ──────────────────────────────────────────────── */}
-          <View className="gap-1">
-            <Text
-              style={{ fontFamily: fonts.semibold }}
-              className="text-[10px] uppercase tracking-widest text-muted-foreground"
-            >
-              {t('tagsLabel')}
-            </Text>
-            <View className="flex-row flex-wrap items-center gap-1">
-              {(item.card.tags ?? []).length === 0 ? (
-                <Text className="text-xs text-muted-foreground">{t('noTags')}</Text>
-              ) : (
-                (item.card.tags ?? []).map((tag) => (
-                  <Pressable
-                    key={tag.id}
-                    onPress={async () => {
-                      const cardId = item.card.id;
-                      onLocalPatch(cardId, (c) => ({
-                        ...c,
-                        tags: (c.tags ?? []).filter((x) => x.id !== tag.id),
-                      }));
-                      try {
-                        await removeTag(cardId, tag.id);
-                      } catch {
-                        /* Pulse refresh will reconcile */
-                      }
-                    }}
-                    className="flex-row items-center gap-1 rounded-full px-2 py-0.5"
-                    style={{
-                      backgroundColor: `${tag.color ?? colors.mutedForeground}22`,
-                      borderWidth: 1,
-                      borderColor: `${tag.color ?? colors.mutedForeground}55`,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        fontFamily: fonts.semibold,
-                        color: tag.color ?? colors.mutedForeground,
-                      }}
-                      className="text-[10px]"
-                    >
-                      {tag.name}
-                    </Text>
-                    <X size={8} color={tag.color ?? colors.mutedForeground} />
-                  </Pressable>
-                ))
-              )}
-              <Pressable
-                onPress={() => setTagPickerOpen((v) => !v)}
-                className="rounded-full border border-dashed border-border bg-background px-2 py-0.5"
-              >
-                <Text
-                  style={{ fontFamily: fonts.semibold }}
-                  className="text-[10px] text-cyan"
-                >
-                  {t('addTag')}
-                </Text>
-              </Pressable>
-            </View>
-            {tagPickerOpen ? (
-              <View className="mt-1 rounded-xl border border-border bg-background p-2 gap-1">
-                {boardTags.length === 0 ? (
-                  <Text className="px-2 py-1 text-xs text-muted-foreground">
-                    {t('noTags')}
-                  </Text>
-                ) : (
-                  boardTags.map((tag) => {
-                    const already = (item.card.tags ?? []).some(
-                      (t2) => t2.id === tag.id,
-                    );
-                    return (
-                      <Pressable
-                        key={tag.id}
-                        disabled={already}
-                        onPress={async () => {
-                          const cardId = item.card.id;
-                          onLocalPatch(cardId, (c) => ({
-                            ...c,
-                            tags: [
-                              ...(c.tags ?? []),
-                              {
-                                id: tag.id,
-                                name: tag.name,
-                                color: tag.color,
-                                tagKind: tag.tagKind,
-                              },
-                            ],
-                          }));
-                          setTagPickerOpen(false);
-                          try {
-                            await addTag(cardId, tag.id);
-                          } catch {
-                            /* Pulse refresh will reconcile */
-                          }
-                        }}
-                        className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${
-                          already ? 'opacity-50' : ''
-                        }`}
-                      >
-                        <View
-                          style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: 4,
-                            backgroundColor: tag.color ?? colors.mutedForeground,
-                          }}
-                        />
-                        <Text
-                          style={{ fontFamily: fonts.medium }}
-                          className="text-sm text-foreground"
-                        >
-                          {tag.name}
-                        </Text>
-                      </Pressable>
-                    );
-                  })
-                )}
-              </View>
-            ) : null}
-          </View>
-
-          {/* ── Priority ──────────────────────────────────────────── */}
-          <View className="gap-1">
-            <Text
-              style={{ fontFamily: fonts.semibold }}
-              className="text-[10px] uppercase tracking-widest text-muted-foreground"
-            >
-              {t('priorityLabel')}
-            </Text>
-            <View className="flex-row gap-1">
-              {PRIORITY_VALUES.map((p) => {
-                const current = (item.card.priority ?? item.card.urgency) as
-                  | CardPriority
-                  | undefined;
-                const active = current === p;
-                const colorHex = PRIORITY_COLORS[p];
-                return (
-                  <Pressable
-                    key={p}
-                    onPress={async () => {
-                      const cardId = item.card.id;
-                      onLocalPatch(cardId, (c) => ({ ...c, priority: p }));
-                      try {
-                        await onPatch({ priority: p });
-                      } catch {
-                        /* Pulse refresh will reconcile */
-                      }
-                    }}
-                    className="flex-1 flex-row items-center justify-center gap-1 rounded-md border px-2 py-1.5"
-                    style={{
-                      backgroundColor: active ? colorHex : 'transparent',
-                      borderColor: active ? colorHex : colors.border,
-                    }}
-                  >
-                    <View
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: 3,
-                        backgroundColor: active ? '#0a0a0a' : colorHex,
-                      }}
-                    />
-                    <Text
-                      style={{ fontFamily: fonts.semibold }}
-                      className={`text-[10px] ${active ? 'text-background' : 'text-foreground'}`}
-                    >
-                      {p === 'low'
-                        ? t('priorityLow')
-                        : p === 'medium'
-                          ? t('priorityMed')
-                          : p === 'high'
-                            ? t('priorityHigh')
-                            : t('priorityUrgent')}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-
-          <View className="flex-row gap-2 mt-2">
-            <Pressable
-              onPress={() => setMoveOpen((v) => !v)}
-              className="flex-row items-center gap-1 rounded-md border border-border bg-secondary px-3 py-2"
-            >
-              <ArrowRight size={12} color={colors.foreground} />
-              <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-foreground">
-                {t('move')}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void onArchive()}
-              className="flex-row items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2"
-            >
-              <Archive size={12} color={colors.destructive} />
-              <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-destructive">
-                {t('archive')}
-              </Text>
-            </Pressable>
-          </View>
-          {moveOpen ? (
-            <View className="rounded-xl border border-border bg-background p-2 gap-1">
-              {lists.map((list) => (
-                <Pressable
-                  key={list.id}
-                  onPress={() => void onMove(list.id)}
-                  disabled={list.id === item.list.id}
-                  className={`rounded-md px-3 py-2 ${list.id === item.list.id ? 'bg-cyan/10' : ''}`}
-                >
-                  <Text
-                    style={{ fontFamily: fonts.medium }}
-                    className={`text-sm ${list.id === item.list.id ? 'text-cyan' : 'text-foreground'}`}
-                  >
-                    {list.name}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
-    </ScrollView>
-  );
+  const propertySheetTitle = propertySheet
+    ? propertySheet === 'assignees'
+      ? t('assigneesLabel')
+      : propertySheet === 'tags'
+        ? t('tagsLabel')
+        : propertySheet === 'priority'
+          ? t('priorityLabel')
+          : propertySheet === 'dates'
+            ? t('dates')
+            : propertySheet === 'cover'
+              ? t('cover')
+              : t('move')
+    : '';
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
@@ -2431,6 +2636,46 @@ function CardDetailModal({
           />
         </View>
       </View>
+
+      {/* Mobile: focused property editor as a nested bottom-sheet. Opening one
+          property at a time keeps the Detail tab compact (web button→popover
+          parity) instead of stacking every editor inline. */}
+      <Modal
+        visible={propertySheet !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPropertySheet(null)}
+      >
+        <View className="flex-1 bg-background/80">
+          <Pressable onPress={() => setPropertySheet(null)} style={{ flex: 1 }} />
+          <View className="rounded-t-2xl border-t border-border bg-card">
+            <View className="items-center pt-2 pb-1">
+              <View className="h-1 w-10 rounded-full bg-border" />
+            </View>
+            <View className="flex-row items-center justify-between border-b border-border/40 px-4 pb-2">
+              <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-foreground">
+                {propertySheetTitle}
+              </Text>
+              <Pressable
+                onPress={() => setPropertySheet(null)}
+                hitSlop={8}
+                className="rounded-md px-2 py-1"
+              >
+                <Text style={{ fontFamily: fonts.semibold }} className="text-xs text-cyan">
+                  {t('done')}
+                </Text>
+              </Pressable>
+            </View>
+            <ScrollView
+              contentContainerClassName="p-4 gap-2"
+              keyboardShouldPersistTaps="handled"
+              style={{ maxHeight: 420 }}
+            >
+              {renderPropertyEditor()}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </Modal>
   );
 }

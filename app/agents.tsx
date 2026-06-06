@@ -33,6 +33,8 @@ import { fonts } from '@/theme/fonts';
 const VOICE_PRESETS = [
   { value: 'es-ES', labelKey: 'langEs' },
   { value: 'en-US', labelKey: 'langEn' },
+  { value: 'pt-BR', labelKey: 'langPt' },
+  { value: 'fr-FR', labelKey: 'langFr' },
 ] as const;
 
 interface Draft {
@@ -69,9 +71,15 @@ export default function AgentsScreen() {
   const refresh = () => setAgents(listAgents());
   useEffect(refresh, []);
 
+  // Show the Cartesia chip when the plan grants custom voice. The dedicated
+  // /vault/voice/available endpoint is the authoritative gate (it also verifies
+  // the server's Cartesia credentials), but we fall back to the plan entitlement
+  // so a Pro+ user still sees (and can select) the option if that probe fails.
   useEffect(() => {
-    void isCustomVoiceAvailable().then(setCustomVoice);
-  }, []);
+    void isCustomVoiceAvailable()
+      .then((ok) => setCustomVoice(ok || !!entitlements.policy.customVoice))
+      .catch(() => setCustomVoice(!!entitlements.policy.customVoice));
+  }, [entitlements.policy.customVoice]);
 
   // Load workspace documents (for assignment) when the editor opens.
   useEffect(() => {

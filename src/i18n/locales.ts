@@ -421,6 +421,8 @@ export const MESSAGES: Record<Locale, Messages> = {
       empty: 'No hay tableros en este workspace.',
     },
     board: {
+      retry: 'Reintentar',
+      loadError: 'No se pudo cargar el tablero.',
       viewKanban: 'Kanban',
       viewGantt: 'Gantt',
       addList: 'Lista',
@@ -483,6 +485,12 @@ export const MESSAGES: Record<Locale, Messages> = {
       watch: 'Seguir',
       unwatch: 'Dejar de seguir',
       addChecklist: 'Añadir lista',
+      dates: 'Fechas',
+      description: 'Descripción',
+      noDescription: 'Sin descripción',
+      noDates: 'Sin fechas',
+      properties: 'Propiedades',
+      done: 'Listo',
     },
     bountiful: {
       table: 'Tabla',
@@ -649,6 +657,8 @@ export const MESSAGES: Record<Locale, Messages> = {
     agentsScreen: {
       langEs: 'Español (ES)',
       langEn: 'English (US)',
+      langPt: 'Português (BR)',
+      langFr: 'Français (FR)',
       untitled: 'Sin título',
       wakeHey: 'Hey',
       testVoice: 'Probar voz',
@@ -1550,6 +1560,8 @@ export const MESSAGES: Record<Locale, Messages> = {
       empty: 'No boards in this workspace yet.',
     },
     board: {
+      retry: 'Retry',
+      loadError: 'Could not load the board.',
       viewKanban: 'Kanban',
       viewGantt: 'Gantt',
       addList: 'List',
@@ -1612,6 +1624,12 @@ export const MESSAGES: Record<Locale, Messages> = {
       watch: 'Watch',
       unwatch: 'Unwatch',
       addChecklist: 'Add checklist',
+      dates: 'Dates',
+      description: 'Description',
+      noDescription: 'No description',
+      noDates: 'No dates',
+      properties: 'Properties',
+      done: 'Done',
     },
     bountiful: {
       table: 'Table',
@@ -1777,6 +1795,8 @@ export const MESSAGES: Record<Locale, Messages> = {
     agentsScreen: {
       langEs: 'Spanish (ES)',
       langEn: 'English (US)',
+      langPt: 'Portuguese (BR)',
+      langFr: 'French (FR)',
       untitled: 'Untitled',
       wakeHey: 'Hey',
       testVoice: 'Test voice',

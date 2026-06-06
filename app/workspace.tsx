@@ -150,8 +150,9 @@ export default function WorkspaceHomeScreen() {
           ) : (
             <View className="gap-1">
               {kanban.slice(0, 6).map((b) => (
-                <View
+                <Pressable
                   key={b.id}
+                  onPress={() => router.push(`/b/${b.id}`)}
                   className="flex-row items-center gap-2 rounded-lg border border-border/60 bg-background px-3 py-2"
                 >
                   <Kanban size={14} color={colors.mutedForeground} />
@@ -162,7 +163,8 @@ export default function WorkspaceHomeScreen() {
                   >
                     {b.name}
                   </Text>
-                </View>
+                  <ChevronRight size={14} color={colors.mutedForeground} />
+                </Pressable>
               ))}
             </View>
           )}
@@ -179,8 +181,9 @@ export default function WorkspaceHomeScreen() {
           ) : (
             <View className="gap-1">
               {meshes.slice(0, 6).map((b) => (
-                <View
+                <Pressable
                   key={b.id}
+                  onPress={() => router.push(`/b/${b.id}`)}
                   className="flex-row items-center gap-2 rounded-lg border border-border/60 bg-background px-3 py-2"
                 >
                   <Orbit size={14} color={colors.mutedForeground} />
@@ -191,7 +194,8 @@ export default function WorkspaceHomeScreen() {
                   >
                     {b.name}
                   </Text>
-                </View>
+                  <ChevronRight size={14} color={colors.mutedForeground} />
+                </Pressable>
               ))}
             </View>
           )}
