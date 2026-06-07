@@ -52,11 +52,12 @@ const VAULT_ITEMS: Item[] = [
   { key: 'diary', icon: Mic, route: '/diary' },
   { key: 'agents', icon: Bot, route: '/agents' },
   { key: 'memories', icon: Brain, route: '/memories' },
-  { key: 'search', icon: Search, route: '/search' },
-  { key: 'notifications', icon: Bell, route: '/notifications' },
   { key: 'integrations', icon: Blocks, route: '/integrations' },
-  { key: 'schedule', icon: CalendarClock, route: '/schedule' },
   { key: 'usage', icon: BarChart3, route: '/usage' },
+  // 'settings' = "Captura y privacidad" (also hosts the capture schedule
+  // inside it, so the standalone 'schedule' item was removed). 'notifications'
+  // moved to the drawer header next to the close button. 'search' moved to
+  // the Workspace section.
   { key: 'settings', icon: SlidersHorizontal, route: '/settings' },
 ];
 
@@ -65,6 +66,7 @@ const WORKSPACE_ITEMS: Item[] = [
   { key: 'documents', icon: FileText, route: '/documents' },
   { key: 'boards', icon: KanbanIcon, route: '/b' },
   { key: 'rooms', icon: MessageSquare, route: '/rooms' },
+  { key: 'search', icon: Search, route: '/search' },
   { key: 'teams', icon: Users, route: '/teams' },
 ];
 
@@ -90,14 +92,17 @@ export function SideNav() {
   const { mode, setMode } = useAppMode();
   const local = useLocalWorkspace();
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Debounce duplicate touch delivery: on a freshly-shown Android fade Modal the
-  // first gesture can arrive as two near-instant presses. Without this, the
-  // second press would immediately re-toggle (and re-close) the picker. We
-  // ignore any toggle that lands within DEBOUNCE_MS of the previous one.
+  // The drawer Modal is ALREADY visible when the user taps the workspace
+  // switcher, so the old "freshly-shown modal double-press" rationale didn't
+  // apply — the 350ms debounce was actually eating legit taps (open→close→open)
+  // and making the switcher feel broken. We now toggle on `onPressIn` (fires on
+  // touch-DOWN, before any scroll/move can cancel the press inside the header
+  // row) with only an 80ms guard to dedupe the rare same-physical-tap double
+  // delivery. Snappy + reliable: one tap = one toggle.
   const lastToggleAt = useRef(0);
   const togglePicker = () => {
     const now = Date.now();
-    if (now - lastToggleAt.current < 350) return;
+    if (now - lastToggleAt.current < 80) return;
     lastToggleAt.current = now;
     setPickerOpen((v) => !v);
   };
@@ -184,7 +189,7 @@ export function SideNav() {
               */}
               <Pressable
                 className="flex-1 flex-row items-center gap-3"
-                onPress={togglePicker}
+                onPressIn={togglePicker}
                 hitSlop={12}
                 accessibilityRole="button"
                 accessibilityLabel={`${workspaceName} — ${tSide('switchWorkspace')}`}
@@ -211,6 +216,15 @@ export function SideNav() {
                 >
                   <ChevronsUpDown size={16} color={pickerOpen ? colors.cyan : colors.mutedForeground} />
                 </View>
+              </Pressable>
+              <Pressable
+                onPress={() => go('/notifications')}
+                hitSlop={10}
+                className="rounded-md p-1 ml-1"
+                accessibilityRole="button"
+                accessibilityLabel={t('notifications')}
+              >
+                <Bell size={18} color={colors.mutedForeground} />
               </Pressable>
               <Pressable
                 onPress={closeNav}
