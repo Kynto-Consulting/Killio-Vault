@@ -8,6 +8,15 @@ import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.records.Field
+import expo.modules.kotlin.records.Record
+
+/** Options for startSystemAudioCapture(); mirrors KillioCapture's StartOptions. */
+class SystemAudioStartOptions : Record {
+  @Field var sampleRate: Int = 16_000
+  @Field var frameSamples: Int = 320
+  @Field var notificationText: String = "Killio Vault is capturing call audio"
+}
 
 /**
  * Expo module bridging JS ↔ Android MediaProjection screen capture.
@@ -55,6 +64,21 @@ class KillioScreenModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("KillioScreen")
+
+    // Same event names/shape as KillioCapture so the existing VAD/STT pipeline
+    // (CaptureController.handleFrame) ingests system-audio frames unchanged:
+    //   onAudioFrame { samples:Int[], sampleRate:Int, ts:Double }
+    //   onError      { message:String }
+    Events("onAudioFrame", "onError")
+
+    OnCreate {
+      // Let SystemAudioCaptureService push frames/errors back through JS.
+      SystemAudioCaptureService.emitter = { name, body -> sendEvent(name, body) }
+    }
+
+    OnDestroy {
+      SystemAudioCaptureService.emitter = null
+    }
 
     AsyncFunction("requestPermission") { promise: Promise ->
       try {
@@ -130,6 +154,60 @@ class KillioScreenModule : Module() {
       } catch (t: Throwable) {
         promise.reject(CodedException("E_LIST_FAILED", t.message ?: "list failed", t))
       }
+    }
+
+    /**
+     * Starts capturing DEVICE PLAYBACK audio (the remote party in a call, a
+     * meeting, a video — what comes out of the speaker) via Android 10+
+     * AudioPlaybackCapture, reusing the MediaProjection consent obtained by
+     * requestPermission(). Emits 'onAudioFrame' with the same shape as the mic
+     * path so the existing pipeline ingests it. Requires consent first — rejects
+     * if absent (call requestPermission() before this).
+     *
+     * opts: { sampleRate?:Int=16000, frameSamples?:Int=320, notificationText?:String }
+     */
+    AsyncFunction("startSystemAudioCapture") { options: SystemAudioStartOptions, promise: Promise ->
+      try {
+        val ctx: Context = appContext.reactContext
+          ?: throw CodedException("E_NO_CONTEXT", "No React context", null)
+        val code = resultCode
+        val data = resultData
+        if (!hasConsent() || data == null) {
+          throw CodedException(
+            "E_NO_PROJECTION",
+            "MediaProjection permission not granted — call requestPermission() first",
+            null,
+          )
+        }
+        val intent = Intent(ctx, SystemAudioCaptureService::class.java).apply {
+          putExtra(SystemAudioCaptureService.EXTRA_RESULT_CODE, code)
+          putExtra(SystemAudioCaptureService.EXTRA_RESULT_DATA, data)
+          putExtra(SystemAudioCaptureService.EXTRA_SAMPLE_RATE, options.sampleRate)
+          putExtra(SystemAudioCaptureService.EXTRA_FRAME_SAMPLES, options.frameSamples)
+          putExtra(SystemAudioCaptureService.EXTRA_NOTIFICATION_TEXT, options.notificationText)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          ctx.startForegroundService(intent)
+        } else {
+          ctx.startService(intent)
+        }
+        promise.resolve(null)
+      } catch (t: Throwable) {
+        if (t is CodedException) promise.reject(t)
+        else promise.reject(
+          CodedException("E_SYSTEM_AUDIO_FAILED", t.message ?: "startSystemAudioCapture failed", t),
+        )
+      }
+    }
+
+    AsyncFunction("stopSystemAudioCapture") {
+      val ctx: Context? = appContext.reactContext
+      if (ctx != null) {
+        ctx.stopService(Intent(ctx, SystemAudioCaptureService::class.java))
+      }
+      // Explicit Unit so Kotlin doesn't infer the lambda's return type from
+      // stopService()'s Boolean (matches KillioCaptureModule.stop()).
+      Unit
     }
   }
 }

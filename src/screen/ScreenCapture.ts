@@ -18,6 +18,11 @@ interface KillioScreenSpec {
   requestPermission(): Promise<boolean>;
   capture(): Promise<Screenshot>;
   list(): Promise<Screenshot[]>;
+  /** Capture device PLAYBACK audio (remote call party / meeting / video) via
+   *  AudioPlaybackCapture. Reuses the MediaProjection consent from
+   *  requestPermission(). Emits 'onAudioFrame' (same shape as the mic path). */
+  startSystemAudioCapture(opts: SystemAudioCaptureOptions): Promise<void>;
+  stopSystemAudioCapture(): Promise<void>;
 }
 
 const native = requireOptionalNativeModule<KillioScreenSpec>('KillioScreen');
@@ -47,6 +52,75 @@ export async function capture(): Promise<Screenshot | null> {
 export async function listLocal(): Promise<Screenshot[]> {
   if (!native) return [];
   return native.list();
+}
+
+// ---------------------------------------------------------------------------
+// System-audio capture (device playback — the OTHER party in a call / a meeting
+// / a video). Uses Android 10+ AudioPlaybackCapture under the SAME
+// MediaProjection consent as screen capture. Emits PCM frames with the IDENTICAL
+// shape as the mic path (KillioCapture.onAudioFrame), so the existing
+// VAD/STT pipeline (CaptureController.handleFrame) ingests them unchanged.
+// ---------------------------------------------------------------------------
+
+/** Identical to KillioCapture.AudioFrameEvent so the same consumer handles both. */
+export interface AudioFrameEvent {
+  /** 16-bit PCM samples (-32768..32767). */
+  samples: number[];
+  sampleRate: number;
+  /** UTC epoch ms for the frame start. */
+  ts: number;
+}
+
+export interface SystemAudioCaptureOptions {
+  sampleRate?: number;
+  frameSamples?: number;
+  /** Persistent notification text shown while capturing. */
+  notificationText?: string;
+}
+
+// In expo-modules-core 2.x the native module is itself the event emitter.
+const emitter: any = native;
+
+export function onAudioFrame(
+  cb: (e: AudioFrameEvent) => void,
+): { remove(): void } {
+  if (!emitter) return { remove() {} };
+  const sub = emitter.addListener('onAudioFrame', cb);
+  return { remove: () => sub.remove() };
+}
+
+export function onError(cb: (e: { message: string }) => void): {
+  remove(): void;
+} {
+  if (!emitter) return { remove() {} };
+  const sub = emitter.addListener('onError', cb);
+  return { remove: () => sub.remove() };
+}
+
+/**
+ * Starts system-audio (playback) capture. Acquires the MediaProjection consent
+ * first if not already granted (reuses the screen-capture dialog). Throws if the
+ * native module is absent or the user denies consent.
+ */
+export async function startSystemAudioCapture(
+  opts: SystemAudioCaptureOptions = {},
+): Promise<void> {
+  if (!native) {
+    throw new Error('KillioScreen native module unavailable (use dev-build).');
+  }
+  const granted = await native.requestPermission();
+  if (!granted) throw new Error('MediaProjection permission denied.');
+  await native.startSystemAudioCapture({
+    sampleRate: opts.sampleRate ?? 16_000,
+    frameSamples: opts.frameSamples ?? 320,
+    notificationText:
+      opts.notificationText ?? 'Killio Vault is capturing call audio',
+  });
+}
+
+export async function stopSystemAudioCapture(): Promise<void> {
+  if (!native) return;
+  await native.stopSystemAudioCapture();
 }
 
 /**

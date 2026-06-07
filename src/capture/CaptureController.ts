@@ -1,4 +1,5 @@
 import * as Native from './native/KillioCapture';
+import * as ScreenAudio from '../screen/ScreenCapture';
 import * as Speech from '../stt/native/KillioSpeech';
 import { CaptureMode, isWithinWindows } from './schedule';
 import { VadSegmenter } from '../stt/vad';
@@ -24,8 +25,20 @@ export type CaptureStatus =
    *  for outbox + day-rollover flushes; only the mic is dark. */
   | 'degraded';
 
+/**
+ * Which audio source(s) feed the pipeline:
+ *   'mic'    — microphone only (default; the legacy behavior)
+ *   'system' — device PLAYBACK only (the remote call party / meeting / video),
+ *              via MediaProjection + AudioPlaybackCapture (Android 10+)
+ *   'both'   — mic + system playback, mixed into the same frame stream so both
+ *              local and remote voices are transcribed (meeting transcription)
+ */
+export type AudioSource = 'mic' | 'system' | 'both';
+
 export interface CaptureControllerOptions {
   mode: CaptureMode;
+  /** Audio source: mic-only (default), system-only, or both. */
+  source?: AudioSource;
   /** Called on status changes for the UI. */
   onStatus?: (s: CaptureStatus) => void;
   /** Flush cadence (ms). */
@@ -37,10 +50,15 @@ export interface CaptureControllerOptions {
 export class CaptureController {
   private vad = new VadSegmenter();
   private mode: CaptureMode;
+  private readonly source: AudioSource;
   private status: CaptureStatus = 'idle';
   private frameSub: { remove(): void } | null = null;
   private errSub: { remove(): void } | null = null;
   private transcriptSub: { remove(): void } | null = null;
+  /** System-audio (playback) frame/error subscriptions, used when source
+   *  includes 'system'. Separate from the mic subs above. */
+  private sysFrameSub: { remove(): void } | null = null;
+  private sysErrSub: { remove(): void } | null = null;
   private windowTimer: ReturnType<typeof setInterval> | null = null;
   /** Local day last uploaded — drives the end-of-day flush on rollover. */
   private lastFlushDay: string | null = null;
@@ -68,10 +86,26 @@ export class CaptureController {
 
   constructor(opts: CaptureControllerOptions) {
     this.mode = opts.mode;
+    this.source = opts.source ?? 'mic';
     this.onStatus = opts.onStatus;
     this.flushIntervalMs = opts.flushIntervalMs ?? 30_000;
     this.language = opts.language ?? 'es-ES';
-    this.useSpeech = Speech.isAvailable() && Speech.isRecognitionAvailable();
+    // SpeechRecognizer only reads the MIC, so it can only serve a mic source.
+    // For 'system' or 'both' we must use the AudioRecord+VAD frame path.
+    this.useSpeech =
+      this.source === 'mic' &&
+      Speech.isAvailable() &&
+      Speech.isRecognitionAvailable();
+  }
+
+  /** True when this controller should capture the microphone. */
+  private get wantsMic(): boolean {
+    return this.source === 'mic' || this.source === 'both';
+  }
+
+  /** True when this controller should capture device playback (system audio). */
+  private get wantsSystem(): boolean {
+    return this.source === 'system' || this.source === 'both';
   }
 
   /** Whether any native capture path is usable on this build/device.
@@ -124,12 +158,22 @@ export class CaptureController {
       void Native.requestIgnoreBatteryOptimizations();
     }
 
-    if (speechOk) {
+    // System-audio (playback) frames flow through the AudioRecord+VAD path
+    // regardless of the mic transcription engine. Subscribe whenever the source
+    // wants system audio and the native screen module is present.
+    if (this.wantsSystem && ScreenAudio.isAvailable()) {
+      this.sysFrameSub = ScreenAudio.onAudioFrame((e) => this.handleFrame(e));
+      this.sysErrSub = ScreenAudio.onError(() => this.setStatus('error'));
+    }
+
+    if (this.wantsMic && speechOk) {
       this.transcriptSub = Speech.onTranscript((e) => this.handleTranscript(e));
       this.errSub = Speech.onError(() => this.setStatus('error'));
-    } else if (nativeOk) {
+    } else if (this.wantsMic && nativeOk) {
       this.frameSub = Native.onAudioFrame((e) => this.handleFrame(e));
       this.errSub = Native.onError(() => this.setStatus('error'));
+    } else if (this.wantsSystem && ScreenAudio.isAvailable()) {
+      // System-only path is fully wired above; nothing more to set up.
     } else {
       // Degraded mode — capture loop runs but mic is dark. Status stays
       // 'degraded' so the UI can tell the user without blocking them.
@@ -154,12 +198,23 @@ export class CaptureController {
     this.frameSub?.remove();
     this.errSub?.remove();
     this.transcriptSub?.remove();
+    this.sysFrameSub?.remove();
+    this.sysErrSub?.remove();
     this.frameSub = this.errSub = this.transcriptSub = null;
-    if (this.useSpeech) {
-      await Speech.stop();
+    this.sysFrameSub = this.sysErrSub = null;
+    if (this.wantsMic) {
+      if (this.useSpeech) {
+        await Speech.stop();
+      } else {
+        this.flushFinalUtterance();
+        await Native.stop();
+      }
     } else {
+      // System-only: still flush any VAD tail captured from playback frames.
       this.flushFinalUtterance();
-      await Native.stop();
+    }
+    if (this.wantsSystem && ScreenAudio.isAvailable()) {
+      await ScreenAudio.stopSystemAudioCapture();
     }
     await flushOutbox();
     this.setStatus('idle');
@@ -169,18 +224,38 @@ export class CaptureController {
   private async evaluateWindow(): Promise<void> {
     const active = isWithinWindows(this.mode, new Date());
     if (active && this.status !== 'listening') {
-      if (this.useSpeech) {
-        await Speech.start({ language: this.language });
-      } else {
-        await Native.start({ notificationText: 'Killio Vault is listening' });
+      if (this.wantsMic) {
+        if (this.useSpeech) {
+          await Speech.start({ language: this.language });
+        } else {
+          await Native.start({ notificationText: 'Killio Vault is listening' });
+        }
       }
-      this.setStatus('listening');
+      if (this.wantsSystem && ScreenAudio.isAvailable()) {
+        // Reuses the MediaProjection consent; prompts once if not yet granted.
+        try {
+          await ScreenAudio.startSystemAudioCapture({
+            sampleRate: 16_000,
+            frameSamples: 320,
+            notificationText: 'Killio Vault is capturing call audio',
+          });
+        } catch {
+          // Consent denied / unavailable — degrade rather than fail the window.
+          if (!this.wantsMic) this.setStatus('degraded');
+        }
+      }
+      if (this.status !== 'degraded') this.setStatus('listening');
     } else if (!active && this.status === 'listening') {
-      if (this.useSpeech) {
-        await Speech.stop();
-      } else {
-        this.flushFinalUtterance();
-        await Native.stop();
+      if (this.wantsMic) {
+        if (this.useSpeech) {
+          await Speech.stop();
+        } else {
+          this.flushFinalUtterance();
+          await Native.stop();
+        }
+      }
+      if (this.wantsSystem && ScreenAudio.isAvailable()) {
+        await ScreenAudio.stopSystemAudioCapture();
       }
       this.setStatus('paused');
     }

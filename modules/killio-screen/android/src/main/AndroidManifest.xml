@@ -15,5 +15,17 @@
       android:name="dev.killio.screen.ScreenCaptureService"
       android:exported="false"
       android:foregroundServiceType="mediaProjection" />
+
+    <!--
+      System-audio (device playback) capture via AudioPlaybackCapture. Typed
+      mediaProjection (required) + microphone so the same service can also mic
+      when both-track capture is requested. The FOREGROUND_SERVICE_MEDIA_PROJECTION
+      and FOREGROUND_SERVICE_MICROPHONE permissions are declared by the app
+      manifest via the withVaultCapture config plugin.
+    -->
+    <service
+      android:name="dev.killio.screen.SystemAudioCaptureService"
+      android:exported="false"
+      android:foregroundServiceType="mediaProjection|microphone" />
   </application>
 </manifest>
