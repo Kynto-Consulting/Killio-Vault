@@ -1,4 +1,5 @@
 import { createContext, useContext, useState } from 'react';
+import { UnifiedTextBrick } from './bricks/unified-text-brick';
 import { Image, Linking, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import {
   ArrowDown,
@@ -108,13 +109,18 @@ function textOf(c: Record<string, any>): string {
 // ─── Leaf bricks ────────────────────────────────────────────────────────────
 
 function TextBrick({ brick, canEdit, onChange }: BrickProps) {
-  // Headings: a leading "#"…"######" line is rendered larger via RichText.
+  // Use the experimental UnifiedTextBrick editor (tap-to-edit + RichText
+  // display + the floating InlineFormatToolbar that appears on text selection),
+  // NOT the raw-markdown EditableText. This is the "experimental editor" the
+  // web uses — selecting text opens the format UI instead of showing markdown
+  // markers.
   const text = textOf(brick.content);
   if (canEdit && onChange) {
     return (
-      <EditableText
-        value={text}
-        onChangeText={(t) =>
+      <UnifiedTextBrick
+        id={brick.id ?? 'text'}
+        text={text}
+        onUpdate={(t) =>
           onChange({ ...brick, content: { ...brick.content, text: t, markdown: t } })
         }
       />
