@@ -1,11 +1,14 @@
 package dev.killio.capture
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import androidx.core.content.ContextCompat
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -38,6 +41,15 @@ class VaultCaptureService : Service() {
     val sampleRate = intent?.getIntExtra("sampleRate", 16_000) ?: 16_000
     val frameSamples = intent?.getIntExtra("frameSamples", 320) ?: 320
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
+
+    // RECORD_AUDIO required before a microphone-typed FGS — otherwise Android 14+
+    // throws SecurityException and crashes the app. Bail gracefully if not yet
+    // granted (fresh install); JS re-starts capture after the user grants mic.
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+        != PackageManager.PERMISSION_GRANTED) {
+      stopSelf()
+      return START_NOT_STICKY
+    }
 
     startForegroundWithNotification(notifText)
     acquireWakeLock()

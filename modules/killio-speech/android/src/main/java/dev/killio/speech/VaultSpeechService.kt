@@ -1,12 +1,15 @@
 package dev.killio.speech
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import androidx.core.content.ContextCompat
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -42,6 +45,16 @@ class VaultSpeechService : Service() {
     language = intent?.getStringExtra("language") ?: "es-ES"
     preferOffline = intent?.getBooleanExtra("preferOffline", true) ?: true
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
+
+    // Starting a microphone-typed foreground service without RECORD_AUDIO
+    // granted throws SecurityException and crashes the whole app (Android 14+).
+    // On a fresh install the runtime permission isn't granted yet, so bail
+    // gracefully — JS re-starts capture once the user grants the mic.
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+        != PackageManager.PERMISSION_GRANTED) {
+      stopSelf()
+      return START_NOT_STICKY
+    }
 
     startForegroundWithNotification(notifText)
     acquireWakeLock()

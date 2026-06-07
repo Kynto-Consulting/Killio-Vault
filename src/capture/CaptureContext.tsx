@@ -11,6 +11,7 @@ import { CaptureController, CaptureStatus } from './CaptureController';
 import { CaptureMode } from './schedule';
 import { getCaptureMode, setCaptureMode } from '../settings/settings-store';
 import { pendingCount, flushOutbox } from '../db/outbox';
+import { hasMicrophone, requestCapturePermissions } from './permissions';
 
 interface CaptureState {
   status: CaptureStatus;
@@ -54,9 +55,23 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       // Per user directive: always try to start capture regardless of build
       // flavor. The controller itself drops into a 'degraded' status when no
       // native module is present, so the timer + outbox flush keep running.
+      // BUT: a microphone-typed foreground service requires RECORD_AUDIO
+      // granted at runtime — starting it without the permission throws a
+      // SecurityException that crashes the whole app on a fresh install. So we
+      // request the mic permission first and only start the FGS once granted;
+      // if denied, start in degraded mode (no service, no crash). The native
+      // services also guard defensively (stopSelf if the permission is gone).
       if (saved.kind !== 'off') {
         try {
-          await controller.start();
+          const hasMic = await hasMicrophone();
+          const granted = hasMic
+            ? true
+            : (await requestCapturePermissions()).microphone;
+          if (granted) {
+            await controller.start();
+          } else {
+            setStatus('degraded');
+          }
         } catch {
           setStatus('error');
         }
@@ -77,8 +92,11 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     if (next.kind === 'off') {
       await controller.stop();
     } else {
-      // Always try — degraded mode is fine, the controller handles it.
-      if (controller.getStatus() === 'idle' || controller.getStatus() === 'degraded') {
+      // Mic permission required before the microphone FGS can start (else
+      // SecurityException/crash). Request on activation; degrade if denied.
+      const hasMic = await hasMicrophone();
+      const granted = hasMic ? true : (await requestCapturePermissions()).microphone;
+      if (granted && (controller.getStatus() === 'idle' || controller.getStatus() === 'degraded')) {
         controller.setMode(next);
         await controller.start();
       } else {
