@@ -123,6 +123,55 @@ function ToolChip({ tool }: { tool: ToolState }) {
           : colors.cyan;
   const hasDetail = !!tool.input || tool.output !== undefined;
 
+  // sub_agent: when the nested run finishes, its output carries the FULL activity
+  // flow (markup with tool chips + text) + a reason. Render the chip and, under
+  // it, the nested activity THROUGH AgentMessage (the same renderer) so the
+  // sub-agent's tool chips + text appear inline — not as escaped JSON. Bounded
+  // length, but tool chips are never stripped.
+  const subAgent =
+    tool.name === 'sub_agent' && tool.status === 'done' && tool.output && typeof tool.output === 'object'
+      ? (tool.output as { activity?: unknown; reason?: unknown })
+      : null;
+  const subActivity = subAgent && typeof subAgent.activity === 'string' ? subAgent.activity : '';
+  const subReason = subAgent && typeof subAgent.reason === 'string' ? subAgent.reason : '';
+  const boundedActivity = subActivity.length > 8000 ? subActivity.slice(0, 8000) + '…' : subActivity;
+
+  if (subAgent && (subActivity || subReason)) {
+    return (
+      <View className="my-0.5">
+        <View className="flex-row items-center gap-2 rounded-lg border border-border bg-secondary/60 px-2.5 py-1.5">
+          <Check size={13} color={colors.success} />
+          <Icon size={13} color={colors.mutedForeground} />
+          <Text
+            style={{ fontFamily: fonts.medium }}
+            className="flex-1 text-xs text-foreground"
+            numberOfLines={1}
+          >
+            {label || tool.name}
+          </Text>
+        </View>
+        <View
+          className="ml-3 mt-1 gap-1 border-l-2 pl-3"
+          style={{ borderColor: colors.indigo + '55' }}
+        >
+          {subReason ? (
+            <View className="flex-row items-center gap-1.5">
+              <Bot size={12} color={colors.indigo} />
+              <Text
+                style={{ fontFamily: fonts.medium, color: colors.indigo }}
+                className="flex-1 text-[11px]"
+                numberOfLines={2}
+              >
+                {subReason}
+              </Text>
+            </View>
+          ) : null}
+          {boundedActivity ? <AgentMessage content={boundedActivity} /> : null}
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View className="my-0.5">
       <Pressable
