@@ -56,8 +56,15 @@ export interface BoardsApi {
   addCardAssignee(cardId: string, userId: string): Promise<void>;
   removeCardAssignee(cardId: string, userId: string): Promise<void>;
   listBoardTags(boardId: string): Promise<BoardTag[]>;
-  addCardTag(cardId: string, tagId: string): Promise<void>;
+  addCardTag(cardId: string, tagId: string, meta?: { name?: string; color?: string; tagKind?: string }): Promise<void>;
   removeCardTag(cardId: string, tagId: string): Promise<void>;
+  /** Create a new tag scoped to a board (web "create tag while adding" UX). */
+  createTag(input: {
+    boardId: string;
+    name: string;
+    color?: string;
+    tagKind?: 'priority' | 'ux' | 'bug' | 'feature' | 'custom';
+  }): Promise<BoardTag>;
   /** Reorder lists within a board (web parity). Local: persists positions; cloud: best-effort. */
   reorderLists(boardId: string, orderedListIds: string[]): Promise<void>;
   /** Set per-list tint color. */
@@ -92,8 +99,14 @@ export function useBoardsApi(cloudTeamId?: string | null): BoardsApi {
         removeCardAssignee: (cardId, userId) =>
           local.removeLocalCardAssignee(cardId, userId),
         listBoardTags: (boardId) => local.listLocalBoardTags(boardId),
-        addCardTag: (cardId, tagId) => local.addLocalCardTag(cardId, tagId),
+        addCardTag: (cardId, tagId, meta) => local.addLocalCardTag(cardId, tagId, meta),
         removeCardTag: (cardId, tagId) => local.removeLocalCardTag(cardId, tagId),
+        createTag: (input) =>
+          local.createLocalBoardTag(input.boardId, {
+            name: input.name,
+            color: input.color,
+            tagKind: input.tagKind,
+          }),
         reorderLists: (boardId, ids) => local.reorderLocalLists(boardId, ids),
         setListColor: (boardId, listId, color) =>
           local.setLocalListColor(boardId, listId, color),
@@ -133,6 +146,7 @@ export function useBoardsApi(cloudTeamId?: string | null): BoardsApi {
       listBoardTags: (boardId) => cloud.listBoardTags(boardId),
       addCardTag: (cardId, tagId) => cloud.addCardTag(cardId, tagId),
       removeCardTag: (cardId, tagId) => cloud.removeCardTag(cardId, tagId),
+      createTag: (input) => cloud.createBoardTag(input),
       reorderLists: (boardId, ids) => cloud.reorderLists(boardId, ids),
       setListColor: (boardId, listId, color) =>
         cloud.updateBoardListColor(boardId, listId, color),

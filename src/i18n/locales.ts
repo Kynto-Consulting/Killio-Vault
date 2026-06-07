@@ -492,6 +492,15 @@ export const MESSAGES: Record<Locale, Messages> = {
       noDates: 'Sin fechas',
       properties: 'Propiedades',
       done: 'Listo',
+      createTag: 'Crear "{{name}}"',
+      tagNamePlaceholder: 'Buscar o crear etiqueta…',
+    },
+    tags: {
+      'native.priority': 'Prioridad',
+      'native.bug': 'Bug',
+      'native.feature': 'Funcionalidad',
+      'native.ux': 'UX',
+      'native.blocked': 'Bloqueado',
     },
     bountiful: {
       table: 'Tabla',
@@ -1632,6 +1641,15 @@ export const MESSAGES: Record<Locale, Messages> = {
       noDates: 'No dates',
       properties: 'Properties',
       done: 'Done',
+      createTag: 'Create "{{name}}"',
+      tagNamePlaceholder: 'Search or create tag…',
+    },
+    tags: {
+      'native.priority': 'Priority',
+      'native.bug': 'Bug',
+      'native.feature': 'Feature',
+      'native.ux': 'UX',
+      'native.blocked': 'Blocked',
     },
     bountiful: {
       table: 'Table',

@@ -43,7 +43,6 @@ import {
   Eye,
   EyeOff,
   Filter as FilterIcon,
-  Flag,
   Image as ImageIcon,
   Kanban as KanbanIcon,
   ListChecks,
@@ -61,6 +60,9 @@ import {
 
 import { uploadFile } from '@/core/api/uploads.client';
 import { UnifiedChecklistBrick } from '@/ui/bricks/unified-checklist-brick';
+import { useI18n } from '@/i18n';
+import { translateNativeTagName, DEFAULT_NATIVE_TAG_SUGGESTIONS } from '@/lib/native-tags';
+import { resolveAvatarUrl, avatarInitial } from '@/lib/avatar';
 
 import { Screen, Card, Body } from '@/ui';
 import { CardSidebar, type CardSidebarTab } from '@/documents/CardSidebar';
@@ -78,16 +80,6 @@ import { useRealtimeChannel } from '@/realtime/useRealtimeChannel';
 import { useTranslations } from '@/i18n';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
-
-type CardPriority = 'low' | 'medium' | 'high' | 'urgent';
-const PRIORITY_VALUES: CardPriority[] = ['low', 'medium', 'high', 'urgent'];
-// Mirrors the dot colours used by KanbanCardRow.
-const PRIORITY_COLORS: Record<CardPriority, string> = {
-  low: '#94a3b8',
-  medium: '#facc15',
-  high: '#fb923c',
-  urgent: '#ef4444',
-};
 
 type ViewMode = 'kanban' | 'gantt';
 type GanttMode = 'hour' | 'day' | 'week' | 'month' | 'quarter';
@@ -110,13 +102,10 @@ const LIST_COLOR_SWATCHES: Array<string | null> = [
 type CardFilters = {
   assigneeIds: string[];
   tagIds: string[];
-  priorities: CardPriority[];
   dueSoon: boolean;
 };
 
-type CardSort = 'manual' | 'dueAt' | 'priority' | 'createdAt';
-
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+type CardSort = 'manual' | 'dueAt' | 'createdAt';
 
 const DUE_SOON_MS = 3 * DAY_MS;
 
@@ -236,7 +225,6 @@ function BoardDetailScreenInner() {
   const [filters, setFilters] = useState<CardFilters>({
     assigneeIds: [],
     tagIds: [],
-    priorities: [],
     dueSoon: false,
   });
   const [sort, setSort] = useState<CardSort>('manual');
@@ -295,12 +283,6 @@ function BoardDetailScreenInner() {
         (c.tags ?? []).some((tag) => filters.tagIds.includes(tag.id)),
       );
     }
-    if (filters.priorities.length > 0) {
-      cards = cards.filter((c) => {
-        const p = (c.priority ?? c.urgency) as CardPriority | undefined;
-        return p && filters.priorities.includes(p);
-      });
-    }
     if (filters.dueSoon) {
       const cutoff = Date.now() + DUE_SOON_MS;
       cards = cards.filter((c) => {
@@ -317,11 +299,6 @@ function BoardDetailScreenInner() {
           const tb = b.dueAt ? Date.parse(b.dueAt) : Number.POSITIVE_INFINITY;
           return ta - tb;
         }
-        if (sort === 'priority') {
-          const pa = PRIORITY_ORDER[(a.priority ?? a.urgency ?? 'low') as string] ?? 99;
-          const pb = PRIORITY_ORDER[(b.priority ?? b.urgency ?? 'low') as string] ?? 99;
-          return pa - pb;
-        }
         // createdAt fallback uses position descending (newest first) since
         // BoardCard has no createdAt.
         return (b.position ?? 0) - (a.position ?? 0);
@@ -334,7 +311,6 @@ function BoardDetailScreenInner() {
   const filtersActive =
     filters.assigneeIds.length +
       filters.tagIds.length +
-      filters.priorities.length +
       (filters.dueSoon ? 1 : 0) >
     0;
 
@@ -355,7 +331,7 @@ function BoardDetailScreenInner() {
    * Optimistic in-place patch of a single card across the board state. Mutates
    * `board.lists[*].cards[*]` for the matching card id, and refreshes
    * `selectedCard` so the open detail sheet repaints without a network blink.
-   * Used by the per-card pickers (assignee / tag / priority).
+   * Used by the per-card pickers (assignee / tag / dates).
    */
   const patchCardLocal = useCallback(
     (cardId: string, mutate: (c: BoardCard) => BoardCard) => {
@@ -543,7 +519,7 @@ function BoardDetailScreenInner() {
 
       {sortMenuOpen ? (
         <View className="border-b border-border/40 bg-card px-3 py-2 flex-row gap-1">
-          {(['manual', 'dueAt', 'priority', 'createdAt'] as const).map((s) => (
+          {(['manual', 'dueAt', 'createdAt'] as const).map((s) => (
             <Pressable
               key={s}
               onPress={() => {
@@ -631,8 +607,11 @@ function BoardDetailScreenInner() {
         addAssignee={(cardId, userId) => api.addCardAssignee(cardId, userId)}
         removeAssignee={(cardId, userId) => api.removeCardAssignee(cardId, userId)}
         listBoardTags={() => api.listBoardTags(boardId)}
-        addTag={(cardId, tagId) => api.addCardTag(cardId, tagId)}
+        addTag={(cardId, tagId, meta) => api.addCardTag(cardId, tagId, meta)}
         removeTag={(cardId, tagId) => api.removeCardTag(cardId, tagId)}
+        createTag={(name, color) =>
+          api.createTag({ boardId, name, color, tagKind: 'custom' })
+        }
         startTimer={(cardId) => api.startCardTimer(cardId)}
         stopTimer={(cardId) => api.stopCardTimer(cardId)}
         onLocalPatch={patchCardLocal}
@@ -1225,6 +1204,46 @@ function ChipDropTarget({
 }
 
 /**
+ * Assignee avatar with web-parity URL resolution. Renders the profile picture
+ * when available (relative `/uploads/…` paths are prefixed with the API base —
+ * see {@link resolveAvatarUrl}); otherwise falls back to the name/email initial
+ * on a cyan circle. `size` is the diameter in px.
+ */
+function AssigneeAvatar({
+  assignee,
+  size = 20,
+}: {
+  assignee: { id: string; name?: string; email?: string; avatarUrl?: string };
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  const uri = resolveAvatarUrl(assignee.avatarUrl);
+  const radius = size / 2;
+  if (uri && !failed) {
+    return (
+      <Image
+        source={{ uri }}
+        onError={() => setFailed(true)}
+        style={{ width: size, height: size, borderRadius: radius, backgroundColor: `${colors.cyan}33` }}
+      />
+    );
+  }
+  return (
+    <View
+      style={{ width: size, height: size, borderRadius: radius }}
+      className="items-center justify-center rounded-full bg-cyan/20"
+    >
+      <Text
+        style={{ fontFamily: fonts.semibold, fontSize: Math.max(8, Math.round(size * 0.4)) }}
+        className="text-cyan"
+      >
+        {avatarInitial(assignee.name, assignee.email)}
+      </Text>
+    </View>
+  );
+}
+
+/**
  * Memoised so unrelated card updates don't re-render every row in the list —
  * a noticeable win on boards with 30+ cards in a single list. Identity of
  * onPress / onDrag* is provided by the parent via useCallback.
@@ -1252,16 +1271,7 @@ const KanbanCardRow = memo(function KanbanCardRow({
   onDragEnd(absX: number, absY: number): void;
   onDragCancel(): void;
 }) {
-  const priority = card.priority ?? card.urgency;
-  const priorityColor =
-    priority === 'urgent'
-      ? '#ef4444'
-      : priority === 'high'
-        ? '#fb923c'
-        : priority === 'medium'
-          ? '#facc15'
-          : colors.mutedForeground;
-
+  const { locale } = useI18n();
   const cardRef = useRef<View | null>(null);
   // Snapshot of where the card sat at long-press start (window coords).
   const origin = useRef<{ x: number; y: number; w: number; h: number; vw: number } | null>(
@@ -1377,9 +1387,6 @@ const KanbanCardRow = memo(function KanbanCardRow({
           />
         ) : null}
         <View className="flex-row items-start gap-2 p-3">
-        <View
-          style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: priorityColor, marginTop: 6 }}
-        />
         <View style={{ flex: 1 }}>
           <Text
             style={{ fontFamily: fonts.semibold }}
@@ -1404,7 +1411,7 @@ const KanbanCardRow = memo(function KanbanCardRow({
                     style={{ fontFamily: fonts.semibold, color: tag.color ?? colors.mutedForeground }}
                     className="text-[9px]"
                   >
-                    {tag.name}
+                    {translateNativeTagName(tag.name, locale)}
                   </Text>
                 </View>
               ))}
@@ -1421,17 +1428,7 @@ const KanbanCardRow = memo(function KanbanCardRow({
           {card.assignees && card.assignees.length > 0 ? (
             <View className="mt-1 flex-row items-center gap-1">
               {card.assignees.slice(0, 3).map((a) => (
-                <View
-                  key={a.id}
-                  className="h-5 w-5 items-center justify-center rounded-full bg-cyan/20"
-                >
-                  <Text
-                    style={{ fontFamily: fonts.semibold }}
-                    className="text-[8px] text-cyan"
-                  >
-                    {(a.name ?? a.email ?? '?').charAt(0).toUpperCase()}
-                  </Text>
-                </View>
+                <AssigneeAvatar key={a.id} assignee={a} size={20} />
               ))}
             </View>
           ) : null}
@@ -1899,27 +1896,13 @@ function GanttDateEditor({
               <Text className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 {t('startAt')}
               </Text>
-              <TextInput
-                value={s}
-                onChangeText={setS}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.mutedForeground}
-                style={{ fontFamily: fonts.mono, color: colors.foreground }}
-                className="rounded-md border border-border bg-background px-2 py-1.5"
-              />
+              <CardDateField value={s} onChange={setS} t={t} />
             </View>
             <View className="flex-1">
               <Text className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 {t('dueAt')}
               </Text>
-              <TextInput
-                value={d}
-                onChangeText={setD}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.mutedForeground}
-                style={{ fontFamily: fonts.mono, color: colors.foreground }}
-                className="rounded-md border border-border bg-background px-2 py-1.5"
-              />
+              <CardDateField value={d} onChange={setD} t={t} />
             </View>
           </View>
           <View className="flex-row justify-end gap-2">
@@ -1951,6 +1934,57 @@ function GanttDateEditor({
   );
 }
 
+// ─── Shared date field ──────────────────────────────────────────────────────
+
+/**
+ * Single reusable date field used by BOTH the card detail dates editor and the
+ * Gantt inline date editor (start_at + due_at), so the two setters look and
+ * behave identically. Value is the `YYYY-MM-DD` slice; a Clear button wipes it.
+ *
+ * No extra native date-picker dependency is pulled in — the field accepts a
+ * typed ISO date and normalises on blur, matching the lightweight approach the
+ * web uses for its date inputs while keeping a consistent control everywhere.
+ */
+function CardDateField({
+  value,
+  onChange,
+  onCommit,
+  t,
+}: {
+  value: string;
+  onChange(next: string): void;
+  onCommit?(): void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  return (
+    <View className="flex-row items-center gap-1">
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        onBlur={onCommit}
+        placeholder="YYYY-MM-DD"
+        placeholderTextColor={colors.mutedForeground}
+        autoCapitalize="none"
+        style={{ fontFamily: fonts.mono, color: colors.foreground, flex: 1 }}
+        className="rounded-md border border-border bg-background px-2 py-1.5"
+      />
+      {value ? (
+        <Pressable
+          onPress={() => {
+            onChange('');
+            onCommit?.();
+          }}
+          hitSlop={6}
+          accessibilityLabel={t('clear')}
+          className="rounded-md p-1"
+        >
+          <X size={12} color={colors.mutedForeground} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 // ─── Card detail modal ──────────────────────────────────────────────────────
 
 function CardDetailModal({
@@ -1968,6 +2002,7 @@ function CardDetailModal({
   listBoardTags,
   addTag,
   removeTag,
+  createTag,
   startTimer,
   stopTimer,
   onLocalPatch,
@@ -1986,14 +2021,14 @@ function CardDetailModal({
     summary?: string;
     startAt?: string | null;
     dueAt?: string | null;
-    priority?: string;
     coverUrl?: string | null;
   }): Promise<void>;
   addAssignee(cardId: string, userId: string): Promise<void>;
   removeAssignee(cardId: string, userId: string): Promise<void>;
   listBoardTags(): Promise<BoardTag[]>;
-  addTag(cardId: string, tagId: string): Promise<void>;
+  addTag(cardId: string, tagId: string, meta?: { name?: string; color?: string; tagKind?: string }): Promise<void>;
   removeTag(cardId: string, tagId: string): Promise<void>;
+  createTag(name: string, color?: string): Promise<BoardTag>;
   startTimer(cardId: string): Promise<void>;
   stopTimer(cardId: string): Promise<void>;
   onLocalPatch(cardId: string, mutate: (c: BoardCard) => BoardCard): void;
@@ -2004,17 +2039,22 @@ function CardDetailModal({
   const [startAt, setStartAt] = useState('');
   const [dueAt, setDueAt] = useState('');
   // Mobile: the Detail tab used to stack EVERY property editor (assignees,
-  // tags, priority, dates, cover, move, archive) inline, all expanded at once,
+  // tags, dates, cover, move, archive) inline, all expanded at once,
   // which was overwhelming. Web shows a compact card whose properties are
   // BUTTONS that each open a focused popover. We mirror that: `propertySheet`
   // tracks which single property editor is open as a focused bottom-sheet
   // Modal (null = none). The Detail body itself only shows the inline title, a
   // row of property buttons, compact value chips, and the description/checklist.
   const [propertySheet, setPropertySheet] = useState<
-    'assignees' | 'tags' | 'priority' | 'dates' | 'cover' | 'move' | null
+    'assignees' | 'tags' | 'dates' | 'cover' | 'move' | null
   >(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [boardTags, setBoardTags] = useState<BoardTag[]>([]);
+  // Tag picker (web "create tag while adding" UX): the search box doubles as a
+  // create field — typing a name with no exact match surfaces a "Create …" row.
+  const [tagSearch, setTagSearch] = useState('');
+  const [creatingTag, setCreatingTag] = useState(false);
+  const { locale } = useI18n();
   // Mobile: which tab the card sidebar shows — 'detail' is the existing form,
   // 'copilot' / 'comments' / 'activity' swap in the 3 reusable panels.
   const [sidebarTab, setSidebarTab] = useState<CardSidebarTab>('detail');
@@ -2026,6 +2066,7 @@ function CardDetailModal({
       setStartAt(item.card.startAt ? item.card.startAt.slice(0, 10) : '');
       setDueAt(item.card.dueAt ? item.card.dueAt.slice(0, 10) : '');
       setPropertySheet(null);
+      setTagSearch('');
       // Mobile: each newly-opened card starts on the Detail tab. Carrying
       // the previous selection forward would surprise users opening a fresh
       // card and seeing it stuck on someone else's chat.
@@ -2076,9 +2117,6 @@ function CardDetailModal({
   };
 
   // ── Compact value summaries shown as chips in the Detail body ──────────
-  const currentPriority = (item.card.priority ?? item.card.urgency) as
-    | CardPriority
-    | undefined;
   const cardAssignees = item.card.assignees ?? [];
   const cardTags = item.card.tags ?? [];
   const dueLabel = item.card.dueAt
@@ -2095,7 +2133,6 @@ function CardDetailModal({
   }> = [
     { key: 'assignees', icon: Users, label: t('assigneesLabel') },
     { key: 'tags', icon: TagIcon, label: t('tagsLabel') },
-    { key: 'priority', icon: Flag, label: t('priorityLabel') },
     { key: 'dates', icon: CalendarDays, label: t('dates') },
     { key: 'cover', icon: ImageIcon, label: t('cover') },
     { key: 'move', icon: ArrowRight, label: t('move') },
@@ -2156,37 +2193,9 @@ function CardDetailModal({
       </ScrollView>
 
       {/* Compact value chips — tap any to open its editor. Mirrors web's
-          inline metadata strip (priority dot, assignee avatars, tag pills,
-          due date) where each value doubles as the property trigger. */}
+          inline metadata strip (assignee avatars, tag pills, due date) where
+          each value doubles as the property trigger. */}
       <View className="flex-row flex-wrap items-center gap-1.5">
-        {/* Priority */}
-        <Pressable
-          onPress={() => setPropertySheet('priority')}
-          className="flex-row items-center gap-1 rounded-full border border-border bg-background px-2 py-1"
-        >
-          <View
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              backgroundColor: currentPriority
-                ? PRIORITY_COLORS[currentPriority]
-                : colors.mutedForeground,
-            }}
-          />
-          <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-foreground">
-            {currentPriority
-              ? currentPriority === 'low'
-                ? t('priorityLow')
-                : currentPriority === 'medium'
-                  ? t('priorityMed')
-                  : currentPriority === 'high'
-                    ? t('priorityHigh')
-                    : t('priorityUrgent')
-              : t('priorityLabel')}
-          </Text>
-        </Pressable>
-
         {/* Due date */}
         {dueLabel ? (
           <Pressable
@@ -2205,14 +2214,7 @@ function CardDetailModal({
             className="flex-row items-center gap-1 rounded-full border border-border bg-background px-1.5 py-1"
           >
             {cardAssignees.slice(0, 3).map((a) => (
-              <View
-                key={a.id}
-                className="h-5 w-5 items-center justify-center rounded-full bg-cyan/20"
-              >
-                <Text style={{ fontFamily: fonts.semibold }} className="text-[8px] text-cyan">
-                  {(a.name ?? a.email ?? '?').charAt(0).toUpperCase()}
-                </Text>
-              </View>
+              <AssigneeAvatar key={a.id} assignee={a} size={20} />
             ))}
             {cardAssignees.length > 3 ? (
               <Text className="text-[10px] text-muted-foreground">+{cardAssignees.length - 3}</Text>
@@ -2236,7 +2238,7 @@ function CardDetailModal({
               style={{ fontFamily: fonts.semibold, color: tag.color ?? colors.mutedForeground }}
               className="text-[10px]"
             >
-              {tag.name}
+              {translateNativeTagName(tag.name, locale)}
             </Text>
           </Pressable>
         ))}
@@ -2323,6 +2325,7 @@ function CardDetailModal({
                     }}
                     className="flex-row items-center gap-1 rounded-full bg-cyan/20 px-2 py-0.5"
                   >
+                    <AssigneeAvatar assignee={a} size={16} />
                     <Text style={{ fontFamily: fonts.semibold }} className="text-[10px] text-cyan">
                       {a.name ?? a.email ?? a.id}
                     </Text>
@@ -2361,8 +2364,17 @@ function CardDetailModal({
                           /* Pulse refresh will reconcile */
                         }
                       }}
-                      className={`rounded-md px-3 py-2 ${already ? 'bg-cyan/10' : ''}`}
+                      className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${already ? 'bg-cyan/10' : ''}`}
                     >
+                      <AssigneeAvatar
+                        assignee={{
+                          id: m.id,
+                          name: m.displayName ?? m.name,
+                          email: m.email,
+                          avatarUrl: m.avatarUrl ?? undefined,
+                        }}
+                        size={22}
+                      />
                       <Text
                         style={{ fontFamily: fonts.medium }}
                         className={`text-sm ${already ? 'text-cyan' : 'text-foreground'}`}
@@ -2409,106 +2421,150 @@ function CardDetailModal({
                       style={{ fontFamily: fonts.semibold, color: tag.color ?? colors.mutedForeground }}
                       className="text-[10px]"
                     >
-                      {tag.name}
+                      {translateNativeTagName(tag.name, locale)}
                     </Text>
                     <X size={8} color={tag.color ?? colors.mutedForeground} />
                   </Pressable>
                 ))
               )}
             </View>
+
+            {/* Search-or-create field. Web parity: typing a name with no exact
+                match surfaces a "Create …" row that mints the tag + assigns it.
+                (Killio-Frontend card-detail-modal handleCreateTag/handleAddTag.) */}
+            <TextInput
+              value={tagSearch}
+              onChangeText={setTagSearch}
+              placeholder={t('tagNamePlaceholder')}
+              placeholderTextColor={colors.mutedForeground}
+              autoCapitalize="none"
+              style={{ fontFamily: fonts.regular, color: colors.foreground }}
+              className="rounded-md border border-border bg-background px-3 py-2"
+            />
+
             <View className="rounded-xl border border-border bg-background p-2 gap-1">
-              {boardTags.length === 0 ? (
-                <Text className="px-2 py-1 text-xs text-muted-foreground">{t('noTags')}</Text>
-              ) : (
-                boardTags.map((tag) => {
-                  const already = cardTags.some((t2) => t2.id === tag.id);
-                  return (
-                    <Pressable
-                      key={tag.id}
-                      disabled={already}
-                      onPress={async () => {
-                        const cardId = item.card.id;
-                        onLocalPatch(cardId, (c) => ({
-                          ...c,
-                          tags: [
-                            ...(c.tags ?? []),
-                            { id: tag.id, name: tag.name, color: tag.color, tagKind: tag.tagKind },
-                          ],
-                        }));
-                        try {
-                          await addTag(cardId, tag.id);
-                        } catch {
-                          /* Pulse refresh will reconcile */
-                        }
-                      }}
-                      className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${already ? 'opacity-50' : ''}`}
-                    >
-                      <View
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 4,
-                          backgroundColor: tag.color ?? colors.mutedForeground,
-                        }}
-                      />
-                      <Text style={{ fontFamily: fonts.medium }} className="text-sm text-foreground">
-                        {tag.name}
-                      </Text>
-                    </Pressable>
+              {(() => {
+                const q = tagSearch.trim().toLowerCase();
+                const filtered = boardTags.filter((tag) => {
+                  if (!q) return true;
+                  const raw = String(tag.name ?? '').toLowerCase();
+                  const localized = translateNativeTagName(tag.name, locale).toLowerCase();
+                  return raw.includes(q) || localized.includes(q);
+                });
+                // Native suggestions not already on the board (web parity).
+                const nativeSuggestions = DEFAULT_NATIVE_TAG_SUGGESTIONS.filter((s) => {
+                  const exists = boardTags.some(
+                    (tag) => String(tag.name ?? '').toLowerCase() === s.key.toLowerCase(),
                   );
-                })
-              )}
+                  if (exists) return false;
+                  if (!q) return true;
+                  const label = translateNativeTagName(s.key, locale).toLowerCase();
+                  return s.key.toLowerCase().includes(q) || label.includes(q);
+                });
+                const exactExists = boardTags.some(
+                  (tag) =>
+                    String(tag.name ?? '').toLowerCase() === q ||
+                    translateNativeTagName(tag.name, locale).toLowerCase() === q,
+                );
+
+                const assignTag = async (tag: BoardTag) => {
+                  const cardId = item.card.id;
+                  onLocalPatch(cardId, (c) => ({
+                    ...c,
+                    tags: [
+                      ...(c.tags ?? []),
+                      { id: tag.id, name: tag.name, color: tag.color, tagKind: tag.tagKind },
+                    ],
+                  }));
+                  setTagSearch('');
+                  try {
+                    await addTag(cardId, tag.id, {
+                      name: tag.name,
+                      color: tag.color,
+                      tagKind: tag.tagKind,
+                    });
+                  } catch {
+                    /* Pulse refresh will reconcile */
+                  }
+                };
+
+                const handleCreate = async (name: string, color?: string) => {
+                  const trimmed = name.trim();
+                  if (!trimmed || creatingTag) return;
+                  setCreatingTag(true);
+                  try {
+                    const created = await createTag(trimmed, color);
+                    setBoardTags((prev) =>
+                      prev.some((p) => p.id === created.id) ? prev : [...prev, created],
+                    );
+                    await assignTag(created);
+                  } catch {
+                    /* swallow — user can retry */
+                  } finally {
+                    setCreatingTag(false);
+                  }
+                };
+
+                return (
+                  <>
+                    {filtered.length === 0 && nativeSuggestions.length === 0 && !tagSearch.trim() ? (
+                      <Text className="px-2 py-1 text-xs text-muted-foreground">{t('noTags')}</Text>
+                    ) : null}
+                    {filtered.map((tag) => {
+                      const already = cardTags.some((t2) => t2.id === tag.id);
+                      return (
+                        <Pressable
+                          key={tag.id}
+                          disabled={already}
+                          onPress={() => void assignTag(tag)}
+                          className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${already ? 'opacity-50' : ''}`}
+                        >
+                          <View
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: 4,
+                              backgroundColor: tag.color ?? colors.mutedForeground,
+                            }}
+                          />
+                          <Text style={{ fontFamily: fonts.medium }} className="text-sm text-foreground">
+                            {translateNativeTagName(tag.name, locale)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                    {/* Native tag quick-create suggestions (creates on tap). */}
+                    {nativeSuggestions.map((s) => (
+                      <Pressable
+                        key={s.key}
+                        onPress={() => void handleCreate(s.key, s.color)}
+                        className="flex-row items-center gap-2 rounded-md px-3 py-2"
+                      >
+                        <View
+                          style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: s.color }}
+                        />
+                        <Text style={{ fontFamily: fonts.medium }} className="text-sm text-muted-foreground">
+                          {translateNativeTagName(s.key, locale)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                    {/* "Create new" row when the typed name has no exact match. */}
+                    {tagSearch.trim() && !exactExists ? (
+                      <Pressable
+                        onPress={() => void handleCreate(tagSearch)}
+                        disabled={creatingTag}
+                        className="flex-row items-center gap-2 rounded-md border border-dashed border-cyan/50 bg-cyan/10 px-3 py-2"
+                      >
+                        <Plus size={12} color={colors.cyan} />
+                        <Text style={{ fontFamily: fonts.semibold }} className="text-sm text-cyan">
+                          {t('createTag', { name: tagSearch.trim() })}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                );
+              })()}
             </View>
-          </View>
-        );
-      case 'priority':
-        return (
-          <View className="flex-row gap-1">
-            {PRIORITY_VALUES.map((p) => {
-              const active = currentPriority === p;
-              const colorHex = PRIORITY_COLORS[p];
-              return (
-                <Pressable
-                  key={p}
-                  onPress={async () => {
-                    const cardId = item.card.id;
-                    onLocalPatch(cardId, (c) => ({ ...c, priority: p }));
-                    setPropertySheet(null);
-                    try {
-                      await onPatch({ priority: p });
-                    } catch {
-                      /* Pulse refresh will reconcile */
-                    }
-                  }}
-                  className="flex-1 flex-row items-center justify-center gap-1 rounded-md border px-2 py-2"
-                  style={{
-                    backgroundColor: active ? colorHex : 'transparent',
-                    borderColor: active ? colorHex : colors.border,
-                  }}
-                >
-                  <View
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: 3,
-                      backgroundColor: active ? '#0a0a0a' : colorHex,
-                    }}
-                  />
-                  <Text
-                    style={{ fontFamily: fonts.semibold }}
-                    className={`text-[10px] ${active ? 'text-background' : 'text-foreground'}`}
-                  >
-                    {p === 'low'
-                      ? t('priorityLow')
-                      : p === 'medium'
-                        ? t('priorityMed')
-                        : p === 'high'
-                          ? t('priorityHigh')
-                          : t('priorityUrgent')}
-                  </Text>
-                </Pressable>
-              );
-            })}
           </View>
         );
       case 'dates':
@@ -2518,28 +2574,26 @@ function CardDetailModal({
               <Text className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 {t('startAt')}
               </Text>
-              <TextInput
+              <CardDateField
                 value={startAt}
-                onChangeText={setStartAt}
-                onBlur={commit}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.mutedForeground}
-                style={{ fontFamily: fonts.mono, color: colors.foreground }}
-                className="rounded-md border border-border bg-background px-2 py-1.5"
+                onChange={(next) => {
+                  setStartAt(next);
+                }}
+                onCommit={commit}
+                t={t}
               />
             </View>
             <View className="flex-1">
               <Text className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 {t('dueAt')}
               </Text>
-              <TextInput
+              <CardDateField
                 value={dueAt}
-                onChangeText={setDueAt}
-                onBlur={commit}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.mutedForeground}
-                style={{ fontFamily: fonts.mono, color: colors.foreground }}
-                className="rounded-md border border-border bg-background px-2 py-1.5"
+                onChange={(next) => {
+                  setDueAt(next);
+                }}
+                onCommit={commit}
+                t={t}
               />
             </View>
           </View>
@@ -2594,13 +2648,11 @@ function CardDetailModal({
       ? t('assigneesLabel')
       : propertySheet === 'tags'
         ? t('tagsLabel')
-        : propertySheet === 'priority'
-          ? t('priorityLabel')
-          : propertySheet === 'dates'
-            ? t('dates')
-            : propertySheet === 'cover'
-              ? t('cover')
-              : t('move')
+        : propertySheet === 'dates'
+          ? t('dates')
+          : propertySheet === 'cover'
+            ? t('cover')
+            : t('move')
     : '';
 
   return (
@@ -2991,7 +3043,7 @@ function CardChecklistInline({
 // ─── Filters sheet ──────────────────────────────────────────────────────────
 
 /**
- * Bottom-sheet for filtering cards by tag / priority / due-soon. Web parity
+ * Bottom-sheet for filtering cards by tag / assignee / due-soon. Web parity
  * for the top FilterButton on the kanban toolbar.
  *
  * Mobile: tag list comes from `listBoardTags()` (cloud or local). Assignee
@@ -3018,6 +3070,7 @@ function FiltersSheet({
 }) {
   const [tags, setTags] = useState<BoardTag[]>([]);
   const [members, setMembers] = useState<TeamMember[]>([]);
+  const { locale } = useI18n();
 
   useEffect(() => {
     if (!open) return;
@@ -3040,12 +3093,6 @@ function FiltersSheet({
   }, [open, isLocal, teamId, listBoardTags]);
 
   if (!open) return null;
-  const togglePriority = (p: CardPriority) => {
-    const next = filters.priorities.includes(p)
-      ? filters.priorities.filter((x) => x !== p)
-      : [...filters.priorities, p];
-    setFilters({ ...filters, priorities: next });
-  };
   const toggleTag = (id: string) => {
     const next = filters.tagIds.includes(id)
       ? filters.tagIds.filter((x) => x !== id)
@@ -3073,44 +3120,6 @@ function FiltersSheet({
           </View>
 
           <ScrollView style={{ maxHeight: 480 }} contentContainerClassName="gap-3">
-            <View className="gap-1">
-              <Text
-                style={{ fontFamily: fonts.semibold }}
-                className="text-[10px] uppercase tracking-widest text-muted-foreground"
-              >
-                {t('priorityLabel')}
-              </Text>
-              <View className="flex-row gap-1">
-                {(['low', 'medium', 'high', 'urgent'] as const).map((p) => {
-                  const on = filters.priorities.includes(p);
-                  return (
-                    <Pressable
-                      key={p}
-                      onPress={() => togglePriority(p)}
-                      className="flex-1 rounded-md border px-2 py-1.5"
-                      style={{
-                        backgroundColor: on ? PRIORITY_COLORS[p] : 'transparent',
-                        borderColor: on ? PRIORITY_COLORS[p] : colors.border,
-                      }}
-                    >
-                      <Text
-                        style={{ fontFamily: fonts.semibold }}
-                        className={`text-center text-[10px] ${on ? 'text-background' : 'text-foreground'}`}
-                      >
-                        {p === 'low'
-                          ? t('priorityLow')
-                          : p === 'medium'
-                            ? t('priorityMed')
-                            : p === 'high'
-                              ? t('priorityHigh')
-                              : t('priorityUrgent')}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
             {tags.length > 0 ? (
               <View className="gap-1">
                 <Text
@@ -3139,7 +3148,7 @@ function FiltersSheet({
                           style={{ fontFamily: fonts.semibold }}
                           className={`text-[10px] ${on ? 'text-background' : 'text-foreground'}`}
                         >
-                          {tag.name}
+                          {translateNativeTagName(tag.name, locale)}
                         </Text>
                       </Pressable>
                     );
@@ -3200,7 +3209,7 @@ function FiltersSheet({
 
             <Pressable
               onPress={() =>
-                setFilters({ assigneeIds: [], tagIds: [], priorities: [], dueSoon: false })
+                setFilters({ assigneeIds: [], tagIds: [], dueSoon: false })
               }
               className="rounded-md border border-border bg-secondary px-3 py-2"
             >

@@ -45,8 +45,6 @@ interface LocalCard {
   dueAt?: string | null;
   completedAt?: string | null;
   archivedAt?: string | null;
-  priority?: string | null;
-  urgency?: string | null;
   position: number;
   assignees: LocalAssignee[];
   tags: { id: string; name: string; color?: string; tagKind?: string }[];
@@ -252,8 +250,6 @@ function toBoardCard(c: LocalCard): BoardCard {
     dueAt: c.dueAt ?? null,
     completedAt: c.completedAt ?? null,
     archivedAt: c.archivedAt ?? null,
-    priority: c.priority ?? null,
-    urgency: c.urgency ?? null,
     position: c.position,
     assignees: c.assignees ?? [],
     tags: c.tags ?? [],
@@ -415,8 +411,6 @@ export async function createLocalCard(input: {
     dueAt: input.dueAt ?? null,
     completedAt: null,
     archivedAt: null,
-    priority: null,
-    urgency: null,
     position,
     assignees: [],
     tags: [],
@@ -436,8 +430,6 @@ export async function updateLocalCard(
     status?: string;
     startAt?: string | null;
     dueAt?: string | null;
-    urgency?: string;
-    priority?: string;
     list_id?: string;
     listId?: string;
     position?: number;
@@ -459,8 +451,6 @@ export async function updateLocalCard(
     status: patch.status ?? existing.status,
     startAt: patch.startAt !== undefined ? patch.startAt : existing.startAt,
     dueAt: patch.dueAt !== undefined ? patch.dueAt : existing.dueAt,
-    urgency: patch.urgency ?? existing.urgency,
-    priority: patch.priority ?? existing.priority,
     listId: targetListId ?? existing.listId,
     position: patch.position ?? existing.position,
     coverUrl:
@@ -569,7 +559,29 @@ export async function listLocalBoardTags(
   return Array.from(seen.values());
 }
 
-export async function addLocalCardTag(cardId: string, tagId: string): Promise<void> {
+/**
+ * Local "create tag" — local mode has no tags table, so this just mints a tag
+ * object the caller can immediately assign via {@link addLocalCardTag}. The id
+ * is a stable slug derived from the name so the same tag de-dupes across cards.
+ */
+export async function createLocalBoardTag(
+  _boardId: string,
+  input: { name: string; color?: string; tagKind?: string },
+): Promise<{ id: string; name: string; color?: string; tagKind?: string }> {
+  const id = `tag_${input.name.trim().toLowerCase().replace(/\s+/g, '-')}`;
+  return {
+    id,
+    name: input.name.trim(),
+    color: input.color,
+    tagKind: input.tagKind ?? 'custom',
+  };
+}
+
+export async function addLocalCardTag(
+  cardId: string,
+  tagId: string,
+  meta?: { name?: string; color?: string; tagKind?: string },
+): Promise<void> {
   const wsId = await resolveWorkspaceForCard(cardId);
   if (!wsId) throw new Error(`Local card not found: ${cardId}`);
   const file = await readStore(wsId);
@@ -580,7 +592,17 @@ export async function addLocalCardTag(cardId: string, tagId: string): Promise<vo
       if ((c.tags ?? []).some((t) => t.id === tagId)) return c;
       return {
         ...c,
-        tags: [...(c.tags ?? []), { id: tagId, name: tagId }],
+        // Persist the human label + color when provided (created tags carry
+        // them); fall back to the id as the name for legacy plain-string tags.
+        tags: [
+          ...(c.tags ?? []),
+          {
+            id: tagId,
+            name: meta?.name ?? tagId,
+            color: meta?.color,
+            tagKind: meta?.tagKind,
+          },
+        ],
         updatedAt: new Date().toISOString(),
       };
     }),

@@ -17,8 +17,6 @@ export interface BoardCard {
   dueAt?: string | null;
   completedAt?: string | null;
   archivedAt?: string | null;
-  priority?: string | null;
-  urgency?: string | null;
   position?: number;
   assignees?: { id: string; name?: string; email?: string; avatarUrl?: string }[];
   tags?: { id: string; name: string; color?: string; tagKind?: string }[];
@@ -129,8 +127,6 @@ export async function updateCard(
     status?: string;
     startAt?: string | null;
     dueAt?: string | null;
-    urgency?: string;
-    priority?: string;
     list_id?: string;
     listId?: string;
     position?: number;
@@ -275,6 +271,34 @@ export async function listBoardTags(boardId: string): Promise<BoardTag[]> {
 
 export async function addCardTag(cardId: string, tagId: string): Promise<void> {
   await api.post(`/cards/${cardId}/tags/${tagId}`);
+}
+
+/**
+ * Create a new tag scoped to a board, then return it for immediate assignment.
+ * Backend route: `POST /tags` (mirrors Killio-Frontend `createTag`). The
+ * backend returns `tag_kind` (snake_case); we normalise to `tagKind` so the
+ * result matches `BoardTag`.
+ */
+export async function createBoardTag(input: {
+  boardId: string;
+  name: string;
+  color?: string;
+  tagKind?: 'priority' | 'ux' | 'bug' | 'feature' | 'custom';
+}): Promise<BoardTag> {
+  const { data } = await api.post<any>(`/tags`, {
+    scopeType: 'board',
+    scopeId: input.boardId,
+    name: input.name,
+    color: input.color,
+    tagKind: input.tagKind ?? 'custom',
+  });
+  return {
+    id: data.id,
+    name: data.name,
+    slug: data.slug,
+    color: data.color ?? input.color,
+    tagKind: data.tagKind ?? data.tag_kind,
+  };
 }
 
 export async function removeCardTag(cardId: string, tagId: string): Promise<void> {
