@@ -109,6 +109,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     'expo-notifications',
     'expo-font',
+    [
+      'expo-camera',
+      { cameraPermission: 'Killio Vault usa la cámara para controlar la linterna.' },
+    ],
+    'expo-brightness',
     './plugins/withVaultCapture',
     './plugins/withVaultWidgets',
     './plugins/withReleaseSigning',

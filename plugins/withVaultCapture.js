@@ -27,6 +27,8 @@ const PERMISSIONS = [
   'android.permission.ACCESS_COARSE_LOCATION',
   'android.permission.ACCESS_FINE_LOCATION',
   'android.permission.SEND_SMS',
+  // Torch control (flashlight client-action) goes through expo-camera.
+  'android.permission.CAMERA',
 ];
 
 module.exports = function withVaultCapture(config) {

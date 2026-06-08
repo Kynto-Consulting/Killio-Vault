@@ -6,6 +6,7 @@ import * as Device from '../integrations/device';
 import * as Spotify from '../integrations/spotify';
 import * as Clipboard from '../integrations/clipboard';
 import * as ShareInt from '../integrations/share';
+import * as DeviceControls from '../integrations/deviceControls';
 
 /**
  * Executes client-action tools on the device. The backend agent loop pauses the
@@ -206,6 +207,75 @@ export async function runClientAction(
         return { success: false, error: (e as Error)?.message ?? 'share failed' };
       }
 
+    // ─── Device controls (file/battery/torch/brightness/alarm/vibrate/info) ─
+    case 'pick_file':
+      try {
+        const r = await DeviceControls.pickFile(
+          input.type as 'any' | 'image' | 'pdf' | 'text' | undefined,
+        );
+        return { success: true, output: r };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'file pick failed' };
+      }
+    case 'battery_status':
+      try {
+        return { success: true, output: await DeviceControls.batteryStatus() };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'battery status failed' };
+      }
+    case 'flashlight':
+      try {
+        return { success: true, output: await DeviceControls.setFlashlight(input.on === true) };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'flashlight failed' };
+      }
+    case 'set_brightness':
+      try {
+        const r = await DeviceControls.setBrightness({
+          level: input.level as number | undefined,
+          restore: input.restore as boolean | undefined,
+        });
+        return { success: true, output: r };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'set brightness failed' };
+      }
+    case 'set_alarm':
+      try {
+        const r = await DeviceControls.setAlarm({
+          hour: Number(input.hour),
+          minute: Number(input.minute),
+          label: input.label as string | undefined,
+        });
+        return tag({ success: true, output: r });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'set alarm failed' };
+      }
+    case 'set_timer':
+      try {
+        const r = await DeviceControls.setTimer({
+          seconds: Number(input.seconds),
+          label: input.label as string | undefined,
+        });
+        return tag({ success: true, output: r });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'set timer failed' };
+      }
+    case 'vibrate':
+      try {
+        const r = await DeviceControls.vibrate(
+          input.pattern as 'light' | 'medium' | 'heavy' | 'success' | 'error' | undefined,
+        );
+        return { success: true, output: r };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'vibrate failed' };
+      }
+    case 'device_info':
+      try {
+        return { success: true, output: await DeviceControls.deviceInfo() };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'device info failed' };
+      }
+
     default:
       return { success: false, error: `Unknown client action: ${tool}` };
   }
@@ -220,6 +290,10 @@ export const NEEDS_CONFIRM = new Set([
   'spotify_play',
   'clipboard_write',
   'share_text',
+  'set_alarm',
+  'set_timer',
+  'set_brightness',
+  'flashlight',
 ]);
 
 /** Tools whose only effect is on the Vault app itself (no native side effect). */
