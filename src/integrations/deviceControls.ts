@@ -94,7 +94,13 @@ export async function batteryStatus(): Promise<{
 // ─── flashlight ────────────────────────────────────────────────────────────────
 
 export async function setFlashlight(on: boolean): Promise<{ on: boolean }> {
-  const { status } = await Camera.requestCameraPermissionsAsync();
+  // Check first, prompt ONLY if not already granted. Calling
+  // requestCameraPermissionsAsync() unconditionally on every invocation made the
+  // system permission dialog re-open in a loop when the model retried the tool.
+  let status = (await Camera.getCameraPermissionsAsync()).status;
+  if (status !== 'granted') {
+    status = (await Camera.requestCameraPermissionsAsync()).status;
+  }
   if (status !== 'granted') throw new Error('Camera permission denied (needed for the torch).');
   // expo-camera 16 has no imperative torch API — the torch is a prop on
   // <CameraView enableTorch>. We drive a hidden CameraView mounted at the app
@@ -109,7 +115,8 @@ export async function setBrightness(opts: {
   level?: number;
   restore?: boolean;
 }): Promise<{ level: number | null; restored: boolean }> {
-  const { status } = await Brightness.requestPermissionsAsync();
+  let status = (await Brightness.getPermissionsAsync()).status;
+  if (status !== 'granted') status = (await Brightness.requestPermissionsAsync()).status;
   if (status !== 'granted') throw new Error('Brightness permission denied.');
   if (opts.restore) {
     await Brightness.restoreSystemBrightnessAsync();
