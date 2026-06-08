@@ -41,6 +41,17 @@ import { fonts } from '@/theme/fonts';
  */
 export type CopilotEntity = 'document' | 'card';
 
+/**
+ * Compressed-history checkpoints are stored as normal assistant rows but must
+ * never render as chat bubbles. The backend already filters them server-side;
+ * this is a defensive client guard (older rows / flag-based + content-prefix).
+ */
+function isCompressedCheckpoint(m: ConversationMessage): boolean {
+  const meta = (m as { metadata?: { compressed?: boolean } }).metadata;
+  if (meta?.compressed === true) return true;
+  return typeof m.content === 'string' && m.content.startsWith('<compressed>');
+}
+
 export interface CopilotPanelProps {
   teamId: string;
   entityType: CopilotEntity;
@@ -90,7 +101,9 @@ export function CopilotPanel({ teamId, entityType, entityId, namespace = 'docCop
         if (cancelled) return;
         setConversationId(target.id);
         setMessages(
-          past.map((m: ConversationMessage) => ({ id: m.id, role: m.role, text: m.content })),
+          past
+            .filter((m) => !isCompressedCheckpoint(m))
+            .map((m: ConversationMessage) => ({ id: m.id, role: m.role, text: m.content })),
         );
       } catch {
         /* offline / no history — start fresh */
@@ -314,7 +327,9 @@ export function CopilotPanel({ teamId, entityType, entityId, namespace = 'docCop
               const past = await getConversationMessages(conv.id);
               setConversationId(conv.id);
               setMessages(
-                past.map((m) => ({ id: m.id, role: m.role, text: m.content })),
+                past
+                  .filter((m) => !isCompressedCheckpoint(m))
+                  .map((m) => ({ id: m.id, role: m.role, text: m.content })),
               );
             } catch {
               /* swallow — keep current conversation */
