@@ -100,16 +100,17 @@ class VaultSpeechService : Service() {
      */
     private fun spkModelRoot(base: File): File? {
       if (!base.isDirectory) return null
-      if (File(base, "final.ext").exists() || File(base, "mean").exists()) {
-        return base
-      }
-      base.listFiles()?.forEach { child ->
-        if (child.isDirectory &&
-          (File(child, "final.ext").exists() || File(child, "mean").exists())
-        ) {
-          return child
-        }
-      }
+      val hasMarker = { d: File -> File(d, "final.ext").exists() || File(d, "mean").exists() }
+      if (hasMarker(base)) return base
+      val children = base.listFiles()?.filter { it.isDirectory } ?: emptyList()
+      children.forEach { if (hasMarker(it)) return it }
+      // Fallback: the spk-0.4 zip may use different marker names. If there's
+      // exactly one subdirectory, assume it's the model root. Log the layout
+      // so we can see the real structure if this still misses.
+      if (children.size == 1) return children[0]
+      Log.w("KillioVosk", "spkModelRoot miss — base=${base.list()?.joinToString()} children=${children.joinToString { it.name + ":" + (it.list()?.take(6)?.joinToString("|") ?: "") }}")
+      // Last resort: if base itself holds files (flat extract), use base.
+      if ((base.listFiles()?.any { it.isFile } == true)) return base
       return null
     }
   }
