@@ -25,6 +25,23 @@ export interface SpeechStartOptions {
   preferOffline?: boolean;
 }
 
+/**
+ * Offline Vosk model lifecycle, emitted on first start while the ~39MB Spanish
+ * model is fetched + unzipped. The UI shows a progress banner for
+ * 'downloading'/'preparing' and hides it on 'ready'. 'error' carries a message.
+ */
+export interface ModelStatusEvent {
+  state: 'downloading' | 'preparing' | 'ready' | 'error';
+  /** 0..100 while downloading (may be absent if Content-Length is unknown). */
+  progress?: number;
+  /** Bytes downloaded so far (downloading only). */
+  bytes?: number;
+  /** Total bytes to download (downloading only; absent if unknown). */
+  total?: number;
+  /** Failure message when state === 'error'. */
+  message?: string;
+}
+
 export function isAvailable(): boolean {
   return !!native;
 }
@@ -47,6 +64,16 @@ export function onTranscript(cb: (e: TranscriptEvent) => void): { remove(): void
 export function onError(cb: (e: { message: string }) => void): { remove(): void } {
   if (!emitter) return { remove() {} };
   const sub = emitter.addListener('onError', cb);
+  return { remove: () => sub.remove() };
+}
+
+/**
+ * Subscribe to offline-model download/prepare progress (Vosk first-run fetch).
+ * Fires 'downloading' (with progress), 'preparing' (unzip), 'ready', 'error'.
+ */
+export function onModelStatus(cb: (e: ModelStatusEvent) => void): { remove(): void } {
+  if (!emitter) return { remove() {} };
+  const sub = emitter.addListener('onModelStatus', cb);
   return { remove: () => sub.remove() };
 }
 

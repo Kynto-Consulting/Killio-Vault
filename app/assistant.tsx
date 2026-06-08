@@ -52,6 +52,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { uploadFile } from '@/core/api/uploads.client';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useCapture } from '@/capture/CaptureContext';
+import { ModelStatusBanner } from '@/capture/ModelStatusBanner';
 import {
   streamAgentChat,
   getConversationMessages,
@@ -521,6 +522,7 @@ export default function AssistantScreen() {
 
   return (
     <Screen padded={false}>
+      <ModelStatusBanner />
       <FlatList
         data={messages}
         keyExtractor={(m) => m.id}

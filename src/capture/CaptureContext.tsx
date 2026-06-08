@@ -7,7 +7,7 @@ import React, {
   useState,
 } from 'react';
 
-import { CaptureController, CaptureStatus } from './CaptureController';
+import { CaptureController, CaptureStatus, ModelStatus } from './CaptureController';
 import { CaptureMode } from './schedule';
 import { getCaptureMode, setCaptureMode } from '../settings/settings-store';
 import { pendingCount, flushOutbox } from '../db/outbox';
@@ -15,6 +15,8 @@ import { hasMicrophone, requestCapturePermissions } from './permissions';
 
 interface CaptureState {
   status: CaptureStatus;
+  /** Offline STT model download/prepare progress (null = ready/idle). */
+  modelStatus: ModelStatus;
   mode: CaptureMode;
   nativeAvailable: boolean;
   pending: number;
@@ -37,6 +39,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const wakeCbRef = useRef<((m: any) => void) | null>(null);
   const cmdCbRef = useRef<((text: string) => void) | null>(null);
   const [status, setStatus] = useState<CaptureStatus>('idle');
+  const [modelStatus, setModelStatus] = useState<ModelStatus>(null);
   const [mode, setModeState] = useState<CaptureMode>({ kind: 'off' });
   const [pending, setPending] = useState(0);
   const nativeAvailable = CaptureController.nativeReady();
@@ -48,6 +51,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       const controller = new CaptureController({
         mode: saved,
         onStatus: setStatus,
+        onModelStatus: setModelStatus,
       });
       controllerRef.current = controller;
       controller.setOnWake(wakeCbRef.current); // apply handler registered before creation
@@ -108,6 +112,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<CaptureState>(
     () => ({
       status,
+      modelStatus,
       mode,
       nativeAvailable,
       pending,
@@ -133,7 +138,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
         controllerRef.current?.setOnCommandUtterance(cb);
       },
     }),
-    [status, mode, nativeAvailable, pending],
+    [status, modelStatus, mode, nativeAvailable, pending],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

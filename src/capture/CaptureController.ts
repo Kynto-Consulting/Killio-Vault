@@ -35,12 +35,21 @@ export type CaptureStatus =
  */
 export type AudioSource = 'mic' | 'system' | 'both';
 
+/**
+ * Offline STT model status surfaced to the UI. Mirrors the native
+ * onModelStatus event so a banner can show first-run download/prepare progress.
+ * null = no model activity (idle or already-ready).
+ */
+export type ModelStatus = Speech.ModelStatusEvent | null;
+
 export interface CaptureControllerOptions {
   mode: CaptureMode;
   /** Audio source: mic-only (default), system-only, or both. */
   source?: AudioSource;
   /** Called on status changes for the UI. */
   onStatus?: (s: CaptureStatus) => void;
+  /** Called on offline-model download/prepare progress for the UI banner. */
+  onModelStatus?: (s: ModelStatus) => void;
   /** Flush cadence (ms). */
   flushIntervalMs?: number;
   /** STT language for the native recognizer (default es-ES). */
@@ -55,6 +64,7 @@ export class CaptureController {
   private frameSub: { remove(): void } | null = null;
   private errSub: { remove(): void } | null = null;
   private transcriptSub: { remove(): void } | null = null;
+  private modelStatusSub: { remove(): void } | null = null;
   /** System-audio (playback) frame/error subscriptions, used when source
    *  includes 'system'. Separate from the mic subs above. */
   private sysFrameSub: { remove(): void } | null = null;
@@ -63,6 +73,8 @@ export class CaptureController {
   /** Local day last uploaded — drives the end-of-day flush on rollover. */
   private lastFlushDay: string | null = null;
   private readonly onStatus?: (s: CaptureStatus) => void;
+  private readonly onModelStatus?: (s: ModelStatus) => void;
+  private modelStatus: ModelStatus = null;
   private readonly flushIntervalMs: number;
   private readonly language: string;
   /**
@@ -88,6 +100,7 @@ export class CaptureController {
     this.mode = opts.mode;
     this.source = opts.source ?? 'mic';
     this.onStatus = opts.onStatus;
+    this.onModelStatus = opts.onModelStatus;
     this.flushIntervalMs = opts.flushIntervalMs ?? 30_000;
     this.language = opts.language ?? 'es-ES';
     // SpeechRecognizer only reads the MIC, so it can only serve a mic source.
@@ -123,6 +136,15 @@ export class CaptureController {
 
   getStatus(): CaptureStatus {
     return this.status;
+  }
+
+  getModelStatus(): ModelStatus {
+    return this.modelStatus;
+  }
+
+  private setModelStatus(s: ModelStatus): void {
+    this.modelStatus = s;
+    this.onModelStatus?.(s);
   }
 
   setMode(mode: CaptureMode): void {
@@ -169,6 +191,11 @@ export class CaptureController {
     if (this.wantsMic && speechOk) {
       this.transcriptSub = Speech.onTranscript((e) => this.handleTranscript(e));
       this.errSub = Speech.onError(() => this.setStatus('error'));
+      // Offline model download/prepare progress for the first-run banner. Clear
+      // it back to null once ready so the banner hides.
+      this.modelStatusSub = Speech.onModelStatus((e) => {
+        this.setModelStatus(e.state === 'ready' ? null : e);
+      });
     } else if (this.wantsMic && nativeOk) {
       this.frameSub = Native.onAudioFrame((e) => this.handleFrame(e));
       this.errSub = Native.onError(() => this.setStatus('error'));
@@ -198,10 +225,13 @@ export class CaptureController {
     this.frameSub?.remove();
     this.errSub?.remove();
     this.transcriptSub?.remove();
+    this.modelStatusSub?.remove();
     this.sysFrameSub?.remove();
     this.sysErrSub?.remove();
     this.frameSub = this.errSub = this.transcriptSub = null;
+    this.modelStatusSub = null;
     this.sysFrameSub = this.sysErrSub = null;
+    this.setModelStatus(null);
     if (this.wantsMic) {
       if (this.useSpeech) {
         await Speech.stop();

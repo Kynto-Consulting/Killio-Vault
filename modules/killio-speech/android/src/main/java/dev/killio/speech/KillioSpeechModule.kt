@@ -35,7 +35,7 @@ class KillioSpeechModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("KillioSpeech")
 
-    Events("onTranscript", "onError")
+    Events("onTranscript", "onError", "onModelStatus")
 
     OnCreate {
       VaultSpeechService.emitter = { name, body -> sendEvent(name, body) }

@@ -1133,6 +1133,11 @@ export const MESSAGES: Record<Locale, Messages> = {
       sendSms: '¿Enviar SMS a {{target}}?',
       genericAction: '¿Permitir esta acción?',
     },
+    captureModel: {
+      downloading: 'Descargando modelo de voz… {{progress}}%',
+      preparing: 'Preparando modelo de voz…',
+      error: 'No se pudo preparar el modelo de voz.',
+    },
     history: {
       title: 'Historial',
       subtitle: 'También visible en Rooms › carpeta “Vault”.',
@@ -2283,6 +2288,11 @@ export const MESSAGES: Record<Locale, Messages> = {
       createEvent: 'Create event "{{target}}"?',
       sendSms: 'Send SMS to {{target}}?',
       genericAction: 'Allow this action?',
+    },
+    captureModel: {
+      downloading: 'Downloading voice model… {{progress}}%',
+      preparing: 'Preparing voice model…',
+      error: 'Could not prepare the voice model.',
     },
     history: {
       title: 'History',

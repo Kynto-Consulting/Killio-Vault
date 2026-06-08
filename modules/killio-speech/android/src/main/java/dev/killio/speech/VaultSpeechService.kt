@@ -21,6 +21,7 @@ import org.vosk.Model
 import org.vosk.Recognizer
 import java.io.File
 import java.io.FileOutputStream
+import android.util.Log
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.zip.ZipInputStream
@@ -138,6 +139,25 @@ class VaultSpeechService : Service() {
     wakeLock = null
   }
 
+  /**
+   * Emit a model lifecycle update to JS via the shared emitter. Mirrors the
+   * onTranscript/onError contract — a single `onModelStatus` event carrying a
+   * `state` string plus optional progress fields. States:
+   *   downloading { progress:Int 0..100, bytes:Long, total:Long }
+   *   preparing   (indeterminate — unzip in progress)
+   *   ready       (model present + recognizer created)
+   *   error       { message:String }
+   */
+  private fun emitModelStatus(state: String, progress: Int = -1, bytes: Long = -1, total: Long = -1, message: String? = null) {
+    emitter?.invoke("onModelStatus", Bundle().apply {
+      putString("state", state)
+      if (progress >= 0) putInt("progress", progress)
+      if (bytes >= 0) putLong("bytes", bytes)
+      if (total >= 0) putLong("total", total)
+      if (message != null) putString("message", message)
+    })
+  }
+
   /** Worker body: ensure model → open AudioRecord → stream PCM16 into Vosk. */
   private fun recognitionLoop() {
     val modelRoot = try {
@@ -161,6 +181,7 @@ class VaultSpeechService : Service() {
       return
     }
     model = m
+    Log.i("KillioVosk", "Model loaded from ${modelRoot.absolutePath}")
 
     val rec: Recognizer = try {
       Recognizer(m, SAMPLE_RATE.toFloat())
@@ -203,6 +224,10 @@ class VaultSpeechService : Service() {
 
     val buf = ShortArray(frameSamples)
     recorder.startRecording()
+    // Model present + recognizer created + mic streaming → tell the UI the
+    // download/prepare phase is over so it can hide any progress banner.
+    emitModelStatus("ready")
+    Log.i("KillioVosk", "Recognizer ready, AudioRecord started (16kHz) — listening loop running")
     try {
       while (running) {
         val read = recorder.read(buf, 0, frameSamples)
@@ -233,6 +258,7 @@ class VaultSpeechService : Service() {
       ""
     }
     if (text.isNotEmpty()) {
+      Log.i("KillioVosk", "TRANSCRIPT: $text")
       emitter?.invoke("onTranscript", Bundle().apply {
         putString("text", text)
         putDouble("ts", System.currentTimeMillis().toDouble())
@@ -247,9 +273,16 @@ class VaultSpeechService : Service() {
    */
   private fun ensureModel(): File? {
     val base = File(filesDir, MODEL_DIR)
-    modelRoot(base)?.let { return it }
+    modelRoot(base)?.let {
+      // Cached path: no download bar — the model is already on disk. The UI
+      // will get the definitive "ready" once the recognizer is up.
+      Log.i("KillioVosk", "Model already present (offline) at ${it.absolutePath}")
+      emitModelStatus("ready")
+      return it
+    }
 
     // First run (or a previous partial download): (re)fetch the zip.
+    Log.i("KillioVosk", "Model not found — downloading $MODEL_URL (first run only)")
     base.deleteRecursively()
     base.mkdirs()
 
@@ -266,15 +299,44 @@ class VaultSpeechService : Service() {
       if (conn.responseCode != HttpURLConnection.HTTP_OK) {
         throw java.io.IOException("HTTP ${conn.responseCode} fetching model")
       }
+      val total = conn.contentLength.toLong() // -1 if the server omits Content-Length
+      // Manual read loop (replaces input.copyTo) so we can track bytesRead vs
+      // total and emit onModelStatus progress. Throttled to ~every 1% OR 500ms
+      // so we don't flood the JS bridge during the ~39MB fetch.
+      emitModelStatus("downloading", progress = 0, bytes = 0, total = if (total > 0) total else -1)
       conn.inputStream.use { input ->
-        FileOutputStream(tmpZip).use { out -> input.copyTo(out, 64 * 1024) }
+        FileOutputStream(tmpZip).use { out ->
+          val buffer = ByteArray(64 * 1024)
+          var downloaded = 0L
+          var lastPct = -1
+          var lastEmit = 0L
+          while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+            downloaded += n
+            val pct = if (total > 0) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
+            val now = System.currentTimeMillis()
+            if ((pct >= 0 && pct != lastPct) || now - lastEmit >= 500L) {
+              lastPct = pct
+              lastEmit = now
+              emitModelStatus("downloading", progress = pct, bytes = downloaded, total = if (total > 0) total else -1)
+            }
+          }
+          emitModelStatus("downloading", progress = 100, bytes = downloaded, total = if (total > 0) total else downloaded)
+        }
       }
     } finally {
       conn.disconnect()
     }
 
+    Log.i("KillioVosk", "Download done (${tmpZip.length()} bytes) — unzipping")
+    // Unzip is non-trivial for a ~39MB archive — flag it as an indeterminate
+    // "preparing" phase so the banner switches off the percentage bar.
+    emitModelStatus("preparing")
     unzip(tmpZip, base)
     tmpZip.delete()
+    Log.i("KillioVosk", "Model unzipped + ready")
 
     return modelRoot(base)
   }
@@ -302,7 +364,11 @@ class VaultSpeechService : Service() {
   }
 
   private fun emitError(message: String) {
+    Log.e("KillioVosk", "ERROR: $message")
     emitter?.invoke("onError", Bundle().apply { putString("message", message) })
+    // Also surface as a model-status error so a progress banner watching
+    // onModelStatus can replace the bar with the failure message.
+    emitModelStatus("error", message = message)
   }
 
   private fun startForegroundWithNotification(text: String) {
