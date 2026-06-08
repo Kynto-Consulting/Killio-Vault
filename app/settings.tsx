@@ -37,6 +37,7 @@ export default function SettingsScreen() {
   const tVoice = useTranslations('voicePicker');
   const tWake = useTranslations('wakeWordSettings');
   const tShot = useTranslations('screenCapture');
+  const tVid = useTranslations('voiceId');
   const { mode, setMode, status } = useCapture();
   const { entitlements } = useEntitlements();
   const [consent, setConsent] = useState<boolean | null>(null);
@@ -217,6 +218,17 @@ export default function SettingsScreen() {
         >
           {wakeOn ? tWake('enabled') : tWake('disabled')}
         </Text>
+      </Card>
+
+      {/* Voice ID (owner verification) ──────────────────────────────────── */}
+      <Card>
+        <Body>{tVid('cardTitle')}</Body>
+        <Body muted>{tVid('cardSub')}</Body>
+        <Button
+          title={tVid('open')}
+          variant="secondary"
+          onPress={() => router.push('/voice-id')}
+        />
       </Card>
 
       {/* Screen capture ────────────────────────────────────────────────── */}

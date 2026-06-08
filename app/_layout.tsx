@@ -62,6 +62,7 @@ function AppStack() {
       <Stack.Screen name="consent" options={{ title: t('consent') }} />
       <Stack.Screen name="diary" options={{ title: t('diary'), ...withMenu }} />
       <Stack.Screen name="settings" options={{ title: t('settings'), ...withMenu }} />
+      <Stack.Screen name="voice-id" options={{ title: t('voiceId') }} />
       <Stack.Screen name="schedule" options={{ title: t('schedule'), ...withMenu }} />
       <Stack.Screen name="assistant" options={{ title: t('assistant'), ...withMenu }} />
       <Stack.Screen name="history" options={{ title: t('history'), ...withMenu }} />

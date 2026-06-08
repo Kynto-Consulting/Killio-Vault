@@ -7,6 +7,11 @@ import { getSttEngine } from '../stt/engines';
 import { enqueueSegment, flushOutbox, localDate, pendingCount } from '../db/outbox';
 import { matchWake, type WakeMatch } from '../wakeword/WakeWord';
 import { listAgents } from '../agents/local-agent.model';
+import {
+  getVoiceprint,
+  matchesVoiceprint,
+  DEFAULT_MATCH_THRESHOLD,
+} from '../voiceid/voiceprint';
 
 /**
  * Orchestrates the capture pipeline:
@@ -95,6 +100,13 @@ export class CaptureController {
    * turn is sent (or it times out).
    */
   private onCommandUtteranceCb: ((text: string) => void) | null = null;
+  /**
+   * Cached owner voiceprint (128-dim x-vector) for offline speaker
+   * verification. null = none enrolled → open behavior (anyone can wake).
+   * Loaded on start() and refreshable via refreshVoiceprint() after the
+   * enrollment UI enrolls/clears, so the gate updates without a restart.
+   */
+  private voiceprint: number[] | null = null;
 
   constructor(opts: CaptureControllerOptions) {
     this.mode = opts.mode;
@@ -169,6 +181,11 @@ export class CaptureController {
     // flush + maybeEndOfDayFlush still run, so anything the user types into
     // the assistant still gets diary-flushed; we just don't auto-record.
     // No more throw.
+    // Load the enrolled owner voiceprint (if any) so the wake gate can verify
+    // the speaker offline. Fire-and-forget — handleTranscript treats a null
+    // voiceprint as "open" until it lands.
+    void this.refreshVoiceprint();
+
     const speechOk = Speech.isAvailable() && Speech.isRecognitionAvailable();
     const nativeOk = Native.isAvailable();
 
@@ -301,6 +318,18 @@ export class CaptureController {
   }
 
   /**
+   * Reload the cached owner voiceprint from storage. Call after the enrollment
+   * UI enrolls or clears a voice so the wake gate updates live (no restart).
+   */
+  async refreshVoiceprint(): Promise<void> {
+    try {
+      this.voiceprint = await getVoiceprint();
+    } catch {
+      this.voiceprint = null;
+    }
+  }
+
+  /**
    * Arm/disarm capture of the next plain utterance as a wake command. While
    * armed, transcripts that do NOT themselves contain a wake phrase are routed
    * to `cb` (instead of only being diary-enqueued). Pass null to disarm.
@@ -314,7 +343,30 @@ export class CaptureController {
     if (this.muted) return;
     const text = e.text?.trim();
     if (!text) return;
-    enqueueSegment({ text, ts: e.ts, source: 'android_speech' });
+
+    // Offline speaker verification. When an owner voiceprint is enrolled AND
+    // this utterance carries an x-vector, decide whether it's the owner.
+    //   - voiceprint enrolled + spk present → isOwner = cosine match
+    //   - voiceprint enrolled + spk missing → isOwner = false (can't verify →
+    //     don't let an unverifiable utterance wake the assistant)
+    //   - no voiceprint enrolled            → isOwner = true (open, opt-in)
+    const enrolled = !!this.voiceprint;
+    let isOwner = true;
+    if (enrolled) {
+      isOwner =
+        Array.isArray(e.spk) && e.spk.length > 0
+          ? matchesVoiceprint(e.spk, this.voiceprint!, DEFAULT_MATCH_THRESHOLD)
+          : false;
+    }
+
+    // Diary captures ALL speech regardless of speaker. We tag non-owner
+    // segments via the source suffix so the diary can optionally distinguish
+    // them, without changing the outbox schema or upload path.
+    enqueueSegment({
+      text,
+      ts: e.ts,
+      source: enrolled && !isOwner ? 'android_speech:guest' : 'android_speech',
+    });
 
     // Wake detection (JS, over the free local transcripts).
     const names = listAgents()
@@ -322,8 +374,14 @@ export class CaptureController {
       .filter(Boolean);
     const m = this.onWakeCb ? matchWake(text, names) : null;
     if (m) {
-      console.log(`[KillioWake] matched phrase="${m.phrase}" command="${m.command}" from="${text}"`);
-      this.onWakeCb!(m);
+      // Owner-only gate: when a voiceprint is enrolled, only the owner's voice
+      // may fire the wake action. With nothing enrolled, isOwner stays true.
+      if (!isOwner) {
+        console.log(`[KillioWake] suppressed (not owner) phrase="${m.phrase}" from="${text}"`);
+      } else {
+        console.log(`[KillioWake] matched phrase="${m.phrase}" command="${m.command}" from="${text}"`);
+        this.onWakeCb!(m);
+      }
       return;
     }
 

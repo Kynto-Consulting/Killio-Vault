@@ -17,6 +17,13 @@ export interface TranscriptEvent {
   text: string;
   /** UTC epoch ms (global time unit). */
   ts: number;
+  /**
+   * Speaker x-vector (128-dim) for this utterance, present only when the Vosk
+   * speaker model is loaded. Used for owner voice-ID (see src/voiceid). The
+   * native side forwards it as a JSON-array string; onTranscript() parses it
+   * back into a number[] before handing it to JS consumers.
+   */
+  spk?: number[];
 }
 
 export interface SpeechStartOptions {
@@ -57,7 +64,23 @@ export function isRecognitionAvailable(): boolean {
 
 export function onTranscript(cb: (e: TranscriptEvent) => void): { remove(): void } {
   if (!emitter) return { remove() {} };
-  const sub = emitter.addListener('onTranscript', cb);
+  // Native delivers `spk` as a JSON-array string (kept off the Bundle as a
+  // primitive). Parse it here so JS consumers always see a clean number[].
+  const sub = emitter.addListener('onTranscript', (raw: any) => {
+    let spk: number[] | undefined;
+    const rawSpk = raw?.spk;
+    if (typeof rawSpk === 'string' && rawSpk.length > 0) {
+      try {
+        const arr = JSON.parse(rawSpk);
+        if (Array.isArray(arr) && arr.every((n) => typeof n === 'number')) spk = arr;
+      } catch {
+        /* malformed — drop the vector, keep the transcript */
+      }
+    } else if (Array.isArray(rawSpk)) {
+      spk = rawSpk as number[];
+    }
+    cb({ text: raw.text, ts: raw.ts, ...(spk ? { spk } : {}) });
+  });
   return { remove: () => sub.remove() };
 }
 

@@ -16,9 +16,11 @@ import androidx.core.content.ContextCompat
 import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
+import org.json.JSONArray
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import org.vosk.SpkModel
 import java.io.File
 import java.io.FileOutputStream
 import android.util.Log
@@ -58,6 +60,14 @@ class VaultSpeechService : Service() {
     private const val MODEL_URL =
       "https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip"
 
+    // Speaker-identification model (~13MB). Loaded alongside the language model
+    // and attached via recognizer.setSpeakerModel(); each final result then
+    // carries a 128-dim "spk" x-vector we forward to JS for voice-ID. Same
+    // download/unzip/offline pattern as the language model above.
+    private const val SPK_MODEL_DIR = "vosk-model-spk"
+    private const val SPK_MODEL_URL =
+      "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip"
+
     /** True once the model has been downloaded + unzipped into filesDir. */
     fun isModelPresent(ctx: android.content.Context): Boolean =
       modelRoot(File(ctx.filesDir, MODEL_DIR)) != null
@@ -81,6 +91,27 @@ class VaultSpeechService : Service() {
       }
       return null
     }
+
+    /**
+     * The speaker model zip unpacks into a versioned subfolder
+     * (vosk-model-spk-0.4/) whose loadable dir contains `final.ext` (the
+     * x-vector extractor) plus mean/transform files — it has no conf/mfcc.conf,
+     * so it needs its own marker-file resolver.
+     */
+    private fun spkModelRoot(base: File): File? {
+      if (!base.isDirectory) return null
+      if (File(base, "final.ext").exists() || File(base, "mean").exists()) {
+        return base
+      }
+      base.listFiles()?.forEach { child ->
+        if (child.isDirectory &&
+          (File(child, "final.ext").exists() || File(child, "mean").exists())
+        ) {
+          return child
+        }
+      }
+      return null
+    }
   }
 
   private var wakeLock: PowerManager.WakeLock? = null
@@ -88,6 +119,7 @@ class VaultSpeechService : Service() {
   @Volatile private var running = false
 
   @Volatile private var model: Model? = null
+  @Volatile private var spkModel: SpkModel? = null
   @Volatile private var recognizer: Recognizer? = null
   @Volatile private var audioRecord: AudioRecord? = null
 
@@ -192,6 +224,24 @@ class VaultSpeechService : Service() {
     }
     recognizer = rec
 
+    // Attach the speaker model (best-effort). When present, every final result
+    // gains a 128-dim "spk" x-vector we forward to JS for owner voice-ID. If it
+    // can't be downloaded/loaded (e.g. offline first run with no spk zip yet),
+    // STT keeps working — we simply emit transcripts without an spk vector.
+    try {
+      val spkRoot = ensureSpkModel()
+      if (spkRoot != null) {
+        val sm = SpkModel(spkRoot.absolutePath)
+        spkModel = sm
+        rec.setSpeakerModel(sm)
+        Log.i("KillioVosk", "Speaker model loaded from ${spkRoot.absolutePath}")
+      } else {
+        Log.w("KillioVosk", "Speaker model unavailable — continuing without voice-ID")
+      }
+    } catch (e: Exception) {
+      Log.w("KillioVosk", "Speaker model load failed (continuing without voice-ID): ${e.message}")
+    }
+
     val minBuf = AudioRecord.getMinBufferSize(
       SAMPLE_RATE,
       AudioFormat.CHANNEL_IN_MONO,
@@ -249,21 +299,33 @@ class VaultSpeechService : Service() {
     }
   }
 
-  /** Parse Vosk's {"text":"..."} JSON and emit it (if non-empty) to JS. */
+  /**
+   * Parse Vosk's result JSON and emit it (if non-empty) to JS. With a speaker
+   * model attached the JSON also carries `"spk": [..128 floats..]` — the
+   * utterance x-vector. We JSON-encode that array back into a string field
+   * `spk` on the Bundle (keeps the Bundle simple; JS parses it) so the capture
+   * layer can compare it to the enrolled owner voiceprint.
+   */
   private fun emitFinal(json: String?) {
     if (json.isNullOrBlank()) return
-    val text = try {
-      JSONObject(json).optString("text").trim()
+    val obj = try {
+      JSONObject(json)
     } catch (_: Exception) {
-      ""
-    }
-    if (text.isNotEmpty()) {
-      Log.i("KillioVosk", "TRANSCRIPT: $text")
-      emitter?.invoke("onTranscript", Bundle().apply {
-        putString("text", text)
-        putDouble("ts", System.currentTimeMillis().toDouble())
-      })
-    }
+      null
+    } ?: return
+    val text = obj.optString("text").trim()
+    if (text.isEmpty()) return
+
+    Log.i("KillioVosk", "TRANSCRIPT: $text")
+    emitter?.invoke("onTranscript", Bundle().apply {
+      putString("text", text)
+      putDouble("ts", System.currentTimeMillis().toDouble())
+      // Forward the speaker x-vector as a JSON array string when present.
+      val spk: JSONArray? = obj.optJSONArray("spk")
+      if (spk != null && spk.length() > 0) {
+        putString("spk", spk.toString())
+      }
+    })
   }
 
   /**
@@ -341,6 +403,81 @@ class VaultSpeechService : Service() {
     return modelRoot(base)
   }
 
+  /**
+   * Speaker model counterpart to ensureModel(). Idempotent + offline after the
+   * one-time ~13MB fetch. Reuses the same download bar (onModelStatus) so the
+   * UI shows a single combined "preparing voice model" experience. Returns null
+   * (rather than throwing) on failure so the caller can degrade to STT-only.
+   */
+  private fun ensureSpkModel(): File? {
+    val base = File(filesDir, SPK_MODEL_DIR)
+    spkModelRoot(base)?.let {
+      Log.i("KillioVosk", "Speaker model already present (offline) at ${it.absolutePath}")
+      return it
+    }
+
+    Log.i("KillioVosk", "Speaker model not found — downloading $SPK_MODEL_URL (first run only)")
+    base.deleteRecursively()
+    base.mkdirs()
+
+    val tmpZip = File(filesDir, "$SPK_MODEL_DIR.download.zip")
+    if (tmpZip.exists()) tmpZip.delete()
+
+    val conn = (URL(SPK_MODEL_URL).openConnection() as HttpURLConnection).apply {
+      connectTimeout = 20_000
+      readTimeout = 60_000
+      requestMethod = "GET"
+    }
+    try {
+      conn.connect()
+      if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+        throw java.io.IOException("HTTP ${conn.responseCode} fetching speaker model")
+      }
+      val total = conn.contentLength.toLong()
+      emitModelStatus("downloading", progress = 0, bytes = 0, total = if (total > 0) total else -1)
+      conn.inputStream.use { input ->
+        FileOutputStream(tmpZip).use { out ->
+          val buffer = ByteArray(64 * 1024)
+          var downloaded = 0L
+          var lastPct = -1
+          var lastEmit = 0L
+          while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+            downloaded += n
+            val pct = if (total > 0) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
+            val now = System.currentTimeMillis()
+            if ((pct >= 0 && pct != lastPct) || now - lastEmit >= 500L) {
+              lastPct = pct
+              lastEmit = now
+              emitModelStatus("downloading", progress = pct, bytes = downloaded, total = if (total > 0) total else -1)
+            }
+          }
+        }
+      }
+    } catch (e: Exception) {
+      // Voice-ID is opt-in/best-effort — don't fail the whole STT session.
+      Log.w("KillioVosk", "Speaker model download failed: ${e.message}")
+      return null
+    } finally {
+      conn.disconnect()
+    }
+
+    Log.i("KillioVosk", "Speaker model download done (${tmpZip.length()} bytes) — unzipping")
+    emitModelStatus("preparing")
+    try {
+      unzip(tmpZip, base)
+    } catch (e: Exception) {
+      Log.w("KillioVosk", "Speaker model unzip failed: ${e.message}")
+      return null
+    } finally {
+      tmpZip.delete()
+    }
+    Log.i("KillioVosk", "Speaker model unzipped + ready")
+    return spkModelRoot(base)
+  }
+
   /** Plain java.util.zip unzip (no extra deps), guarded against path traversal. */
   private fun unzip(zip: File, dest: File) {
     ZipInputStream(zip.inputStream().buffered()).use { zis ->
@@ -403,6 +540,8 @@ class VaultSpeechService : Service() {
     recognizer = null
     try { model?.close() } catch (_: Exception) {}
     model = null
+    try { spkModel?.close() } catch (_: Exception) {}
+    spkModel = null
     super.onDestroy()
   }
 }

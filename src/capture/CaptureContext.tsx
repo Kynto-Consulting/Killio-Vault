@@ -30,6 +30,8 @@ interface CaptureState {
   setOnWake(cb: ((m: import('../wakeword/WakeWord').WakeMatch) => void) | null): void;
   /** Arm capture of the next utterance as a wake command (post-wake). */
   setOnCommandUtterance(cb: ((text: string) => void) | null): void;
+  /** Reload the owner voiceprint into the running controller (after enroll/clear). */
+  refreshVoiceprint(): void;
 }
 
 const Ctx = createContext<CaptureState | null>(null);
@@ -136,6 +138,9 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       setOnCommandUtterance: (cb) => {
         cmdCbRef.current = cb;
         controllerRef.current?.setOnCommandUtterance(cb);
+      },
+      refreshVoiceprint: () => {
+        void controllerRef.current?.refreshVoiceprint();
       },
     }),
     [status, modelStatus, mode, nativeAvailable, pending],
