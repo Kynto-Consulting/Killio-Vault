@@ -45,9 +45,12 @@ class KillioSpeechModule : Module() {
       VaultSpeechService.emitter = null
     }
 
+    // Vosk runs fully on-device; recognition is "available" as long as we have a
+    // context (the model is fetched on first start()). We OR in an explicit
+    // model-present check for clarity, but Vosk needs no system recognizer.
     Function("isRecognitionAvailable") {
       val ctx: Context? = appContext.reactContext
-      ctx != null && SpeechRecognizer.isRecognitionAvailable(ctx)
+      ctx != null && (VaultSpeechService.isModelPresent(ctx) || true)
     }
 
     AsyncFunction("start") { options: SpeechStartOptions ->

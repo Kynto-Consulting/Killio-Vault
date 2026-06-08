@@ -271,6 +271,23 @@ function TextLines({
   return (
     <View>
       {lines.map((raw, li) => {
+        // Horizontal rule: a line consisting ONLY of 3+ of the same rule char
+        // (`-`, `*`, or `_`), with optional spaces between/around — the
+        // CommonMark thematic break. Must match the whole line so `--` inside
+        // prose or a table separator row never triggers it. Web parity: see
+        // Killio-Frontend rich-text.tsx (renders <hr>).
+        if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(raw)) {
+          return (
+            <View
+              key={li}
+              style={{
+                height: 1,
+                marginVertical: 12,
+                backgroundColor: colors.border,
+              }}
+            />
+          );
+        }
         const hm = !noHeading ? raw.match(/^(#{1,6})\s+(.*)$/) : null;
         const level = hm ? hm[1].length : 0;
         const line = hm ? hm[2] : raw;

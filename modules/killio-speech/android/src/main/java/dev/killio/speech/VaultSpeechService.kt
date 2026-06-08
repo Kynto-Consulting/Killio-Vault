@@ -8,48 +8,97 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Build
 import androidx.core.content.ContextCompat
 import android.os.Bundle
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.os.PowerManager
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.ZipInputStream
+import kotlin.concurrent.thread
 
 /**
- * Continuous on-device speech recognition. SpeechRecognizer transcribes one
- * utterance then stops, so we restart it on every result/error to approximate a
- * 24/7 stream. Offline is preferred (no network / credentials). Final
- * transcripts are emitted with a UTC timestamp straight to JS.
+ * Continuous, fully on-device speech recognition powered by Vosk (Kaldi).
+ *
+ * Replaces the previous Android SpeechRecognizer/RecognizerIntent core, which on
+ * some devices (Samsung A34, es-ES) fired onStartOfSpeech but returned empty
+ * results + NO_SPEECH_DETECTED every cycle because Google's offline Soda model
+ * never transcribed. Vosk streams continuously from a raw AudioRecord PCM16 feed
+ * — no per-utterance restart, no NO_SPEECH cycling, no Google/cloud dependency.
+ *
+ * Model strategy (offline guarantee): the small Spanish model (~39MB) is NOT
+ * bundled in the APK. On first start it is downloaded once over HTTP into
+ * filesDir/vosk-model-es/ and unzipped; every subsequent start loads it from
+ * there with no network access. After the one-time fetch the engine is 100%
+ * offline. If the download fails (e.g. no network on first run) we emit an error
+ * event and stopSelf gracefully instead of crashing.
+ *
+ * Final transcripts are emitted to JS with a UTC timestamp, preserving the exact
+ * event contract consumed by src/capture/CaptureController.ts:
+ *   onTranscript { text: String, ts: Double (UTC ms) }
+ *   onError      { message: String }
  */
 class VaultSpeechService : Service() {
   companion object {
     @Volatile var emitter: ((String, Bundle) -> Unit)? = null
     private const val CHANNEL_ID = "killio_vault_speech"
     private const val NOTIF_ID = 4712
+    private const val SAMPLE_RATE = 16_000
+    private const val MODEL_DIR = "vosk-model-es"
+    private const val MODEL_URL =
+      "https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip"
+
+    /** True once the model has been downloaded + unzipped into filesDir. */
+    fun isModelPresent(ctx: android.content.Context): Boolean =
+      modelRoot(File(ctx.filesDir, MODEL_DIR)) != null
+
+    /**
+     * Vosk needs the directory that directly contains the model files (am/, conf/,
+     * graph/, ivector/ …). The zip unpacks into a versioned subfolder
+     * (vosk-model-small-es-0.42/), so resolve to whichever dir holds conf/mfcc.conf.
+     */
+    private fun modelRoot(base: File): File? {
+      if (!base.isDirectory) return null
+      if (File(base, "conf/mfcc.conf").exists() || File(base, "am/final.mdl").exists()) {
+        return base
+      }
+      base.listFiles()?.forEach { child ->
+        if (child.isDirectory &&
+          (File(child, "conf/mfcc.conf").exists() || File(child, "am/final.mdl").exists())
+        ) {
+          return child
+        }
+      }
+      return null
+    }
   }
 
-  private var recognizer: SpeechRecognizer? = null
-  private val main = Handler(Looper.getMainLooper())
   private var wakeLock: PowerManager.WakeLock? = null
+  private var worker: Thread? = null
   @Volatile private var running = false
-  private var language = "es-ES"
-  private var preferOffline = true
+
+  @Volatile private var model: Model? = null
+  @Volatile private var recognizer: Recognizer? = null
+  @Volatile private var audioRecord: AudioRecord? = null
 
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    language = intent?.getStringExtra("language") ?: "es-ES"
-    preferOffline = intent?.getBooleanExtra("preferOffline", true) ?: true
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
 
-    // Starting a microphone-typed foreground service without RECORD_AUDIO
-    // granted throws SecurityException and crashes the whole app (Android 14+).
-    // On a fresh install the runtime permission isn't granted yet, so bail
-    // gracefully — JS re-starts capture once the user grants the mic.
+    // Starting a microphone-typed foreground service without RECORD_AUDIO granted
+    // throws SecurityException and crashes the whole app (Android 14+). On a fresh
+    // install the runtime permission isn't granted yet, so bail gracefully — JS
+    // re-starts capture once the user grants the mic. (KEPT from prior impl.)
     if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
         != PackageManager.PERMISSION_GRANTED) {
       stopSelf()
@@ -61,15 +110,17 @@ class VaultSpeechService : Service() {
 
     if (!running) {
       running = true
-      main.post { initRecognizer() }
+      // Model load + (first-run) download + the AudioRecord read loop all run off
+      // the main thread. Vosk decoding is CPU-bound and the download can block.
+      worker = thread(start = true) { recognitionLoop() }
     }
     return START_STICKY
   }
 
   /**
-   * PARTIAL_WAKE_LOCK keeps the CPU alive so SpeechRecognizer keeps restarting
-   * and transcribing with the screen off. Without it Doze suspends the service
-   * loop within seconds of the display turning off and 24/7 capture stops.
+   * PARTIAL_WAKE_LOCK keeps the CPU alive so the AudioRecord→Vosk loop keeps
+   * decoding with the screen off. Without it Doze suspends the worker within
+   * seconds of the display turning off and 24/7 capture stops. (KEPT.)
    */
   private fun acquireWakeLock() {
     if (wakeLock?.isHeld == true) return
@@ -87,82 +138,167 @@ class VaultSpeechService : Service() {
     wakeLock = null
   }
 
-  private fun initRecognizer() {
-    if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-      emitError("Speech recognition not available on this device")
+  /** Worker body: ensure model → open AudioRecord → stream PCM16 into Vosk. */
+  private fun recognitionLoop() {
+    val modelRoot = try {
+      ensureModel()
+    } catch (e: Exception) {
+      emitError("Vosk model unavailable (offline first run?): ${e.message}")
       stopSelf()
       return
     }
-    recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
-      setRecognitionListener(listener)
-    }
-    startListening()
-  }
-
-  private fun recognizerIntent(): Intent =
-    Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-      putExtra(
-        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
-      )
-      putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
-      putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
-      }
+    if (modelRoot == null) {
+      emitError("Vosk model could not be prepared")
+      stopSelf()
+      return
     }
 
-  private fun startListening() {
-    if (!running) return
-    try {
-      recognizer?.startListening(recognizerIntent())
+    val m: Model = try {
+      Model(modelRoot.absolutePath)
     } catch (e: Exception) {
-      scheduleRestart(800)
+      emitError("Failed to load Vosk model: ${e.message}")
+      stopSelf()
+      return
+    }
+    model = m
+
+    val rec: Recognizer = try {
+      Recognizer(m, SAMPLE_RATE.toFloat())
+    } catch (e: Exception) {
+      emitError("Failed to create Vosk recognizer: ${e.message}")
+      stopSelf()
+      return
+    }
+    recognizer = rec
+
+    val minBuf = AudioRecord.getMinBufferSize(
+      SAMPLE_RATE,
+      AudioFormat.CHANNEL_IN_MONO,
+      AudioFormat.ENCODING_PCM_16BIT,
+    )
+    // ~0.2s of 16kHz mono PCM16 per read, but never below the device minimum.
+    val frameSamples = maxOf(minBuf / 2, SAMPLE_RATE / 5)
+    val bufSize = maxOf(minBuf, frameSamples * 2)
+
+    val recorder = try {
+      AudioRecord(
+        MediaRecorder.AudioSource.MIC,
+        SAMPLE_RATE,
+        AudioFormat.CHANNEL_IN_MONO,
+        AudioFormat.ENCODING_PCM_16BIT,
+        bufSize,
+      )
+    } catch (e: SecurityException) {
+      emitError("Microphone permission denied")
+      stopSelf()
+      return
+    }
+    if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+      emitError("AudioRecord failed to initialize")
+      recorder.release()
+      stopSelf()
+      return
+    }
+    audioRecord = recorder
+
+    val buf = ShortArray(frameSamples)
+    recorder.startRecording()
+    try {
+      while (running) {
+        val read = recorder.read(buf, 0, frameSamples)
+        if (read <= 0) continue
+        // acceptWaveForm returns true at an utterance boundary → final result.
+        if (rec.acceptWaveForm(buf, read)) {
+          emitFinal(rec.result)
+        }
+        // (Partial results are intentionally not emitted — the diary only needs
+        // finals, and finals keep the JS contract + wake-word scan simple.)
+      }
+      // Flush any tail utterance still buffered when stop() is requested.
+      emitFinal(rec.finalResult)
+    } catch (e: Exception) {
+      if (running) emitError(e.message ?: "recognition error")
+    } finally {
+      try { recorder.stop() } catch (_: Exception) {}
+      recorder.release()
     }
   }
 
-  /** Recreate-and-restart after a short delay (debounces error storms). */
-  private fun scheduleRestart(delayMs: Long) {
-    if (!running) return
-    main.postDelayed({
-      if (running) {
-        try { recognizer?.cancel() } catch (_: Exception) {}
-        startListening()
-      }
-    }, delayMs)
+  /** Parse Vosk's {"text":"..."} JSON and emit it (if non-empty) to JS. */
+  private fun emitFinal(json: String?) {
+    if (json.isNullOrBlank()) return
+    val text = try {
+      JSONObject(json).optString("text").trim()
+    } catch (_: Exception) {
+      ""
+    }
+    if (text.isNotEmpty()) {
+      emitter?.invoke("onTranscript", Bundle().apply {
+        putString("text", text)
+        putDouble("ts", System.currentTimeMillis().toDouble())
+      })
+    }
   }
 
-  private val listener = object : RecognitionListener {
-    override fun onResults(results: Bundle?) {
-      val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-      val text = list?.firstOrNull()?.trim().orEmpty()
-      if (text.isNotEmpty()) {
-        emitter?.invoke("onTranscript", Bundle().apply {
-          putString("text", text)
-          putDouble("ts", System.currentTimeMillis().toDouble())
-        })
+  /**
+   * Return the loadable model directory, downloading + unzipping it on first run.
+   * Idempotent: if a valid model already exists on disk we skip the network call
+   * entirely (the offline guarantee). Runs on the worker thread.
+   */
+  private fun ensureModel(): File? {
+    val base = File(filesDir, MODEL_DIR)
+    modelRoot(base)?.let { return it }
+
+    // First run (or a previous partial download): (re)fetch the zip.
+    base.deleteRecursively()
+    base.mkdirs()
+
+    val tmpZip = File(filesDir, "$MODEL_DIR.download.zip")
+    if (tmpZip.exists()) tmpZip.delete()
+
+    val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
+      connectTimeout = 20_000
+      readTimeout = 60_000
+      requestMethod = "GET"
+    }
+    try {
+      conn.connect()
+      if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+        throw java.io.IOException("HTTP ${conn.responseCode} fetching model")
       }
-      scheduleRestart(150)
+      conn.inputStream.use { input ->
+        FileOutputStream(tmpZip).use { out -> input.copyTo(out, 64 * 1024) }
+      }
+    } finally {
+      conn.disconnect()
     }
 
-    override fun onError(error: Int) {
-      // ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT are normal in silence — just restart.
-      val backoff = when (error) {
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1200L
-        SpeechRecognizer.ERROR_NETWORK,
-        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> 2000L
-        else -> 400L
-      }
-      scheduleRestart(backoff)
-    }
+    unzip(tmpZip, base)
+    tmpZip.delete()
 
-    override fun onReadyForSpeech(params: Bundle?) {}
-    override fun onBeginningOfSpeech() {}
-    override fun onRmsChanged(rmsdB: Float) {}
-    override fun onBufferReceived(buffer: ByteArray?) {}
-    override fun onEndOfSpeech() {}
-    override fun onPartialResults(partialResults: Bundle?) {}
-    override fun onEvent(eventType: Int, params: Bundle?) {}
+    return modelRoot(base)
+  }
+
+  /** Plain java.util.zip unzip (no extra deps), guarded against path traversal. */
+  private fun unzip(zip: File, dest: File) {
+    ZipInputStream(zip.inputStream().buffered()).use { zis ->
+      var entry = zis.nextEntry
+      val destPath = dest.canonicalPath
+      while (entry != null) {
+        val outFile = File(dest, entry.name)
+        if (!outFile.canonicalPath.startsWith(destPath)) {
+          throw java.io.IOException("Zip entry escapes target dir: ${entry.name}")
+        }
+        if (entry.isDirectory) {
+          outFile.mkdirs()
+        } else {
+          outFile.parentFile?.mkdirs()
+          FileOutputStream(outFile).use { out -> zis.copyTo(out, 64 * 1024) }
+        }
+        zis.closeEntry()
+        entry = zis.nextEntry
+      }
+    }
   }
 
   private fun emitError(message: String) {
@@ -192,10 +328,15 @@ class VaultSpeechService : Service() {
   override fun onDestroy() {
     running = false
     releaseWakeLock()
-    main.post {
-      try { recognizer?.destroy() } catch (_: Exception) {}
-      recognizer = null
-    }
+    // Stop the worker loop, then release native resources it owns.
+    worker?.join(800)
+    worker = null
+    try { audioRecord?.let { if (it.state == AudioRecord.STATE_INITIALIZED) it.release() } } catch (_: Exception) {}
+    audioRecord = null
+    try { recognizer?.close() } catch (_: Exception) {}
+    recognizer = null
+    try { model?.close() } catch (_: Exception) {}
+    model = null
     super.onDestroy()
   }
 }
