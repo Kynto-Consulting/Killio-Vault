@@ -125,6 +125,39 @@ export function recentTranscriptText(windowMs = 60_000): string {
   }
 }
 
+export interface LocalSegment {
+  text: string;
+  ts: number;
+  source: string;
+  /** true = not yet uploaded to the server diary. */
+  pending: boolean;
+}
+
+/**
+ * Local transcript segments for a given local date (YYYY-MM-DD) straight from
+ * the on-device outbox — including ones not yet uploaded. Lets the diary show
+ * what was just captured immediately, before the next flush. Newest first.
+ */
+export function getLocalSegments(date: string): LocalSegment[] {
+  try {
+    const db = getDb();
+    const rows = rowsOf<OutboxRow>(
+      db.execute(
+        `SELECT * FROM diary_outbox WHERE date = ? ORDER BY ts DESC LIMIT 500`,
+        [date],
+      ),
+    );
+    return rows.map((r) => ({
+      text: r.text,
+      ts: r.ts,
+      source: r.source,
+      pending: r.status === 'pending',
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Removes sent rows older than `keepMs` to bound local storage. */
 export function pruneSent(keepMs = 7 * 24 * 60 * 60 * 1000): void {
   const db = getDb();

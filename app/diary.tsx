@@ -6,7 +6,7 @@ import { Screen, Card, H1, Body } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useCapture } from '@/capture/CaptureContext';
 import { searchDiary, type DiarySearchHit } from '@/core/api/vault.client';
-import { flushOutbox, localDate } from '@/db/outbox';
+import { flushOutbox, localDate, getLocalSegments } from '@/db/outbox';
 import { useTranslations } from '@/i18n';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
@@ -15,20 +15,25 @@ export default function DiaryScreen() {
   const t = useTranslations('diary');
   const { activeTeam } = useAuth();
   const { pending, refreshPending } = useCapture();
-  const [hits, setHits] = useState<DiarySearchHit[]>([]);
+  const [entries, setEntries] = useState<DiaryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const today = localDate(Date.now());
 
   const load = useCallback(async () => {
-    if (!activeTeam?.id) return;
     setLoading(true);
+    // Local-first: show on-device transcripts immediately (incl. not-yet-
+    // uploaded "pending" ones), then merge in the server diary (deduped by ts,
+    // server wins). So you see what you just said without waiting for a flush.
+    const local = getLocalSegments(today);
+    let hits: DiarySearchHit[] = [];
     try {
-      setHits(await searchDiary({ teamId: activeTeam.id, date: today }));
-    } catch {
-      setHits([]);
-    } finally {
-      setLoading(false);
-    }
+      if (activeTeam?.id) hits = await searchDiary({ teamId: activeTeam.id, date: today });
+    } catch { /* offline — local only */ }
+    const byTs = new Map<number, DiaryEntry>();
+    for (const l of local) byTs.set(l.ts, { key: `l-${l.ts}`, ts: l.ts, text: l.text, pending: l.pending });
+    for (const h of hits) byTs.set(h.ts, { key: h.brickId, ts: h.ts, text: h.text, pending: false });
+    setEntries([...byTs.values()].sort((a, b) => a.ts - b.ts));
+    setLoading(false);
   }, [activeTeam?.id, today]);
 
   useEffect(() => {
@@ -62,8 +67,8 @@ export default function DiaryScreen() {
       <FlatList
         className="mt-2"
         contentContainerClassName="px-5 pb-6"
-        data={hits}
-        keyExtractor={(h) => h.brickId}
+        data={entries}
+        keyExtractor={(e) => e.key}
         refreshControl={
           <RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.foreground} />
         }
@@ -78,12 +83,23 @@ export default function DiaryScreen() {
               {formatHm(item.ts)}
             </Text>
             <Text className="flex-1 text-base leading-6 text-foreground">{item.text}</Text>
+            {item.pending ? (
+              <Text className="text-[10px] text-muted-foreground self-center">●</Text>
+            ) : null}
           </View>
         )}
         ItemSeparatorComponent={() => <View className="h-px bg-border/50 my-1" />}
       />
     </Screen>
   );
+}
+
+interface DiaryEntry {
+  key: string;
+  ts: number;
+  text: string;
+  /** Not yet uploaded to the server diary (local-only). */
+  pending: boolean;
 }
 
 function formatHm(ts: number): string {

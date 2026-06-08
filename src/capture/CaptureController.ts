@@ -4,7 +4,7 @@ import * as Speech from '../stt/native/KillioSpeech';
 import { CaptureMode, isWithinWindows } from './schedule';
 import { VadSegmenter } from '../stt/vad';
 import { getSttEngine } from '../stt/engines';
-import { enqueueSegment, flushOutbox, localDate } from '../db/outbox';
+import { enqueueSegment, flushOutbox, localDate, pendingCount } from '../db/outbox';
 import { matchWake, type WakeMatch } from '../wakeword/WakeWord';
 import { listAgents } from '../agents/local-agent.model';
 
@@ -207,14 +207,18 @@ export class CaptureController {
       this.setStatus('degraded');
     }
 
-    // NO continuous upload. Transcripts stay local; they are flushed to the
-    // server only (1) right before an agent call (see CaptureController.flushNow
-    // / assistant) and (2) on day rollover (end of day). This timer also drives
-    // the schedule-window start/stop.
+    // Periodic diary flush so transcripts actually show up in the diary soon
+    // after they're spoken (not only before an agent call / end of day).
+    // Every tick (60s) we flush any pending segments — ingest is idempotent +
+    // cheap, and this keeps the diary near-live. Also flushed before agent
+    // calls (flushNow) and on day rollover (maybeEndOfDayFlush).
     this.lastFlushDay = localDate(Date.now());
     this.windowTimer = setInterval(() => {
       void this.maybeEndOfDayFlush();
       void this.evaluateWindow();
+      try {
+        if (pendingCount() > 0) void flushOutbox();
+      } catch { /* ignore */ }
     }, 60_000);
     await this.evaluateWindow();
   }
@@ -318,6 +322,7 @@ export class CaptureController {
       .filter(Boolean);
     const m = this.onWakeCb ? matchWake(text, names) : null;
     if (m) {
+      console.log(`[KillioWake] matched phrase="${m.phrase}" command="${m.command}" from="${text}"`);
       this.onWakeCb!(m);
       return;
     }
