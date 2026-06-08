@@ -20,7 +20,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.SpkModel
+import org.vosk.SpeakerModel
 import java.io.File
 import java.io.FileOutputStream
 import android.util.Log
@@ -119,7 +119,7 @@ class VaultSpeechService : Service() {
   @Volatile private var running = false
 
   @Volatile private var model: Model? = null
-  @Volatile private var spkModel: SpkModel? = null
+  @Volatile private var spkModel: SpeakerModel? = null
   @Volatile private var recognizer: Recognizer? = null
   @Volatile private var audioRecord: AudioRecord? = null
 
@@ -231,7 +231,7 @@ class VaultSpeechService : Service() {
     try {
       val spkRoot = ensureSpkModel()
       if (spkRoot != null) {
-        val sm = SpkModel(spkRoot.absolutePath)
+        val sm = SpeakerModel(spkRoot.absolutePath)
         spkModel = sm
         rec.setSpeakerModel(sm)
         Log.i("KillioVosk", "Speaker model loaded from ${spkRoot.absolutePath}")
