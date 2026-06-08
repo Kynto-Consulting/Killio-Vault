@@ -56,6 +56,9 @@ export interface AgentChatBody {
     success?: boolean;
     output?: any;
     error?: string;
+    /** messageId of the paused "waiting" message; backend updates it in place
+     *  on resume so the client-action is one bubble, not two. */
+    pendingMessageId?: string;
   };
 }
 

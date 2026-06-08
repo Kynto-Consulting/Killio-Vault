@@ -106,6 +106,11 @@ export default function AssistantScreen() {
   const firstMsg = useRef<string>('');
   const lastUserMsg = useRef<string>('');
   const draftId = useRef<string>('');
+  // messageId of the last turn's saved message. When a turn pauses on a
+  // client-action it's the "waiting" message the backend updates in place on
+  // resume — passed back as clientActionResult.pendingMessageId so the flow is
+  // one coherent bubble, not two.
+  const pendingClientMsgId = useRef<string | undefined>(undefined);
   // Prior ~1 min of transcript captured when the user speaks (voice/wake), so
   // the agent has context of what was being said before the command.
   const recentCtx = useRef<string>('');
@@ -182,7 +187,11 @@ export default function AssistantScreen() {
   ) => {
     if (!activeTeam?.id) return;
     setBusy(true);
-    draftId.current = `a-${Date.now()}`;
+    // On a client-action RESUME, keep the SAME assistant bubble so the resolved
+    // tool + the final answer continue the original message (no second bubble,
+    // and the waiting chip in this bubble flips to done). Fresh turns get a new
+    // bubble.
+    if (!opts.clientActionResult) draftId.current = `a-${Date.now()}`;
     let finalText = '';
     // Ordered registry of started tool calls, keyed by the backend tool_use_id
     // (falls back to a synthetic id only when the backend omits one). Mirrors
@@ -270,8 +279,12 @@ export default function AssistantScreen() {
           emit(`\n<tool_status id="${id}" status="waiting_for_approval" />`);
         },
         onClientAction: (e) => void handleClientAction(e),
-        onDone: ({ conversationId: cid }) => {
+        onDone: ({ conversationId: cid, messageId }) => {
           convId.current = cid;
+          // Remember the message this turn saved. If the turn paused on a
+          // client-action, the resume passes this back so the backend UPDATES
+          // it (resolved tool + answer) instead of inserting a 2nd message.
+          pendingClientMsgId.current = messageId;
           setBusy(false);
           if (finalText.trim()) {
             if (opts.remember && runtime.current) {
@@ -308,7 +321,11 @@ export default function AssistantScreen() {
 
   const handleClientAction = async (e: ClientActionEvent) => {
     const resumeWith = (result: AgentChatBody['clientActionResult']) =>
-      runTurn('(continÃºa)', { clientActionResult: result });
+      runTurn('(continÃºa)', {
+        clientActionResult: result
+          ? { ...result, pendingMessageId: pendingClientMsgId.current ?? undefined }
+          : result,
+      });
 
     // vault_disconnect: AI explicitly ends the voice conversation. Silence the
     // assistant, clear voice state, and stop the turn. Background wake listener
