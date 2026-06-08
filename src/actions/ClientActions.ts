@@ -78,6 +78,24 @@ export async function runClientAction(
   const endConversation = input.endConversation === true;
   const tag = (r: ClientActionResult): ClientActionResult =>
     endConversation ? { ...r, endConversation: true } : r;
+  // Diagnostic: surfaces the real device-side result/error in logcat (tag
+  // KillioCA) so a failing client-action can be traced even in release builds.
+  const trace = (r: ClientActionResult): ClientActionResult => {
+    try { console.warn(`[KillioCA] ${tool} ->`, JSON.stringify(r)); } catch { /* noop */ }
+    return r;
+  };
+  try {
+    return trace(await dispatchClientAction(tool, input, tag));
+  } catch (e) {
+    return trace({ success: false, error: (e as Error)?.message ?? `${tool} threw` });
+  }
+}
+
+async function dispatchClientAction(
+  tool: string,
+  input: Record<string, unknown>,
+  tag: (r: ClientActionResult) => ClientActionResult,
+): Promise<ClientActionResult> {
   switch (tool) {
     case 'call_number':
       return tag(await callNumber(String(input.number ?? '')));

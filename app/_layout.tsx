@@ -34,7 +34,7 @@ TextAny.defaultProps.style = [{ fontFamily: fonts.regular, color: colors.foregro
 function MenuButton() {
   const { openNav } = useNav();
   return (
-    <Pressable onPress={openNav} hitSlop={12} style={{ paddingHorizontal: 6 }}>
+    <Pressable onPressIn={openNav} hitSlop={12} style={{ paddingHorizontal: 6 }}>
       <Menu size={22} color={colors.foreground} />
     </Pressable>
   );

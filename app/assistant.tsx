@@ -140,7 +140,7 @@ export default function AssistantScreen() {
     navigation.setOptions({
       headerTitle: agent?.name ?? tFallback('agent'),
       headerRight: () => (
-        <Pressable onPress={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
+        <Pressable onPressIn={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
           <SquarePen size={20} color={colors.foreground} />
         </Pressable>
       ),
