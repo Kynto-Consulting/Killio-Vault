@@ -65,6 +65,8 @@ interface UiMsg {
   role: 'user' | 'assistant';
   text: string;
   pending?: boolean;
+  /** Compressed-history checkpoint — rendered as a divider pill, not a bubble. */
+  checkpoint?: boolean;
 }
 
 export function CopilotPanel({ teamId, entityType, entityId, namespace = 'docCopilot' }: CopilotPanelProps) {
@@ -101,9 +103,11 @@ export function CopilotPanel({ teamId, entityType, entityId, namespace = 'docCop
         if (cancelled) return;
         setConversationId(target.id);
         setMessages(
-          past
-            .filter((m) => !isCompressedCheckpoint(m))
-            .map((m: ConversationMessage) => ({ id: m.id, role: m.role, text: m.content })),
+          past.map((m: ConversationMessage) =>
+            isCompressedCheckpoint(m)
+              ? { id: m.id, role: 'assistant' as const, text: '', checkpoint: true }
+              : { id: m.id, role: m.role, text: m.content },
+          ),
         );
       } catch {
         /* offline / no history — start fresh */
@@ -237,6 +241,15 @@ export function CopilotPanel({ teamId, entityType, entityId, namespace = 'docCop
           </View>
         }
         renderItem={({ item }) => (
+          item.checkpoint ? (
+            <View className="my-1 flex-row items-center gap-2 self-stretch px-1">
+              <View className="h-px flex-1 bg-border/50" />
+              <Text className="text-[10px] text-muted-foreground">
+                🗜️ {t('compressed')}
+              </Text>
+              <View className="h-px flex-1 bg-border/50" />
+            </View>
+          ) : (
           <View
             className={`max-w-[88%] rounded-xl px-3 py-2 ${
               item.role === 'user'
@@ -255,6 +268,7 @@ export function CopilotPanel({ teamId, entityType, entityId, namespace = 'docCop
               </View>
             ) : null}
           </View>
+          )
         )}
       />
 
@@ -327,9 +341,11 @@ export function CopilotPanel({ teamId, entityType, entityId, namespace = 'docCop
               const past = await getConversationMessages(conv.id);
               setConversationId(conv.id);
               setMessages(
-                past
-                  .filter((m) => !isCompressedCheckpoint(m))
-                  .map((m) => ({ id: m.id, role: m.role, text: m.content })),
+                past.map((m) =>
+                  isCompressedCheckpoint(m)
+                    ? { id: m.id, role: 'assistant' as const, text: '', checkpoint: true }
+                    : { id: m.id, role: m.role, text: m.content },
+                ),
               );
             } catch {
               /* swallow — keep current conversation */
