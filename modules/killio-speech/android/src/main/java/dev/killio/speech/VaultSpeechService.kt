@@ -731,12 +731,12 @@ class VaultSpeechService : Service() {
     dir.mkdirs()
     // The encoder dominates (~70–155MB); weight progress by file index so the
     // bar advances smoothly across the four files.
-    val n = STT_FILES.size
+    val n = sm.files.size
     emitModelStatus("downloading", progress = 0, bytes = 0, total = -1)
-    STT_FILES.forEachIndexed { idx, name ->
-      val dest = File(dir, name)
+    sm.files.forEachIndexed { idx, (remote, local) ->
+      val dest = File(dir, local)
       if (dest.exists() && dest.length() > 0) return@forEachIndexed
-      val url = "$HF_BASE/${sm.hfRepo}/resolve/$HF_REVISION/$name"
+      val url = "$HF_BASE/${sm.hfRepo}/resolve/$HF_REVISION/$remote"
       var lastEmit = 0L
       downloadTo(url, dest) { downloaded, total ->
         val now = System.currentTimeMillis()
