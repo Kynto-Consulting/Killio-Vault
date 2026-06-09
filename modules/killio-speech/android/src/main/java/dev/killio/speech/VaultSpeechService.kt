@@ -91,22 +91,41 @@ class VaultSpeechService : Service() {
     //         published yet, so we use fp32. Kroko-ASR, Apache-2.0 compatible.
     //   en → csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
     //        (small English streaming Zipformer, encoder ~70MB fp32).
-    private data class SttModel(val dir: String, val hfRepo: String)
+    // files = remote HF filename → local filename. The recognizer always reads
+    // encoder.onnx/decoder.onnx/joiner.onnx/tokens.txt locally; repos that name
+    // their files differently (e.g. bookbot's int8 epoch-tagged names) map here.
+    private data class SttModel(
+      val dir: String,
+      val hfRepo: String,
+      val files: List<Pair<String, String>>,
+    )
 
     private const val HF_BASE = "https://huggingface.co"
     private const val HF_REVISION = "main"
-    // The three transducer ONNX parts + tokens are named identically across the
-    // kroko streaming repos, so one list serves every language.
+    // LOCAL filenames the recognizer loads (constant across languages).
     private val STT_FILES = listOf("encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt")
+    // kroko repos name files identically → identity map.
+    private val KROKO_FILES = STT_FILES.map { it to it }
+    // bookbot robust-es int8: ~27MB total (encoder int8 26MB) — SMALL model for
+    // 24/7 background (minimal battery/CPU) vs kroko es fp32 ~155MB. Remote names
+    // are epoch-tagged → map to the local encoder/decoder/joiner/tokens names.
+    private val BOOKBOT_ES_INT8 = listOf(
+      "encoder-epoch-80-avg-3-chunk-16-left-128.int8.onnx" to "encoder.onnx",
+      "decoder-epoch-80-avg-3-chunk-16-left-128.int8.onnx" to "decoder.onnx",
+      "joiner-epoch-80-avg-3-chunk-16-left-128.int8.onnx" to "joiner.onnx",
+      "tokens.txt" to "tokens.txt",
+    )
 
     private val MODELS: Map<String, SttModel> = mapOf(
       "es" to SttModel(
         "sherpa-stt-es",
-        "csukuangfj/sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06",
+        "bookbot/sherpa-onnx-zipformer-streaming-robust-es-v0",
+        BOOKBOT_ES_INT8,
       ),
       "en" to SttModel(
         "sherpa-stt-en",
         "csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
+        KROKO_FILES,
       ),
     )
     private const val DEFAULT_LANG = "es"
@@ -250,10 +269,10 @@ class VaultSpeechService : Service() {
 
       Log.i("KillioSTT", "[$code] STT model incomplete (one-shot) — downloading from ${sm.hfRepo} (first run only)")
       dir.mkdirs()
-      for (name in STT_FILES) {
-        val dest = File(dir, name)
+      for ((remote, local) in sm.files) {
+        val dest = File(dir, local)
         if (dest.exists() && dest.length() > 0) continue
-        val url = "$HF_BASE/${sm.hfRepo}/resolve/$HF_REVISION/$name"
+        val url = "$HF_BASE/${sm.hfRepo}/resolve/$HF_REVISION/$remote"
         downloadTo(url, dest, null)
       }
       return if (sttModelComplete(dir)) dir else null
