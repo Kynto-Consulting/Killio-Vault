@@ -24,14 +24,6 @@ export function localDate(ts: number): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Last enqueue self-check (shown on-screen via diaryDebug — no adb needed). */
-export let lastEnqueueInfo = 'lastEnq: (none)';
-function countRows(db: ReturnType<typeof getDb>): number {
-  try {
-    return Number(rowsOf<{ c: number }>(db.execute(`SELECT COUNT(*) AS c FROM diary_outbox`))[0]?.c ?? -1);
-  } catch { return -2; }
-}
-
 /** Enqueues a transcript segment for upload. ts must be UTC epoch ms. */
 export function enqueueSegment(seg: {
   text: string;
@@ -42,32 +34,17 @@ export function enqueueSegment(seg: {
   if (!text) return;
   const db = getDb();
   const date = localDate(seg.ts);
-  const before = countRows(db);
-  let insertErr = '';
-  try {
-    db.execute(
-      `INSERT INTO diary_outbox (id, date, text, ts, source, status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
-      [
-        Crypto.randomUUID(),
-        date,
-        text,
-        seg.ts,
-        seg.source ?? 'on_device_stt',
-        Date.now(),
-      ],
-    );
-  } catch (e) {
-    insertErr = String(e).slice(0, 50);
-  }
-  const after = countRows(db);
-  lastEnqueueInfo = `lastEnq: ${before}->${after}${insertErr ? ' ERR=' + insertErr : ''} @${date.slice(5)}`;
-  // Verifiable in logcat: every transcribed segment lands here, independent of
-  // voice-ID / wake — the diary captures ALL speech (voice-ID only gates AI
-  // responses). If this line is missing for a spoken segment, the enqueue path
-  // (not the diary view) is the regression.
-  console.log(
-    `[KillioDiary] enqueued date=${date} source=${seg.source ?? 'on_device_stt'} len=${text.length} text="${text.slice(0, 60)}"`,
+  db.execute(
+    `INSERT INTO diary_outbox (id, date, text, ts, source, status, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+    [
+      Crypto.randomUUID(),
+      date,
+      text,
+      seg.ts,
+      seg.source ?? 'on_device_stt',
+      Date.now(),
+    ],
   );
   notifyDiaryChanged(date);
 }
@@ -188,17 +165,6 @@ export interface LocalSegment {
  * the on-device outbox — including ones not yet uploaded. Lets the diary show
  * what was just captured immediately, before the next flush. Newest first.
  */
-/** On-screen debug snapshot (no adb needed): total rows + stored dates. */
-export function diaryDebug(): { total: number; dates: string[]; lastEnq: string } {
-  try {
-    const db = getDb();
-    const t = rowsOf<{ c: number }>(db.execute(`SELECT COUNT(*) AS c FROM diary_outbox`));
-    const d = rowsOf<{ date: string }>(db.execute(`SELECT DISTINCT date FROM diary_outbox ORDER BY date DESC LIMIT 6`));
-    return { total: Number(t[0]?.c ?? 0), dates: d.map((r) => r.date), lastEnq: lastEnqueueInfo };
-  } catch (e) {
-    return { total: -1, dates: [String(e).slice(0, 40)], lastEnq: lastEnqueueInfo };
-  }
-}
 
 /** Local-day [start,end) epoch-ms range for a YYYY-MM-DD string (device-local). */
 function dayRange(date: string): [number, number] {

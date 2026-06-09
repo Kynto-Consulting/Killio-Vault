@@ -6,7 +6,7 @@ import { Screen, Card, H1, Body } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useCapture } from '@/capture/CaptureContext';
 import { searchDiary, type DiarySearchHit } from '@/core/api/vault.client';
-import { flushOutbox, localDate, getLocalSegments, onDiaryChanged, diaryDebug } from '@/db/outbox';
+import { flushOutbox, localDate, getLocalSegments, onDiaryChanged } from '@/db/outbox';
 import { useTranslations } from '@/i18n';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
@@ -17,7 +17,6 @@ export default function DiaryScreen() {
   const { pending, refreshPending } = useCapture();
   const [entries, setEntries] = useState<DiaryEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [debug, setDebug] = useState('');
   const today = localDate(Date.now());
 
   const load = useCallback(async () => {
@@ -26,9 +25,6 @@ export default function DiaryScreen() {
     // uploaded "pending" ones), then merge in the server diary (deduped by ts,
     // server wins). So you see what you just said without waiting for a flush.
     const local = getLocalSegments(today);
-    const dbg = diaryDebug();
-    setDebug(`dbg: total=${dbg.total} hoy=${today} local=${local.length} fechas=${dbg.dates.join(',')} | ${dbg.lastEnq}`);
-    console.log(`[KillioDiary] view load today=${today} localSegments=${local.length}`);
     let hits: DiarySearchHit[] = [];
     try {
       if (activeTeam?.id) hits = await searchDiary({ teamId: activeTeam.id, date: today });
@@ -36,7 +32,8 @@ export default function DiaryScreen() {
     const byTs = new Map<number, DiaryEntry>();
     for (const l of local) byTs.set(l.ts, { key: `l-${l.ts}`, ts: l.ts, text: l.text, pending: l.pending });
     for (const h of hits) byTs.set(h.ts, { key: h.brickId, ts: h.ts, text: h.text, pending: false });
-    setEntries([...byTs.values()].sort((a, b) => a.ts - b.ts));
+    // Newest first (most recent at the top, older below).
+    setEntries([...byTs.values()].sort((a, b) => b.ts - a.ts));
     setLoading(false);
   }, [activeTeam?.id, today]);
 
@@ -64,11 +61,6 @@ export default function DiaryScreen() {
     <Screen padded={false}>
       <View className="px-5 pt-4">
         <H1>{t('title', { date: today })}</H1>
-        {debug ? (
-          <Text style={{ fontFamily: fonts.mono, fontSize: 9, color: colors.mutedForeground }} numberOfLines={2}>
-            {debug}
-          </Text>
-        ) : null}
         <View className="flex-row items-center justify-between">
           <Body muted>{t('pending', { n: pending })}</Body>
           <Pressable
