@@ -257,6 +257,53 @@ async function dispatchClientAction(
         return { success: false, error: (e as Error)?.message ?? 'whatsapp call failed' };
       }
 
+    // ─── Installed-app discovery + launch (device) ──────────────────────────
+    case 'list_installed_apps':
+      try {
+        const apps = await AppIntent.listInstalledApps();
+        return {
+          success: true,
+          output: {
+            count: apps.length,
+            apps: apps.map((a) => ({ label: a.label, package: a.packageName })),
+          },
+        };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'list installed apps failed' };
+      }
+    case 'search_app':
+      try {
+        const matches = await AppIntent.searchApps(String(input.query ?? ''));
+        const apps = matches.map((a) => ({ label: a.label, package: a.packageName }));
+        // Optionally open straight away: when `open` is set and there's a single
+        // (or unambiguous top) match, launch it and end the chat if asked.
+        if (input.open === true && apps.length > 0) {
+          const target = apps[0];
+          try {
+            const r = await AppIntent.launchApp(target.package);
+            return tag({
+              success: true,
+              output: { count: apps.length, apps, opened: true, launched: { ...target, ...r } },
+            });
+          } catch (e) {
+            return {
+              success: false,
+              error: (e as Error)?.message ?? `could not open ${target.package}`,
+            };
+          }
+        }
+        return { success: true, output: { count: apps.length, apps } };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'search app failed' };
+      }
+    case 'open_installed_app':
+      try {
+        const r = await AppIntent.launchApp(String(input.package ?? ''));
+        return tag({ success: true, output: { opened: true, package: r.packageName } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'open installed app failed' };
+      }
+
     // ─── Clipboard ────────────────────────────────────────────────────────
     case 'clipboard_read':
       try {
@@ -520,6 +567,7 @@ async function dispatchClientAction(
 export const NEEDS_CONFIRM = new Set([
   'call_number',
   'open_app',
+  'open_installed_app',
   'calendar_create_event',
   'send_sms',
   'spotify_play',

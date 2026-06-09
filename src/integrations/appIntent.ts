@@ -41,3 +41,31 @@ export async function whatsappCall(
     note: 'Native app-intent module unavailable (Expo Go); opened the chat instead.',
   };
 }
+
+export type InstalledApp = AppIntent.InstalledApp;
+
+/** list_installed_apps — the user's launchable apps ([{ label, packageName }]). */
+export async function listInstalledApps(): Promise<InstalledApp[]> {
+  if (AppIntent.isAvailable() && Platform.OS === 'android') {
+    return AppIntent.listInstalledApps();
+  }
+  throw new Error('Listing installed apps requires the Vault Android app (dev-build/APK).');
+}
+
+/** search_app — launchable apps filtered by label/package (accent-insensitive). */
+export async function searchApps(query: string): Promise<InstalledApp[]> {
+  if (AppIntent.isAvailable() && Platform.OS === 'android') {
+    return AppIntent.searchApps(query);
+  }
+  throw new Error('Searching installed apps requires the Vault Android app (dev-build/APK).');
+}
+
+/** open_installed_app — launch an installed app by its package name. */
+export async function launchApp(
+  packageName: string,
+): Promise<{ opened: boolean; packageName: string }> {
+  if (AppIntent.isAvailable() && Platform.OS === 'android') {
+    return AppIntent.launchApp(packageName);
+  }
+  throw new Error('Launching an app by package requires the Vault Android app (dev-build/APK).');
+}

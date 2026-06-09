@@ -11,7 +11,15 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
  *   whatsappMessage(phone, text?): Promise<{ opened, via, phone }>
  *   whatsappCall(phone): Promise<{ called, via, note? }>
  *   openAppAction(packageName?, action?, data?): Promise<{ opened, package, action }>
+ *   listInstalledApps(): Promise<Array<{ label, packageName }>>
+ *   searchApps(query): Promise<Array<{ label, packageName }>>
+ *   launchApp(packageName): Promise<{ opened, packageName }>
  */
+
+export interface InstalledApp {
+  label: string;
+  packageName: string;
+}
 const native: any = requireOptionalNativeModule('KillioAppIntent');
 
 export function isAvailable(): boolean {
@@ -44,4 +52,21 @@ export async function openAppAction(opts: {
   data?: string;
 }): Promise<{ opened: boolean; package: string; action: string }> {
   return ensure().openAppAction(opts.package ?? null, opts.action ?? null, opts.data ?? null);
+}
+
+/** List the user's launchable apps ([{ label, packageName }], sorted by label). */
+export async function listInstalledApps(): Promise<InstalledApp[]> {
+  return ensure().listInstalledApps();
+}
+
+/** Filter the launchable apps by label/package (accent-insensitive). */
+export async function searchApps(query: string): Promise<InstalledApp[]> {
+  return ensure().searchApps(query ?? '');
+}
+
+/** Launch an installed app by package name. Throws if not launchable. */
+export async function launchApp(
+  packageName: string,
+): Promise<{ opened: boolean; packageName: string }> {
+  return ensure().launchApp(packageName);
 }

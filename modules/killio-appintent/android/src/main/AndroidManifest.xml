@@ -17,5 +17,15 @@
       <action android:name="android.intent.action.VIEW" />
       <data android:scheme="https" android:host="wa.me" />
     </intent>
+    <!--
+      Make every LAUNCHER app visible to queryIntentActivities + getLaunchIntentForPackage
+      under Android 11+ scoped package visibility. This is the launcher-intent
+      approach for listInstalledApps()/searchApps()/launchApp() — it does NOT
+      require the QUERY_ALL_PACKAGES permission.
+    -->
+    <intent>
+      <action android:name="android.intent.action.MAIN" />
+      <category android:name="android.intent.category.LAUNCHER" />
+    </intent>
   </queries>
 </manifest>

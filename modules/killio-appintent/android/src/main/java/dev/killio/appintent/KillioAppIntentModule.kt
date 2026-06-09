@@ -3,8 +3,10 @@ package dev.killio.appintent
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.ContactsContract
+import java.text.Normalizer
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -24,6 +26,10 @@ import expo.modules.kotlin.modules.ModuleDefinition
  *  - openAppAction(packageName, action, data): generic — fire ACTION on a URI,
  *    optionally constrained to a package, so future App-Action style intents can
  *    be added without new native code.
+ *  - listInstalledApps(): the user's LAUNCHABLE apps [{label, packageName}],
+ *    via queryIntentActivities(MAIN/LAUNCHER) — no QUERY_ALL_PACKAGES needed.
+ *  - searchApps(query): the same list filtered by label/package (accent-insensitive).
+ *  - launchApp(packageName): open an installed app by its launch intent.
  *
  * JS API: see src/integrations/native/KillioAppIntent.ts
  */
@@ -31,6 +37,8 @@ class KillioAppIntentModule : Module() {
   private val WA_PACKAGE = "com.whatsapp"
   private val WA_BUSINESS = "com.whatsapp.w4b"
   private val WA_VOIP_MIME = "vnd.android.cursor.item/vnd.com.whatsapp.voip.call"
+  /** Cap the installed-app list so a device with hundreds of apps stays cheap. */
+  private val MAX_APPS = 300
 
   override fun definition() = ModuleDefinition {
     Name("KillioAppIntent")
@@ -96,7 +104,81 @@ class KillioAppIntentModule : Module() {
       appContext.reactContext!!.startActivity(intent)
       mapOf("opened" to true, "package" to (packageName ?: ""), "action" to (action ?: Intent.ACTION_VIEW))
     }
+
+    /**
+     * List the user's LAUNCHABLE apps as [{ label, packageName }], sorted by
+     * label. Uses queryIntentActivities for the MAIN/LAUNCHER intent — the same
+     * set the home-screen launcher shows — which does NOT require the
+     * QUERY_ALL_PACKAGES permission (the module manifest declares a matching
+     * <queries><intent> so it's visible under Android 11+ scoped visibility).
+     */
+    AsyncFunction("listInstalledApps") {
+      queryLaunchableApps().take(MAX_APPS)
+    }
+
+    /**
+     * Same launcher-app list, filtered (case- and accent-insensitive) by label
+     * OR package containing the query. Returns the matching apps.
+     */
+    AsyncFunction("searchApps") { query: String ->
+      val q = foldAccents(query.trim().lowercase())
+      if (q.isEmpty()) {
+        queryLaunchableApps().take(MAX_APPS)
+      } else {
+        queryLaunchableApps().filter { app ->
+          val label = foldAccents((app["label"] ?: "").lowercase())
+          val pkg = foldAccents((app["packageName"] ?: "").lowercase())
+          label.contains(q) || pkg.contains(q)
+        }.take(MAX_APPS)
+      }
+    }
+
+    /**
+     * Launch an installed app by its package name via its launch intent.
+     * Returns { opened:true, packageName } or throws if there is no launchable
+     * activity for that package (not installed / no launcher entry).
+     */
+    AsyncFunction("launchApp") { packageName: String ->
+      val ctx: Context = appContext.reactContext
+        ?: throw IllegalStateException("No React context")
+      val launch = ctx.packageManager.getLaunchIntentForPackage(packageName)
+        ?: throw IllegalArgumentException("No launchable app for package: $packageName")
+      launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      ctx.startActivity(launch)
+      mapOf("opened" to true, "packageName" to packageName)
+    }
   }
+
+  /** Query MAIN/LAUNCHER activities → [{label, packageName}] sorted by label. */
+  private fun queryLaunchableApps(): List<Map<String, String>> {
+    val ctx = appContext.reactContext ?: return emptyList()
+    val pm = ctx.packageManager
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+    val resolved = try {
+      pm.queryIntentActivities(intent, 0)
+    } catch (e: Exception) {
+      return emptyList()
+    }
+    // De-dupe by package (an app can register several launcher activities).
+    val seen = HashSet<String>()
+    val apps = ArrayList<Map<String, String>>()
+    for (ri in resolved) {
+      val pkg = ri.activityInfo?.packageName ?: continue
+      if (!seen.add(pkg)) continue
+      val label = try {
+        ri.loadLabel(pm)?.toString()
+      } catch (e: Exception) {
+        null
+      } ?: pkg
+      apps.add(mapOf("label" to label, "packageName" to pkg))
+    }
+    apps.sortWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it["label"] ?: "" })
+    return apps
+  }
+
+  /** Strip diacritics so "Telefono" matches "Teléfono". */
+  private fun foldAccents(s: String): String =
+    Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
 
   /** Start an intent, falling back from WhatsApp to WhatsApp Business. */
   private fun startWhatsApp(intent: Intent) {
