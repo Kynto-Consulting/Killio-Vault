@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Media-key dispatch via AudioManager.dispatchMediaKeyEvent needs NO
+    permission. It posts KEYCODE_MEDIA_* events to whatever app currently holds
+    the media session (Spotify, YouTube Music, etc.) without opening it.
+  -->
+</manifest>

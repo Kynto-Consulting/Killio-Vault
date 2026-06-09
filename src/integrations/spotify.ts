@@ -1,17 +1,22 @@
 import { Linking } from 'react-native';
 
+import * as Media from './native/KillioMedia';
+
 /**
- * Spotify control via deep links. No SDK / OAuth required: we open the
- * Spotify app (or fall back to the web player) using the `spotify:` URI
- * scheme. This covers play(uri|query) and search. When Spotify isn't
- * installed, callers are routed to https://open.spotify.com.
+ * Spotify control. Two mechanisms:
  *
- * IMPORTANT LIMITATION: the public `spotify:` URI scheme has NO transport
- * control deep links — there is no URI that pauses, skips, or goes to the
- * previous track. Those require the Spotify Android App Remote SDK (a future
- * `modules/killio-spotify` Expo module). So pause/next/previous here can only
- * surface Spotify; they report `controlled:false` honestly so the assistant
- * tells the user to use the Spotify UI instead of claiming it skipped.
+ *  1. DEEP LINKS (play/open/search) — open the Spotify app (or web player) via
+ *     the `spotify:` URI scheme. play(uri) plays directly; play(query) opens
+ *     the in-app search. (The backend now resolves a query → track URI via the
+ *     Web API before this runs, so play usually receives a real URI.)
+ *
+ *  2. MEDIA KEYS (pause/next/previous) — the public `spotify:` scheme has NO
+ *     transport deep links, so we drive playback through the device media
+ *     session via the native `killio-media` module
+ *     (AudioManager.dispatchMediaKeyEvent). This pauses / skips whatever is
+ *     playing (Spotify, etc.) WITHOUT opening or closing any app. When the
+ *     native module is unavailable (Expo Go), we honestly report
+ *     controlled:false and surface the Spotify app as a fallback.
  */
 const APP_PREFIX = 'spotify:';
 const WEB_FALLBACK = 'https://open.spotify.com';
@@ -54,40 +59,72 @@ export async function play(opts: {
 }
 
 /**
- * Surface Spotify. The deep-link scheme cannot pause/skip, so we just bring the
- * app forward and report that transport wasn't actually controlled.
+ * open — deep-link Spotify to a URI or to the in-app search screen for a query.
+ * Used by the spotify_open client-action when the user explicitly wants to OPEN
+ * Spotify (vs. background-search via the server-side spotify_search tool).
  */
-async function surface(): Promise<{ opened: boolean; controlled: false; reason: string }> {
-  const reason =
-    'Spotify deep links cannot control playback (pause/skip). Opened the app — use its controls.';
-  try {
-    if (await Linking.canOpenURL(APP_PREFIX)) {
-      await Linking.openURL(APP_PREFIX);
-      return { opened: true, controlled: false, reason };
-    }
-  } catch {
-    /* not installed */
+export async function openSpotify(opts: {
+  uri?: string;
+  query?: string;
+}): Promise<{ opened: boolean; via: 'app' | 'web' }> {
+  if (opts.uri) {
+    const webPath = opts.uri.startsWith('spotify:')
+      ? `${WEB_FALLBACK}/${opts.uri.slice('spotify:'.length).replace(/:/g, '/')}`
+      : `${WEB_FALLBACK}/search/${encodeURIComponent(opts.uri)}`;
+    return open(opts.uri, webPath);
   }
-  await Linking.openURL(WEB_FALLBACK);
-  return { opened: true, controlled: false, reason };
+  if (opts.query) {
+    return open(
+      `${APP_PREFIX}search:${encodeURIComponent(opts.query)}`,
+      `${WEB_FALLBACK}/search/${encodeURIComponent(opts.query)}`,
+    );
+  }
+  return open(`${APP_PREFIX}`, WEB_FALLBACK);
+}
+
+/**
+ * Transport control via the device media session (killio-media native module).
+ * Controls Spotify (or whatever is playing) WITHOUT opening or closing any app.
+ * When the native module is unavailable (Expo Go), report controlled:false so
+ * the assistant tells the user to use the Spotify UI rather than lying.
+ */
+type TransportResult =
+  | { controlled: true; action: 'pause' | 'next' | 'previous'; via: 'media-keys' }
+  | { controlled: false; action: 'pause' | 'next' | 'previous'; reason: string };
+
+async function transport(
+  action: 'pause' | 'next' | 'previous',
+): Promise<TransportResult> {
+  if (Media.isAvailable()) {
+    try {
+      if (action === 'pause') await Media.playPause();
+      else if (action === 'next') await Media.next();
+      else await Media.previous();
+      return { controlled: true, action, via: 'media-keys' };
+    } catch (e) {
+      return {
+        controlled: false,
+        action,
+        reason: (e as Error)?.message ?? 'media key dispatch failed',
+      };
+    }
+  }
+  return {
+    controlled: false,
+    action,
+    reason:
+      'Media-key control needs the native APK (not Expo Go). Use the Spotify controls directly.',
+  };
 }
 
 export function pause() {
-  return surface();
+  return transport('pause');
 }
 
 export function next() {
-  return surface();
+  return transport('next');
 }
 
 export function previous() {
-  return surface();
-}
-
-export async function search(query: string): Promise<{ opened: boolean; via: 'app' | 'web' }> {
-  // Prefer the in-app search screen; fall back to the web search page.
-  return open(
-    `${APP_PREFIX}search:${encodeURIComponent(query)}`,
-    `${WEB_FALLBACK}/search/${encodeURIComponent(query)}`,
-  );
+  return transport('previous');
 }

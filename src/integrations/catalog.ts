@@ -88,7 +88,10 @@ export const CATALOG: VaultIntegration[] = [
   // ── Coming soon (OAuth backend service pending app credentials) ─────────────
   { id: 'google_calendar', provider: 'google_calendar', name: 'Google Calendar', icon: 'calendar-days', color: '#4285f4', category: 'calendar', kind: 'soon' },
   { id: 'gmail', provider: 'gmail', name: 'Gmail', icon: 'mail', color: '#ea4335', category: 'communication', kind: 'soon' },
-  { id: 'spotify', provider: 'spotify', name: 'Spotify', icon: 'music', color: '#1db954', category: 'media', kind: 'soon' },
+  // Spotify works out of the box: background SEARCH via the backend Spotify Web
+  // API (client-credentials) + play/open/transport via the device. No per-user
+  // connect step needed, so it's a "device"-kind capability, not "soon".
+  { id: 'spotify', provider: 'spotify', name: 'Spotify', icon: 'music', color: '#1db954', category: 'media', kind: 'device' },
   { id: 'google_tasks', provider: 'google_tasks', name: 'Google Tasks', icon: 'list-checks', color: '#4285f4', category: 'productivity', kind: 'soon' },
   { id: 'todoist', provider: 'todoist', name: 'Todoist', icon: 'list-todo', color: '#e44332', category: 'productivity', kind: 'soon' },
   { id: 'n8n', provider: 'n8n', name: 'n8n', icon: 'workflow', color: '#ea4b71', category: 'automation', kind: 'soon' },

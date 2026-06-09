@@ -259,8 +259,23 @@ function normalizeParams(input: unknown): Record<string, string | number> {
   return out;
 }
 
+/** Models (esp. Claude) emit reasoning wrapped in nested XML-ish tags —
+ *  <think>, <visual_description>, <assumptions>, <risks>, <strategy>, … plus a
+ *  stray orphan opening tag. Strip ALL tags + bullet-dashes so the collapsible
+ *  shows clean prose, not raw markup. */
+function cleanThink(raw: string): string {
+  return String(raw || '')
+    .replace(/<\/?[a-zA-Z_][\w-]*\s*\/?>/g, '\n') // drop any XML tag → newline
+    .replace(/^[\s-]+/gm, '')                      // leading dashes/space per line
+    .replace(/\n{2,}/g, '\n')                      // collapse blank lines
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
 function ThinkBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
+  const clean = cleanThink(text);
+  if (!clean) return null;
   return (
     <View className="my-0.5">
       <Pressable onPress={() => setOpen((v) => !v)} className="flex-row items-center gap-1.5">
@@ -274,7 +289,7 @@ function ThinkBlock({ text }: { text: string }) {
         </Text>
       </Pressable>
       {open ? (
-        <Text className="ml-4 mt-1 text-xs italic text-muted-foreground">{text}</Text>
+        <Text className="ml-4 mt-1 text-xs italic text-muted-foreground">{clean}</Text>
       ) : null}
     </View>
   );

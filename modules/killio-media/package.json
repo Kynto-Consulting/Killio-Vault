@@ -1,0 +1,11 @@
+{
+  "name": "killio-media",
+  "version": "0.0.1",
+  "description": "Killio Vault local Expo module — media transport keys (play/pause/next/previous) via AudioManager.dispatchMediaKeyEvent. Controls whatever is playing (Spotify, etc.) without opening or closing any app.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "expo": {
+    "platforms": ["android"]
+  }
+}

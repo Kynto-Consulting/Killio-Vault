@@ -4,6 +4,7 @@ import { uploadScreenshot } from '../screen/ScreenCapture';
 import * as Calendar from '../calendar/Calendar';
 import * as Device from '../integrations/device';
 import * as Spotify from '../integrations/spotify';
+import * as AppIntent from '../integrations/appIntent';
 import * as Clipboard from '../integrations/clipboard';
 import * as ShareInt from '../integrations/share';
 import * as DeviceControls from '../integrations/deviceControls';
@@ -137,7 +138,19 @@ async function dispatchClientAction(
           location: input.location as string | undefined,
           notes: input.notes as string | undefined,
         });
-        return tag({ success: true, output: created });
+        // Echo the event details back (not just the id) so the AI can confirm
+        // what it scheduled in its reply.
+        return tag({
+          success: true,
+          output: {
+            created: true,
+            id: (created as any)?.id ?? null,
+            title: String(input.title ?? ''),
+            start: Number(input.start),
+            end: Number(input.end),
+            location: input.location ?? null,
+          },
+        });
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'calendar create failed' };
       }
@@ -169,16 +182,30 @@ async function dispatchClientAction(
       // wake mode). Treat as success here so the agent loop finalizes cleanly.
       return { success: true, output: { disconnected: true, reason: input.reason ?? null } };
 
-    // ─── Spotify (deep-link control) ───────────────────────────────────────
+    // ─── Spotify ───────────────────────────────────────────────────────────
+    // NOTE: spotify_search + spotify_current are SERVER-SIDE (Spotify Web API),
+    // handled in the backend tool-executor — they never reach the device.
     case 'spotify_play':
       try {
+        // The backend resolves a free-form query → track URI before sending
+        // this action, so `uri` is usually present. play(uri) plays directly.
         const r = await Spotify.play({
+          uri: input.uri as string | undefined,
+          query: input.query as string | undefined,
+        });
+        return tag({ success: true, output: { ...r, ...(input.uri ? { uri: input.uri } : {}) } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'spotify play failed' };
+      }
+    case 'spotify_open':
+      try {
+        const r = await Spotify.openSpotify({
           uri: input.uri as string | undefined,
           query: input.query as string | undefined,
         });
         return tag({ success: true, output: r });
       } catch (e) {
-        return { success: false, error: (e as Error)?.message ?? 'spotify play failed' };
+        return { success: false, error: (e as Error)?.message ?? 'spotify open failed' };
       }
     case 'spotify_pause':
       try {
@@ -198,11 +225,24 @@ async function dispatchClientAction(
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'spotify prev failed' };
       }
-    case 'spotify_search':
+
+    // ─── App intents (WhatsApp call/message — App-Action style) ─────────────
+    case 'whatsapp_message':
       try {
-        return { success: true, output: await Spotify.search(String(input.query ?? '')) };
+        const r = await AppIntent.whatsappMessage(
+          String(input.phone ?? ''),
+          input.text as string | undefined,
+        );
+        return tag({ success: true, output: r });
       } catch (e) {
-        return { success: false, error: (e as Error)?.message ?? 'spotify search failed' };
+        return { success: false, error: (e as Error)?.message ?? 'whatsapp message failed' };
+      }
+    case 'whatsapp_call':
+      try {
+        const r = await AppIntent.whatsappCall(String(input.phone ?? ''));
+        return tag({ success: true, output: r });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'whatsapp call failed' };
       }
 
     // ─── Clipboard ────────────────────────────────────────────────────────
@@ -314,6 +354,9 @@ export const NEEDS_CONFIRM = new Set([
   'calendar_create_event',
   'send_sms',
   'spotify_play',
+  'spotify_open',
+  'whatsapp_message',
+  'whatsapp_call',
   'clipboard_write',
   'share_text',
   'set_alarm',

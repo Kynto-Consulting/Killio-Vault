@@ -78,6 +78,13 @@ export default function IntegrationsScreen() {
   };
 
   const connectDevice = async (it: VaultIntegration) => {
+    // Permission-less device capabilities (e.g. Spotify: background search via
+    // the backend Web API + play/transport via the device) need no connect
+    // step — they just work. Acknowledge instead of running a permission flow.
+    if (!it.devicePermission) {
+      Alert.alert(it.name, t('saved'));
+      return;
+    }
     try {
       const granted =
         it.devicePermission === 'calendar'

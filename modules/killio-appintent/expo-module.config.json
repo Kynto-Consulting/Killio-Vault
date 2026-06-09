@@ -1,0 +1,6 @@
+{
+  "platforms": ["android"],
+  "android": {
+    "modules": ["dev.killio.appintent.KillioAppIntentModule"]
+  }
+}

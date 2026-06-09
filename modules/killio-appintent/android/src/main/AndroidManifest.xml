@@ -1,0 +1,21 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    READ_CONTACTS is needed to resolve a phone number to the WhatsApp VoIP-call
+    contact data row (mimetype vnd.android.cursor.item/vnd.com.whatsapp.voip.call).
+    The app already requests this at runtime via expo-contacts. Message-only
+    flows (wa.me) need no permission.
+
+    Package visibility (Android 11+): allow querying WhatsApp so canResolve /
+    intents work under scoped package visibility.
+  -->
+  <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+  <queries>
+    <package android:name="com.whatsapp" />
+    <package android:name="com.whatsapp.w4b" />
+    <intent>
+      <action android:name="android.intent.action.VIEW" />
+      <data android:scheme="https" android:host="wa.me" />
+    </intent>
+  </queries>
+</manifest>

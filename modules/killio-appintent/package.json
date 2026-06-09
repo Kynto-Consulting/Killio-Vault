@@ -1,0 +1,11 @@
+{
+  "name": "killio-appintent",
+  "version": "0.0.1",
+  "description": "Killio Vault local Expo module — fire app-specific Android intents (WhatsApp voice call / message, generic app actions) like Google Assistant App Actions, without opening Killio's competitors via a generic launcher.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "expo": {
+    "platforms": ["android"]
+  }
+}

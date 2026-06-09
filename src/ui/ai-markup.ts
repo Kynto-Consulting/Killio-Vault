@@ -27,10 +27,13 @@ const STATUS_RE = /<tool_status\s+([^>]+?)\/?>/gi;
 const OUTPUT_RE = /<tool_output\s+([^>]*?)>([\s\S]*?)<\/tool_output>/gi;
 const INVOKE_RE = /<(?:async_)?invoke\s+([^>]*?)>([\s\S]*?)<\/(?:async_)?invoke>/gi;
 const TOOLCALL_RE = /<tool_call\b([^>]*?)(?:\/>|>([\s\S]*?)<\/tool_call>)/gi;
-const PRETHINK_RE = /<pre_think>([\s\S]*?)<\/pre_think>/gi;
+// Reasoning block — accept both Killio's <pre_think> and the model-native
+// <think> (Claude emits <think> with nested sections). Backreference \1 keeps
+// the open/close tags matched. Group 2 = the reasoning text.
+const PRETHINK_RE = /<(pre_think|think)>([\s\S]*?)<\/\1>/gi;
 // Master splitter — any tag we render or strip, in document order.
 const MASTER_RE =
-  /<pre_think>[\s\S]*?<\/pre_think>|<(?:async_)?invoke\s+[^>]*?>[\s\S]*?<\/(?:async_)?invoke>|<tool_call\b[^>]*?(?:\/>|>[\s\S]*?<\/tool_call>)|<tool_status\s+[^>]*?\/?>|<tool_output\s+[^>]*?>[\s\S]*?<\/tool_output>|<\/?batch_(?:tool|invoke)>|<plan>[\s\S]*?<\/plan>|<complete_step\b[^>]*?\/?>|<end_agent\b[^>]*?>[\s\S]*?<\/end_agent>|<asset\b[^>]*?(?:\/>|>[\s\S]*?<\/asset>)/gi;
+  /<(?:pre_)?think>[\s\S]*?<\/(?:pre_)?think>|<(?:async_)?invoke\s+[^>]*?>[\s\S]*?<\/(?:async_)?invoke>|<tool_call\b[^>]*?(?:\/>|>[\s\S]*?<\/tool_call>)|<tool_status\s+[^>]*?\/?>|<tool_output\s+[^>]*?>[\s\S]*?<\/tool_output>|<\/?batch_(?:tool|invoke)>|<plan>[\s\S]*?<\/plan>|<complete_step\b[^>]*?\/?>|<end_agent\b[^>]*?>[\s\S]*?<\/end_agent>|<asset\b[^>]*?(?:\/>|>[\s\S]*?<\/asset>)/gi;
 
 function unescapeHtml(s: string): string {
   return s
@@ -166,10 +169,10 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
     last = m.index + m[0].length;
     const tag = m[0];
 
-    if (/^<pre_think>/i.test(tag)) {
+    if (/^<(?:pre_)?think>/i.test(tag)) {
       PRETHINK_RE.lastIndex = 0;
       const pm = PRETHINK_RE.exec(tag);
-      const txt = (pm?.[1] ?? '').trim();
+      const txt = (pm?.[2] ?? '').trim();
       if (txt) blocks.push({ type: 'think', text: txt });
     } else if (/^<(?:async_)?invoke/i.test(tag)) {
       const a = attrs(tag.match(/<(?:async_)?invoke\s+([^>]*?)>/i)?.[1] ?? '');
