@@ -19,6 +19,8 @@ import android.os.PowerManager
 import org.json.JSONArray
 import com.k2fsa.sherpa.onnx.EndpointConfig
 import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.KeywordSpotter
+import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
@@ -161,6 +163,239 @@ class VaultSpeechService : Service() {
     private const val SPK_MODEL_FILE = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
     private const val SPK_MODEL_URL =
       "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+
+    // ── Keyword-spotting (wake-word) model ──────────────────────────────────
+    // A DEDICATED sherpa-onnx KeywordSpotter model — SEPARATE from the ASR
+    // transducer above; the two coexist (ASR transcribes the diary, KWS detects
+    // wake phrases DIRECTLY from audio with no transcript). The old wake path
+    // fuzzy-matched the Spanish ASR transcript, which fails because the es model
+    // mis-transcribes the made-up brand "Killio". KWS spots phonetic keywords
+    // straight from the PCM stream, so the brand name triggers reliably.
+    //
+    // Model: sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01 (English BPE
+    // streaming Zipformer, ~3.3M params; the encoder/decoder/joiner are only a
+    // few MB each — total well under the 10–30MB budget). It is an English BPE
+    // model, but wake words are PHONETIC: "hey killio"/"oye killio" and Latin-
+    // script agent names tokenize fine through its byte-level BPE vocab, and KWS
+    // matches on acoustics, not orthography, so an English model still fires on
+    // Spanish-accented speech. Same offline/onModelStatus download pattern as the
+    // ASR: we fetch the loose ONNX files + tokens.txt + bpe.model directly from
+    // the upstream HuggingFace repo (resolve/main/<file>) into a filesDir subdir,
+    // avoiding a bundled bzip2/tar extractor for the GitHub .tar.bz2 release.
+    //
+    // GitHub release (archives):  https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models
+    //   asset: sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
+    // HuggingFace (loose files we actually download):
+    //   https://huggingface.co/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
+    private const val KWS_DIR = "sherpa-kws"
+    private const val KWS_HF_REPO =
+      "pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+    // Remote HF filename → local filename. The encoder/decoder/joiner are epoch-
+    // tagged upstream; we save them under stable names the spotter loads. We use
+    // the int8 variants (smaller; KWS accuracy is unaffected for short phrases).
+    private val KWS_FILES = listOf(
+      "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" to "encoder.onnx",
+      "decoder-epoch-12-avg-2-chunk-16-left-64.onnx" to "decoder.onnx",
+      "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx" to "joiner.onnx",
+      "tokens.txt" to "tokens.txt",
+      "bpe.model" to "bpe.model",
+    )
+    // LOCAL filenames the spotter loads (the 3 onnx + tokens). bpe.model is only
+    // needed by the offline text2token CLI; our on-device tokenizer reads
+    // tokens.txt directly, so the spotter itself needs just these four.
+    private val KWS_LOCAL_REQUIRED = listOf("encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt")
+    /** The default built-in wake phrases, always added to the keyword set. */
+    val DEFAULT_WAKE_PHRASES = listOf("hey killio", "oye killio", "okay killio", "ok killio")
+
+    /** Process-wide shared KeywordSpotter (lazy, best-effort). Reused across
+     *  the continuous loop; stream is re-created when keywords change. */
+    @Volatile private var sharedKws: KeywordSpotter? = null
+    @Volatile private var sharedKwsTried = false
+    private val kwsLock = Any()
+    /** Cached tokens.txt vocab (token → id) for on-device BPE tokenization. */
+    @Volatile private var kwsTokenVocab: Map<String, Int>? = null
+
+    /** All required KWS files present in [dir]? */
+    private fun kwsModelComplete(dir: File): Boolean =
+      dir.isDirectory && KWS_LOCAL_REQUIRED.all { File(dir, it).let { f -> f.exists() && f.length() > 0 } }
+
+    /** True once the KWS model has been fully downloaded. */
+    fun isKwsModelPresent(ctx: android.content.Context): Boolean =
+      kwsModelComplete(File(ctx.filesDir, KWS_DIR))
+
+    /**
+     * Load (once) the tokens.txt vocab for the KWS model into a token→id map.
+     * Each line is "<token> <id>"; the first column is the BPE piece (which may
+     * contain the U+2581 '▁' word-boundary marker). Returns null if missing.
+     */
+    private fun loadKwsTokenVocab(dir: File): Map<String, Int>? {
+      kwsTokenVocab?.let { return it }
+      val f = File(dir, "tokens.txt")
+      if (!f.exists()) return null
+      return try {
+        val map = HashMap<String, Int>()
+        f.forEachLine { line ->
+          val sp = line.lastIndexOf(' ')
+          if (sp > 0) {
+            val tok = line.substring(0, sp)
+            val id = line.substring(sp + 1).trim().toIntOrNull()
+            if (id != null) map[tok] = id
+          }
+        }
+        kwsTokenVocab = map
+        map
+      } catch (e: Exception) {
+        Log.w("KillioKWS", "tokens.txt parse failed: ${e.message}")
+        null
+      }
+    }
+
+    /**
+     * Greedy longest-match BPE tokenizer over the KWS model's tokens.txt. The
+     * gigaspeech model uses byte-level BPE with the '▁' (U+2581) word-boundary
+     * marker prefixing the first piece of each word. We lowercase→UPPERCASE (the
+     * vocab is upper-cased), join words with '▁', and greedily consume the
+     * longest vocab piece at each position. Returns the space-separated token
+     * string sherpa's keywords file expects (e.g. "▁HE LL O ▁WORLD"), or null if
+     * any character can't be covered by the vocab (caller logs + skips → that
+     * phrase falls back to the JS transcript matcher).
+     *
+     * This is a pragmatic on-device substitute for sherpa's offline
+     * `text2token --tokens-type bpe --bpe-model bpe.model` step (we don't ship a
+     * SentencePiece runtime). It won't always reproduce the exact BPE merge the
+     * trained model would, but for short wake phrases the greedy cover over the
+     * same vocab yields tokens the spotter accepts and triggers on.
+     */
+    private fun tokenizeForKws(dir: File, phrase: String): String? {
+      val vocab = loadKwsTokenVocab(dir) ?: return null
+      val words = phrase.trim().uppercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+      if (words.isEmpty()) return null
+      val out = ArrayList<String>()
+      for (word in words) {
+        // sherpa BPE prefixes the WORD with '▁'; we tokenize "▁WORD" as a unit.
+        val s = "▁$word"
+        var i = 0
+        while (i < s.length) {
+          var matched: String? = null
+          // longest-match: try the longest substring starting at i.
+          var end = s.length
+          while (end > i) {
+            val cand = s.substring(i, end)
+            if (vocab.containsKey(cand)) { matched = cand; break }
+            end--
+          }
+          if (matched == null) {
+            // Char not coverable (e.g. accented letter not in the en vocab).
+            return null
+          }
+          out.add(matched)
+          i += matched.length
+        }
+      }
+      return out.joinToString(" ")
+    }
+
+    /**
+     * Build the sherpa keywords-file content for [phrases]. Each line is:
+     *   <bpe tokens> :<score> #<threshold> @<original phrase>
+     * The trailing "@<original phrase>" is what getResult().keyword reports on a
+     * match, so JS can map the detection straight back to the agent/phrase.
+     * Phrases that can't tokenize are logged + skipped. Returns the file text
+     * plus the list of phrases that were actually included.
+     */
+    private fun buildKeywordsFile(dir: File, phrases: List<String>): Pair<String, List<String>> {
+      val sb = StringBuilder()
+      val kept = ArrayList<String>()
+      val seen = HashSet<String>()
+      for (raw in phrases) {
+        val phrase = raw.trim()
+        if (phrase.isEmpty() || !seen.add(phrase.lowercase())) continue
+        val tokens = tokenizeForKws(dir, phrase)
+        if (tokens == null) {
+          Log.w("KillioKWS", "skip keyword (untokenizable): \"$phrase\"")
+          continue
+        }
+        // score 2.0 (easier to survive beam), threshold 0.25 (sherpa default).
+        // @phrase preserves the ORIGINAL text as the reported keyword.
+        sb.append(tokens).append(" :2.0 #0.25 @").append(phrase).append('\n')
+        kept.add(phrase)
+      }
+      return sb.toString() to kept
+    }
+
+    /**
+     * Ensure + load the shared KeywordSpotter. Best-effort: returns null (never
+     * throws) so 24/7 ASR keeps working even if the KWS model can't be
+     * prepared. Cached after first success.
+     */
+    fun loadSharedKws(ctx: android.content.Context): KeywordSpotter? {
+      synchronized(kwsLock) {
+        sharedKws?.let { return it }
+        if (sharedKwsTried && sharedKws == null) return null
+        sharedKwsTried = true
+        return try {
+          val dir = ensureKwsModelStatic(ctx) ?: return null
+          val cfg = KeywordSpotterConfig(
+            featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+            modelConfig = OnlineModelConfig(
+              transducer = OnlineTransducerModelConfig(
+                encoder = File(dir, "encoder.onnx").absolutePath,
+                decoder = File(dir, "decoder.onnx").absolutePath,
+                joiner = File(dir, "joiner.onnx").absolutePath,
+              ),
+              tokens = File(dir, "tokens.txt").absolutePath,
+              numThreads = 1,
+              provider = "cpu",
+              modelType = "zipformer2",
+            ),
+            // keywordsFile is required by the data class but we pass keywords
+            // PER-STREAM via createStream(keywords), so point it at our generated
+            // file (written by setKeywordsStatic) to satisfy construction.
+            keywordsFile = File(dir, "keywords.txt").absolutePath,
+            keywordsScore = 2.0f,
+            keywordsThreshold = 0.25f,
+          )
+          // Construction reads keywordsFile, so ensure a non-empty default exists.
+          ensureDefaultKeywordsFile(ctx, dir)
+          val ks = KeywordSpotter(null, cfg)
+          sharedKws = ks
+          Log.i("KillioKWS", "KeywordSpotter loaded (gigaspeech kws zipformer)")
+          ks
+        } catch (e: Exception) {
+          Log.w("KillioKWS", "KeywordSpotter load failed (wake-word off, fuzzy fallback only): ${e.message}")
+          null
+        }
+      }
+    }
+
+    /** Write a default keywords.txt (built-ins only) if none exists yet. */
+    private fun ensureDefaultKeywordsFile(ctx: android.content.Context, dir: File) {
+      val f = File(dir, "keywords.txt")
+      if (f.exists() && f.length() > 0) return
+      val (content, _) = buildKeywordsFile(dir, DEFAULT_WAKE_PHRASES)
+      try { f.writeText(if (content.isEmpty()) "▁HE Y ▁KI LL I O :2.0 #0.25 @hey killio\n" else content) }
+      catch (e: Exception) { Log.w("KillioKWS", "default keywords write failed: ${e.message}") }
+    }
+
+    /** Static KWS download (loose HF files). Returns null on failure. */
+    private fun ensureKwsModelStatic(ctx: android.content.Context): File? {
+      val dir = File(ctx.filesDir, KWS_DIR)
+      if (kwsModelComplete(dir)) return dir
+      Log.i("KillioKWS", "KWS model incomplete — downloading from $KWS_HF_REPO (first run only)")
+      dir.mkdirs()
+      return try {
+        for ((remote, local) in KWS_FILES) {
+          val dest = File(dir, local)
+          if (dest.exists() && dest.length() > 0) continue
+          val url = "$HF_BASE/$KWS_HF_REPO/resolve/$HF_REVISION/$remote"
+          downloadTo(url, dest, null)
+        }
+        if (kwsModelComplete(dir)) dir else null
+      } catch (e: Exception) {
+        Log.w("KillioKWS", "KWS model download failed: ${e.message}")
+        null
+      }
+    }
 
     /** True once the STT model for [language] has been fully downloaded. */
     fun isModelPresent(ctx: android.content.Context, language: String? = null): Boolean =
@@ -502,6 +737,18 @@ class VaultSpeechService : Service() {
   @Volatile private var spk: SpeakerEmbeddingExtractor? = null
   @Volatile private var audioRecord: AudioRecord? = null
 
+  // ── Keyword-spotting (wake-word) per-session state ────────────────────────
+  /** Shared spotter (process-lifetime) used by this session, if loaded. */
+  @Volatile private var kws: KeywordSpotter? = null
+  /** This session's KWS stream, fed the SAME PCM frames as the ASR/VAD loop. */
+  @Volatile private var kwsStream: OnlineStream? = null
+  /** Current wake keywords (built-ins + agent phrases). Mutable via setKeywords. */
+  @Volatile private var kwsKeywords: List<String> = DEFAULT_WAKE_PHRASES
+  /** Pending keyword list requested via setKeywords() while the loop runs; the
+   *  loop swaps the stream on the next iteration (cheap, no service restart). */
+  @Volatile private var pendingKeywords: List<String>? = null
+  private val kwsStreamLock = Any()
+
   @Volatile private var continuousIdle = false
   private val pauseLock = Any()
 
@@ -526,6 +773,29 @@ class VaultSpeechService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
     langCode = Companion.langCode(intent?.getStringExtra("language"))
+
+    // Wake keywords passed from JS (agent names + wake phrases). Built-ins are
+    // always merged in below. A re-delivered start intent (e.g. after agents
+    // change) updates the keyword set live via pendingKeywords.
+    val reloadOnly = intent?.getBooleanExtra("keywordsReloadOnly", false) ?: false
+    intent?.getStringArrayExtra("keywords")?.let { arr ->
+      val merged = (DEFAULT_WAKE_PHRASES + arr.toList())
+        .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+      if (running) {
+        // Loop already running → hot-swap on the next iteration.
+        pendingKeywords = merged
+      } else {
+        kwsKeywords = merged
+      }
+    }
+
+    // A keyword-reload-only delivery (setKeywords) must NOT spin up capture if it
+    // isn't already running — the user may have capture off. Bail without
+    // becoming a foreground service in that case.
+    if (reloadOnly && !running) {
+      stopSelf()
+      return START_NOT_STICKY
+    }
 
     if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
         != PackageManager.PERMISSION_GRANTED) {
@@ -619,6 +889,18 @@ class VaultSpeechService : Service() {
     spk = loadSharedSpk(this)
     if (spk == null) Log.w("KillioSTT", "Speaker model unavailable — continuing without voice-ID")
 
+    // Keyword-spotter (best-effort wake-word). Runs IN PARALLEL with the ASR on
+    // the SAME PCM frames (NOT VAD-gated — wake must trigger any time). If it
+    // can't load, capture/ASR continue and JS falls back to fuzzy transcript
+    // matching. Downloads the KWS model on first run (separate from the ASR).
+    kws = loadSharedKwsWithProgress()
+    if (kws != null) {
+      openKwsStream(kwsKeywords)
+      Log.i("KillioKWS", "wake-word spotter active with ${kwsKeywords.size} keywords")
+    } else {
+      Log.w("KillioKWS", "KWS unavailable — wake-word falls back to JS transcript matcher")
+    }
+
     val minBuf = AudioRecord.getMinBufferSize(
       SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
     )
@@ -670,6 +952,9 @@ class VaultSpeechService : Service() {
           val reopened = openRecorder()
           if (reopened == null) { stopSelf(); break }
           recorder = reopened
+          // Reset the wake stream so the gap during the one-shot doesn't leave
+          // stale partial state that could mis-fire on resume.
+          kws?.let { ks -> kwsStream?.let { try { ks.reset(it) } catch (_: Exception) {} } }
           Log.i("KillioSTT", "Continuous capture resumed after one-shot")
           continue
         }
@@ -677,9 +962,42 @@ class VaultSpeechService : Service() {
         val read = recorder.read(buf, 0, frameSamples)
         if (read <= 0) continue
 
+        val floats = toFloat(buf, read)
+
+        // ── Wake-word (KWS) — parallel, NOT VAD-gated ─────────────────────────
+        // Feed the SAME raw frames into the keyword spotter continuously so the
+        // wake phrase fires any time. Cheap (small model, single thread). A
+        // pending keyword change (setKeywords) is applied here by re-opening the
+        // stream. Wrapped so a KWS error can never break ASR/diary.
+        try {
+          pendingKeywords?.let { next ->
+            pendingKeywords = null
+            kwsKeywords = next
+            if (kws != null) {
+              openKwsStream(next)
+              Log.i("KillioKWS", "wake keywords reloaded (${next.size})")
+            }
+          }
+          val ks = kws
+          val kstream = kwsStream
+          if (ks != null && kstream != null) {
+            kstream.acceptWaveform(floats, SAMPLE_RATE)
+            while (ks.isReady(kstream)) ks.decode(kstream)
+            val kw = ks.getResult(kstream).keyword
+            if (kw.isNotEmpty()) {
+              Log.i("KillioKWS", "WAKE keyword=\"$kw\"")
+              emitWake(kw)
+              // Reset so the same keyword can fire again on the next utterance.
+              ks.reset(kstream)
+            }
+          }
+        } catch (e: Exception) {
+          Log.w("KillioKWS", "KWS feed failed: ${e.message}")
+        }
+
         // Feed normalized floats to Silero VAD. When a speech segment finishes,
         // VAD.front() holds the full segment samples — decode + embed it.
-        v.acceptWaveform(toFloat(buf, read))
+        v.acceptWaveform(floats)
         while (!v.empty()) {
           val segment = v.front()
           v.pop()
@@ -725,6 +1043,72 @@ class VaultSpeechService : Service() {
       }
     })
   }
+
+  /**
+   * Emit a wake-word detection to JS. NEW event contract:
+   *   onWake { keyword: String, ts: Double (UTC ms) }
+   * [keyword] is the ORIGINAL phrase text (from the "@phrase" suffix in the
+   * keywords file), so JS maps it back to the matching agent / default assistant.
+   */
+  private fun emitWake(keyword: String) {
+    emitter?.invoke("onWake", Bundle().apply {
+      putString("keyword", keyword)
+      putDouble("ts", System.currentTimeMillis().toDouble())
+    })
+  }
+
+  /**
+   * (Re)create this session's KWS stream for [phrases]. The keyword set is passed
+   * INLINE to createStream(keywords) as the keywords-file content (sherpa accepts
+   * the same line format via the stream argument), so changing keywords is cheap
+   * — just swap the stream, no spotter/service rebuild. The old stream is
+   * released. Best-effort: a failure leaves kwsStream null (wake-word silently
+   * off until the next attempt) but never breaks ASR.
+   */
+  private fun openKwsStream(phrases: List<String>) {
+    val ks = kws ?: return
+    val dir = File(filesDir, KWS_DIR)
+    synchronized(kwsStreamLock) {
+      val (content, kept) = buildKeywordsFile(dir, phrases)
+      try {
+        kwsStream?.release()
+      } catch (_: Exception) {}
+      kwsStream = try {
+        // Inline keywords string; empty → spotter uses its configured default file.
+        ks.createStream(content)
+      } catch (e: Exception) {
+        Log.w("KillioKWS", "createStream(keywords) failed: ${e.message}")
+        null
+      }
+      Log.i("KillioKWS", "KWS stream open with ${kept.size}/${phrases.size} keywords")
+    }
+  }
+
+  /**
+   * Replace the active wake keywords live (no service restart). Stores them as
+   * pending; the recognition loop swaps the stream on its next iteration. Safe to
+   * call from any thread / before the loop starts.
+   */
+  fun setKeywords(phrases: List<String>) {
+    val merged = (DEFAULT_WAKE_PHRASES + phrases)
+      .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    if (running) pendingKeywords = merged else kwsKeywords = merged
+  }
+
+  /** KWS model load with onModelStatus progress (first-run download). */
+  private fun loadSharedKwsWithProgress(): KeywordSpotter? {
+    val dir = File(filesDir, KWS_DIR)
+    if (!kwsModelCompleteInstance(dir)) {
+      // Surface the (small) KWS download on the same banner as the ASR/VAD.
+      emitModelStatus("downloading", progress = 0, bytes = 0, total = -1)
+    }
+    return loadSharedKws(this)
+  }
+
+  /** Instance accessor for the companion's KWS-complete check. */
+  private fun kwsModelCompleteInstance(dir: File): Boolean =
+    File(dir, "encoder.onnx").let { it.exists() && it.length() > 0 } &&
+      File(dir, "tokens.txt").let { it.exists() && it.length() > 0 }
 
   /** STT model download with onModelStatus progress (continuous path). */
   private fun ensureSttModelWithProgress(): File? {
@@ -817,11 +1201,16 @@ class VaultSpeechService : Service() {
     worker = null
     try { audioRecord?.let { if (it.state == AudioRecord.STATE_INITIALIZED) it.release() } } catch (_: Exception) {}
     audioRecord = null
-    // Do NOT release the shared recognizer / speaker extractor — they're the
-    // process-lifetime shared instances reused by the one-shot path. The VAD is
-    // per-session, so release it.
+    // Do NOT release the shared recognizer / speaker extractor / KWS spotter —
+    // they're the process-lifetime shared instances reused by the one-shot path.
+    // The VAD and the per-session KWS STREAM are per-session, so release them.
     try { vad?.release() } catch (_: Exception) {}
     vad = null
+    synchronized(kwsStreamLock) {
+      try { kwsStream?.release() } catch (_: Exception) {}
+      kwsStream = null
+    }
+    kws = null
     recognizer = null
     spk = null
     if (instance === this) instance = null

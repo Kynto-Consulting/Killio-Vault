@@ -22,6 +22,7 @@ import {
 } from '@/agents/local-agent.model';
 import { useEntitlements } from '@/settings/useEntitlements';
 import { useAuth } from '@/core/auth/AuthContext';
+import { useCapture } from '@/capture/CaptureContext';
 import { listDocuments, type DocSummary } from '@/core/api/documents.client';
 import { isCustomVoiceAvailable } from '@/tts/cartesia';
 import { speak } from '@/tts/Tts';
@@ -64,6 +65,7 @@ export default function AgentsScreen() {
   const tAgents = useTranslations('agentsScreen');
   const { entitlements } = useEntitlements();
   const { activeTeam } = useAuth();
+  const { reloadKeywords } = useCapture();
   const [agents, setAgents] = useState<LocalAgent[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [docs, setDocs] = useState<DocSummary[]>([]);
@@ -150,6 +152,9 @@ export default function AgentsScreen() {
     }
     setDraft(null);
     refresh();
+    // Agent names/wake-phrases changed → re-push wake keywords to the native
+    // KeywordSpotter so the new/edited name is wakeable immediately (no restart).
+    reloadKeywords();
   };
 
   const remove = (a: LocalAgent) => {
@@ -161,6 +166,7 @@ export default function AgentsScreen() {
         onPress: () => {
           deleteAgent(a.id);
           refresh();
+          reloadKeywords();
         },
       },
     ]);

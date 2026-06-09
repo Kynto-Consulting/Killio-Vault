@@ -43,6 +43,8 @@ interface CaptureState {
   setOnCommandUtterance(cb: ((text: string) => void) | null): void;
   /** Reload the owner voiceprint into the running controller (after enroll/clear). */
   refreshVoiceprint(): void;
+  /** Re-push wake keywords to the native spotter after the agent list changes. */
+  reloadKeywords(): void;
 }
 
 const Ctx = createContext<CaptureState | null>(null);
@@ -200,6 +202,9 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       },
       refreshVoiceprint: () => {
         void controllerRef.current?.refreshVoiceprint();
+      },
+      reloadKeywords: () => {
+        controllerRef.current?.reloadKeywords();
       },
     }),
     [status, modelStatus, mode, sttLanguage, nativeAvailable, pending],

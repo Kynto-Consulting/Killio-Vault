@@ -8,7 +8,12 @@ import { CaptureMode, isWithinWindows } from './schedule';
 import { VadSegmenter } from '../stt/vad';
 import { getSttEngine } from '../stt/engines';
 import { enqueueSegment, flushOutbox, localDate, pendingCount } from '../db/outbox';
-import { matchWake, type WakeMatch } from '../wakeword/WakeWord';
+import {
+  matchWake,
+  buildKeywordsList,
+  BUILTIN_WAKE_PHRASES,
+  type WakeMatch,
+} from '../wakeword/WakeWord';
 import { listAgents } from '../agents/local-agent.model';
 import {
   getVoiceprint,
@@ -75,6 +80,8 @@ export class CaptureController {
   private errSub: { remove(): void } | null = null;
   private transcriptSub: { remove(): void } | null = null;
   private modelStatusSub: { remove(): void } | null = null;
+  /** Native KeywordSpotter wake subscription (primary wake path). */
+  private wakeSub: { remove(): void } | null = null;
   /** System-audio (playback) frame/error subscriptions, used when source
    *  includes 'system'. Separate from the mic subs above. */
   private sysFrameSub: { remove(): void } | null = null;
@@ -242,6 +249,12 @@ export class CaptureController {
         console.log(`[KillioVosk] model status: ${e.state}${e.progress != null ? ` ${e.progress}%` : ''}`);
         this.setModelStatus(e.state === 'ready' ? null : e);
       });
+      // PRIMARY wake path: the native sherpa-onnx KeywordSpotter detects wake
+      // phrases / agent names DIRECTLY from audio (no transcript). Map the
+      // reported keyword back to its agent and fire the same onWakeCb the
+      // transcript matcher uses. The transcript-fuzzy matchWake() in
+      // handleTranscript() stays as a fallback for un-tokenizable phrases.
+      this.wakeSub = Speech.onWake((e) => this.handleNativeWake(e));
     } else if (this.wantsMic && nativeOk) {
       console.log('[KillioCapture] mic path = AudioRecord+VAD (KillioCapture) fallback');
       this.frameSub = Native.onAudioFrame((e) => this.handleFrame(e));
@@ -301,10 +314,12 @@ export class CaptureController {
     this.errSub?.remove();
     this.transcriptSub?.remove();
     this.modelStatusSub?.remove();
+    this.wakeSub?.remove();
     this.sysFrameSub?.remove();
     this.sysErrSub?.remove();
     this.frameSub = this.errSub = this.transcriptSub = null;
     this.modelStatusSub = null;
+    this.wakeSub = null;
     this.sysFrameSub = this.sysErrSub = null;
     this.setModelStatus(null);
     if (this.wantsMic) {
@@ -343,7 +358,10 @@ export class CaptureController {
       if (this.wantsMic && micServable) {
         try {
           if (this.useSpeech) {
-            await Speech.start({ language: this.language });
+            await Speech.start({
+              language: this.language,
+              keywords: this.computeKeywords(),
+            });
           } else {
             await Native.start({ notificationText: 'Killio Vault is listening' });
           }
@@ -392,6 +410,69 @@ export class CaptureController {
   /** Register a wake-phrase handler ("Hey Killio …"). */
   setOnWake(cb: ((m: WakeMatch) => void) | null): void {
     this.onWakeCb = cb;
+  }
+
+  /**
+   * Build the wake keyword list for the native KeywordSpotter from the current
+   * agents (names + wakePhrases) plus the built-in phrases. Single source of
+   * truth shared with the transcript fallback.
+   */
+  private computeKeywords(): string[] {
+    let triggers: string[] = [];
+    try {
+      triggers = listAgents()
+        .map((a) => a.wakePhrase || a.name)
+        .filter((s): s is string => !!s && s.trim().length > 0);
+    } catch {
+      triggers = [];
+    }
+    return buildKeywordsList(triggers);
+  }
+
+  /**
+   * Push the current agent-derived keywords to the running native spotter
+   * (no capture restart). Call when the agent list changes so new agent names
+   * become wakeable immediately. No-op when not using the native speech engine.
+   */
+  reloadKeywords(): void {
+    if (!this.useSpeech) return;
+    void Speech.setKeywords(this.computeKeywords());
+  }
+
+  /**
+   * Native KeywordSpotter detection (PRIMARY wake path). The reported `keyword`
+   * is the original phrase text (e.g. "oye killio" or an agent name). Resolve it
+   * to a WakeMatch: a built-in / "killio" phrase → default assistant; an
+   * agent name (bare or "hey/oye {name}") → that agent. Then run the SAME
+   * owner-gate + onWakeCb path the transcript matcher uses.
+   */
+  private handleNativeWake(e: Speech.WakeEvent): void {
+    if (this.muted) return;
+    const kw = e.keyword?.trim().toLowerCase();
+    if (!kw) return;
+
+    // Resolve which agent (if any) this keyword belongs to.
+    let agentName: string | undefined;
+    if (!BUILTIN_WAKE_PHRASES.includes(kw) && !/\bkillio\b/.test(kw)) {
+      // Strip an optional wake prefix to recover the bare agent name.
+      const bare = kw.replace(/^(hey|oye|ok|okay)\s+/, '').trim();
+      try {
+        const agent = listAgents().find((a) => {
+          const trig = (a.wakePhrase || a.name).trim().toLowerCase();
+          return trig === bare || trig === kw;
+        });
+        agentName = agent ? (agent.wakePhrase || agent.name) : undefined;
+      } catch {
+        agentName = undefined;
+      }
+    }
+
+    const m: WakeMatch = { phrase: kw, agentName, command: '' };
+    console.log(`[KillioWake] NATIVE keyword="${e.keyword}" → agent=${agentName ?? '(default)'}`);
+    // Native KWS can't do offline speaker verification (no embedding on the
+    // wake frame), so the owner-gate is enforced on the FOLLOW-UP command
+    // utterance via handleTranscript()'s voiceprint check. Fire the wake.
+    this.onWakeCb?.(m);
   }
 
   /**

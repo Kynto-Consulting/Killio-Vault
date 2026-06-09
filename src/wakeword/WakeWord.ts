@@ -128,3 +128,23 @@ export function wakePhrasesFor(agentName?: string): string[] {
   if (name) phrases.push(`hey ${name.toLowerCase()}`, `oye ${name.toLowerCase()}`);
   return phrases;
 }
+
+/**
+ * Build the keyword list fed to the native KeywordSpotter: the built-in wake
+ * phrases plus, for each agent, BOTH its bare name/wakePhrase AND the
+ * "hey/oye {name}" prefixed forms (so users can wake an agent with or without a
+ * prefix). The native side adds "hey/oye killio" too, but we include the
+ * builtins here so a single source of truth drives both the primary KWS path and
+ * the transcript fallback. Deduplicated, lowercased.
+ */
+export function buildKeywordsList(agentTriggers: string[] = []): string[] {
+  const set = new Set<string>(BUILTIN_WAKE_PHRASES.map((p) => p.toLowerCase()));
+  for (const raw of agentTriggers) {
+    const name = raw?.trim().toLowerCase();
+    if (!name) continue;
+    set.add(name);
+    set.add(`hey ${name}`);
+    set.add(`oye ${name}`);
+  }
+  return [...set];
+}

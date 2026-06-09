@@ -35,6 +35,24 @@ export interface SpeechStartOptions {
   language?: string;
   notificationText?: string;
   preferOffline?: boolean;
+  /**
+   * Wake keywords for the on-device sherpa-onnx KeywordSpotter (agent names +
+   * custom wake phrases). Built-in "hey/oye killio" are ALWAYS added natively.
+   * Detected DIRECTLY from audio (no transcript) so the made-up brand "Killio"
+   * triggers reliably despite the Spanish ASR mis-transcribing it.
+   */
+  keywords?: string[];
+}
+
+/**
+ * Wake-word detection from the native KeywordSpotter. `keyword` is the ORIGINAL
+ * phrase text (e.g. "oye killio" or an agent name) so JS can map it back to the
+ * matching agent / default assistant.
+ */
+export interface WakeEvent {
+  keyword: string;
+  /** UTC epoch ms. */
+  ts: number;
 }
 
 /**
@@ -90,6 +108,23 @@ export function onTranscript(cb: (e: TranscriptEvent) => void): { remove(): void
   return { remove: () => sub.remove() };
 }
 
+/**
+ * Subscribe to native wake-word detections from the KeywordSpotter. Fires
+ * { keyword, ts } the instant a wake phrase / agent name is spotted in the audio
+ * stream — independent of the diary transcript. This is the PRIMARY wake path;
+ * the transcript-fuzzy matchWake() remains a fallback for phrases the KWS model
+ * can't tokenize.
+ */
+export function onWake(cb: (e: WakeEvent) => void): { remove(): void } {
+  if (!emitter) return { remove() {} };
+  const sub = emitter.addListener('onWake', (raw: any) => {
+    const keyword = typeof raw?.keyword === 'string' ? raw.keyword : '';
+    const ts = typeof raw?.ts === 'number' ? raw.ts : Date.now();
+    if (keyword) cb({ keyword, ts });
+  });
+  return { remove: () => sub.remove() };
+}
+
 export function onError(cb: (e: { message: string }) => void): { remove(): void } {
   if (!emitter) return { remove() {} };
   const sub = emitter.addListener('onError', cb);
@@ -112,7 +147,23 @@ export async function start(opts: SpeechStartOptions = {}): Promise<void> {
     language: opts.language ?? 'es-ES',
     notificationText: opts.notificationText ?? 'Killio Vault is listening',
     preferOffline: opts.preferOffline ?? true,
+    keywords: opts.keywords ?? [],
   });
+}
+
+/**
+ * Reload the wake keywords live (no capture restart). Built-in "hey/oye killio"
+ * are always merged in natively. No-op if the native module / capture service
+ * isn't running. Call when the agent list changes so new agent names become
+ * wakeable immediately.
+ */
+export async function setKeywords(keywords: string[]): Promise<void> {
+  if (!native?.setKeywords) return;
+  try {
+    await native.setKeywords(keywords);
+  } catch {
+    /* service not running — keywords apply on next start() */
+  }
 }
 
 export async function stop(): Promise<void> {

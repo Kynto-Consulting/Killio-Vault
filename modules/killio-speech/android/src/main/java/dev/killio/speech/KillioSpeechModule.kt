@@ -33,13 +33,18 @@ class SpeechStartOptions : Record {
   @Field var language: String = "es-ES"
   @Field var notificationText: String = "Killio Vault is listening"
   @Field var preferOffline: Boolean = true
+  /** Wake keywords (agent names + custom wake phrases). Built-in "hey/oye
+   *  killio" are always added natively. Detected DIRECTLY from audio by the
+   *  sherpa-onnx KeywordSpotter (no transcript), so the brand name triggers
+   *  reliably despite the Spanish ASR mis-transcribing it. */
+  @Field var keywords: List<String> = emptyList()
 }
 
 class KillioSpeechModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("KillioSpeech")
 
-    Events("onTranscript", "onError", "onModelStatus")
+    Events("onTranscript", "onError", "onModelStatus", "onWake")
 
     OnCreate {
       VaultSpeechService.emitter = { name, body -> sendEvent(name, body) }
@@ -71,6 +76,10 @@ class KillioSpeechModule : Module() {
         putExtra("language", options.language)
         putExtra("notificationText", options.notificationText)
         putExtra("preferOffline", options.preferOffline)
+        // Wake keywords for the on-device KeywordSpotter. Re-delivering start()
+        // with a new list hot-swaps the keyword set live (the service reads this
+        // extra on every onStartCommand and reloads without a full restart).
+        putExtra("keywords", options.keywords.toTypedArray())
       }
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         ctx.startForegroundService(intent)
@@ -97,6 +106,33 @@ class KillioSpeechModule : Module() {
       }
       // Explicit Unit — stopService() returns Boolean and would otherwise make
       // Kotlin infer a non-Unit lambda type, clashing with the no-context path.
+      Unit
+    }
+
+    // Reload the wake keywords live without restarting capture. Re-delivers a
+    // start Intent carrying the new keyword list; VaultSpeechService reads the
+    // "keywords" extra on every onStartCommand and hot-swaps the KeywordSpotter
+    // stream on its next loop iteration (cheap — no service/model rebuild). If
+    // capture isn't running this is a no-op start that simply (re)launches it
+    // with the right keywords. Built-in "hey/oye killio" are always merged in.
+    AsyncFunction("setKeywords") { keywords: List<String> ->
+      val ctx: Context = appContext.reactContext
+        ?: throw IllegalStateException("No React context")
+      val intent = Intent(ctx, VaultSpeechService::class.java).apply {
+        putExtra("keywords", keywords.toTypedArray())
+        putExtra("keywordsReloadOnly", true)
+      }
+      // Plain startService (NOT startForegroundService): this only delivers a new
+      // onStartCommand to the ALREADY-RUNNING foreground service (which hot-swaps
+      // its keywords). If capture isn't running the call is a harmless no-op
+      // (background startService throws on O+, swallowed) — we never want
+      // setKeywords to spin up capture the user has turned off.
+      try {
+        ctx.startService(intent)
+      } catch (e: Exception) {
+        // Service not running / background-start disallowed — keywords will be
+        // applied on the next real start() instead.
+      }
       Unit
     }
 
