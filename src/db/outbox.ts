@@ -181,7 +181,19 @@ export function getLocalSegments(date: string): LocalSegment[] {
         [date],
       ),
     );
-    console.log(`[KillioDiary] getLocalSegments date=${date} rows=${rows.length}`);
+    try {
+      const totalRes = db.execute(`SELECT COUNT(*) AS c FROM diary_outbox`);
+      const totalRows = (totalRes as any)?.rows;
+      const total = Array.isArray(totalRows) ? totalRows[0]?.c : totalRows?._array?.[0]?.c ?? totalRows?.item?.(0)?.c;
+      const distinctRes = db.execute(`SELECT DISTINCT date FROM diary_outbox LIMIT 5`);
+      const dRows = (distinctRes as any)?.rows;
+      const dates = (Array.isArray(dRows) ? dRows : dRows?._array ?? []).map((r: any) => r.date);
+      console.log(
+        `[KillioDiary] getLocalSegments date="${date}" filteredRows=${rows.length} TOTAL=${total} storedDates=${JSON.stringify(dates)} rawType=${Array.isArray((db.execute(`SELECT * FROM diary_outbox LIMIT 1`) as any)?.rows) ? 'array' : typeof (db.execute(`SELECT * FROM diary_outbox LIMIT 1`) as any)?.rows}`,
+      );
+    } catch (e) {
+      console.warn('[KillioDiary] diag failed: ' + String(e));
+    }
     return rows.map((r) => ({
       text: r.text,
       ts: r.ts,
