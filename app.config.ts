@@ -26,8 +26,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       backgroundColor: '#000000',
     },
     // Phase 1+ adds RECORD_AUDIO + FOREGROUND_SERVICE_MICROPHONE (Android 14
-    // typed FGS) here; requested at runtime on first launch in the dev-build APK.
-    permissions: [],
+    // typed FGS) via the capture config plugin. Here we declare the
+    // device-tool permissions: SET_ALARM (set_alarm tool — without it the
+    // clock-app intent throws SecurityException) + VIBRATE (vibrate tool).
+    permissions: [
+      'com.android.alarm.permission.SET_ALARM',
+      'android.permission.VIBRATE',
+    ],
     // Android App Links for killio.dev — when the user taps a killio.dev URL
     // on their phone and Vault is installed, the OS opens it directly inside
     // the app instead of the browser. Both `killio.dev` and `www.killio.dev`

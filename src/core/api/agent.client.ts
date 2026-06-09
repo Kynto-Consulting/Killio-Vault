@@ -66,6 +66,9 @@ export async function truncateConversation(params: {
 export interface AgentChatBody {
   teamId: string;
   message: string;
+  /** Device IANA timezone — lets the backend reason in the user's local time
+   *  (alarms/timers/"7am") instead of UTC. */
+  timezone?: string;
   conversationId?: string;
   entityType?: 'vault' | 'document' | 'board' | 'mesh' | 'card' | 'script' | 'team';
   entityId?: string;
@@ -121,13 +124,22 @@ export async function streamAgentChat(
   handlers: AgentStreamHandlers,
 ): Promise<AgentStreamHandle> {
   const token = await getAccessToken();
+  // Always attach the device timezone so the agent reasons in the user's local
+  // time (alarms, timers, "7am") — falls back gracefully if Intl is unavailable.
+  let deviceTz: string | undefined;
+  try {
+    deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    deviceTz = undefined;
+  }
+  const payload = { ...body, timezone: body.timezone ?? deviceTz };
   const es = new EventSource(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: token ? `Bearer ${token}` : '',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
     // The backend streams `data: {json}` lines; we parse them ourselves.
     pollingInterval: 0,
   });
