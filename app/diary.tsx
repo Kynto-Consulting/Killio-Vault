@@ -6,7 +6,7 @@ import { Screen, Card, H1, Body } from '@/ui';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useCapture } from '@/capture/CaptureContext';
 import { searchDiary, type DiarySearchHit } from '@/core/api/vault.client';
-import { flushOutbox, localDate, getLocalSegments } from '@/db/outbox';
+import { flushOutbox, localDate, getLocalSegments, onDiaryChanged } from '@/db/outbox';
 import { useTranslations } from '@/i18n';
 import { colors } from '@/theme/theme';
 import { fonts } from '@/theme/fonts';
@@ -39,6 +39,16 @@ export default function DiaryScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Real-time: re-load the local-first view the instant a new transcript is
+  // enqueued (independent of voice-ID/wake). Only reacts to today's date so a
+  // late segment for a prior day doesn't churn the current view.
+  useEffect(() => {
+    const unsub = onDiaryChanged((date) => {
+      if (date === today) void load();
+    });
+    return unsub;
+  }, [load, today]);
 
   const syncNow = async () => {
     await flushOutbox();

@@ -1232,6 +1232,10 @@ export const MESSAGES: Record<Locale, Messages> = {
       limitTitle: 'Límite alcanzado',
       limitBody: 'Tu plan ({{tier}}) permite {{limit}} agente(s). Mejora tu plan para crear más.',
       meta: '{{docs}} doc · voz {{voice}}',
+      nameRequiredTitle: 'Falta el nombre',
+      nameRequiredBody: 'Ponle un nombre al agente antes de guardar.',
+      saveErrorTitle: 'No se pudo guardar',
+      saveErrorBody: 'No se pudo guardar el agente en este dispositivo. Inténtalo de nuevo.',
     },
   },
   en: {
@@ -2453,6 +2457,10 @@ export const MESSAGES: Record<Locale, Messages> = {
       limitTitle: 'Limit reached',
       limitBody: 'Your plan ({{tier}}) allows {{limit}} agent(s). Upgrade to create more.',
       meta: '{{docs}} doc · voice {{voice}}',
+      nameRequiredTitle: 'Name required',
+      nameRequiredBody: 'Give the agent a name before saving.',
+      saveErrorTitle: 'Couldn’t save',
+      saveErrorBody: 'Couldn’t save the agent on this device. Please try again.',
     },
   },
 };

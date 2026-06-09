@@ -33,18 +33,52 @@ export function enqueueSegment(seg: {
   const text = seg.text.trim();
   if (!text) return;
   const db = getDb();
+  const date = localDate(seg.ts);
   db.execute(
     `INSERT INTO diary_outbox (id, date, text, ts, source, status, created_at)
      VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
     [
       Crypto.randomUUID(),
-      localDate(seg.ts),
+      date,
       text,
       seg.ts,
       seg.source ?? 'on_device_stt',
       Date.now(),
     ],
   );
+  // Verifiable in logcat: every transcribed segment lands here, independent of
+  // voice-ID / wake — the diary captures ALL speech (voice-ID only gates AI
+  // responses). If this line is missing for a spoken segment, the enqueue path
+  // (not the diary view) is the regression.
+  console.log(
+    `[KillioDiary] enqueued date=${date} source=${seg.source ?? 'on_device_stt'} len=${text.length} text="${text.slice(0, 60)}"`,
+  );
+  notifyDiaryChanged(date);
+}
+
+/**
+ * Lightweight in-process pub/sub so the diary screen can re-render the instant a
+ * segment is enqueued (real-time), without polling. Survives across capture in
+ * the background (the controller enqueues; if the diary is open it refreshes).
+ */
+type DiaryListener = (date: string) => void;
+const diaryListeners = new Set<DiaryListener>();
+
+export function onDiaryChanged(cb: DiaryListener): () => void {
+  diaryListeners.add(cb);
+  return () => {
+    diaryListeners.delete(cb);
+  };
+}
+
+function notifyDiaryChanged(date: string): void {
+  for (const cb of diaryListeners) {
+    try {
+      cb(date);
+    } catch {
+      /* a listener throwing must never block the enqueue */
+    }
+  }
 }
 
 export function pendingCount(): number {

@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { CheckSquare, Square } from 'lucide-react-native';
 
 import { Screen, Card, H1, Body, Button } from '@/ui';
 import {
@@ -113,25 +114,39 @@ export default function AgentsScreen() {
     });
 
   const save = () => {
-    if (!draft?.name.trim()) return;
-    if (draft.id) {
-      updateAgent(draft.id, {
-        name: draft.name.trim(),
-        personality: draft.personality.trim(),
-        systemPrompt: draft.systemPrompt.trim(),
-        voice: draft.voice.trim() || null,
-        wakePhrase: draft.wakePhrase.trim() || null,
-        assignedDocIds: draft.assignedDocIds,
-      });
-    } else {
-      createAgent({
-        name: draft.name.trim(),
-        personality: draft.personality.trim(),
-        systemPrompt: draft.systemPrompt.trim(),
-        voice: draft.voice.trim() || undefined,
-        wakePhrase: draft.wakePhrase.trim() || undefined,
-        assignedDocIds: draft.assignedDocIds,
-      });
+    if (!draft) return;
+    // Validation must be VISIBLE — a silent `return` here is exactly why "Save
+    // does nothing" with an empty name (no persist, no nav, no error).
+    if (!draft.name.trim()) {
+      Alert.alert(t('nameRequiredTitle'), t('nameRequiredBody'));
+      return;
+    }
+    // Persisting to op-sqlite can throw (e.g. native DB unavailable). Surface it
+    // instead of letting an exception bubble out of the press handler unseen.
+    try {
+      if (draft.id) {
+        updateAgent(draft.id, {
+          name: draft.name.trim(),
+          personality: draft.personality.trim(),
+          systemPrompt: draft.systemPrompt.trim(),
+          voice: draft.voice.trim() || null,
+          wakePhrase: draft.wakePhrase.trim() || null,
+          assignedDocIds: draft.assignedDocIds,
+        });
+      } else {
+        createAgent({
+          name: draft.name.trim(),
+          personality: draft.personality.trim(),
+          systemPrompt: draft.systemPrompt.trim(),
+          voice: draft.voice.trim() || undefined,
+          wakePhrase: draft.wakePhrase.trim() || undefined,
+          assignedDocIds: draft.assignedDocIds,
+        });
+      }
+    } catch (err) {
+      console.warn('[KillioAgents] save failed:', String(err));
+      Alert.alert(t('saveErrorTitle'), t('saveErrorBody'));
+      return;
     }
     setDraft(null);
     refresh();
@@ -220,7 +235,11 @@ export default function AgentsScreen() {
               const on = draft.assignedDocIds.includes(d.id);
               return (
                 <Pressable key={d.id} style={styles.docRow} onPress={() => toggleDoc(d.id)}>
-                  <Text style={[styles.check, on && styles.checkOn]}>{on ? 'â˜‘' : 'â˜'}</Text>
+                  {on ? (
+                    <CheckSquare size={18} color={colors.lime} />
+                  ) : (
+                    <Square size={18} color={colors.mutedForeground} />
+                  )}
                   <Text style={styles.docTitle} numberOfLines={1}>{d.title || tAgents('untitled')}</Text>
                 </Pressable>
               );
@@ -253,7 +272,7 @@ export default function AgentsScreen() {
               <Text style={styles.agentName}>{item.name}</Text>
               {item.personality ? <Text style={styles.agentMeta} numberOfLines={1}>{item.personality}</Text> : null}
               <Text style={styles.agentMeta}>
-                {item.assignedDocIds.length} doc Â· voz {item.voice ?? 'es-ES'}
+                {item.assignedDocIds.length} doc · voz {item.voice ?? 'es-ES'}
                 {item.wakePhrase ? ` · "${tAgents('wakeHey')} ${item.wakePhrase}"` : ''}
               </Text>
             </Pressable>

@@ -1232,7 +1232,11 @@ export function BrickList({
             <Pressable
               onPress={() => {
                 if (!editable) return;
-                setFocusedId((cur) => (cur === id ? null : id));
+                // Focus this brick (don't toggle-off when it's already focused):
+                // a tap on an already-focused text brick must reach the inner
+                // editor's tap-to-edit, not un-focus the row out from under it.
+                // Other bricks blur themselves / commit on their own blur.
+                setFocusedId(id);
               }}
               onLongPress={() => {
                 if (!editable) return;

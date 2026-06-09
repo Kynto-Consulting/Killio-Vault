@@ -111,7 +111,13 @@ export const UnifiedTextBrick: React.FC<TextBrickProps> = ({
   disabledStyles = [],
 }) => {
   const t = useTranslations('unifiedText');
-  const [editing, setEditing] = useState(false);
+  // Enter edit mode as soon as the brick mounts editable. The BrickList only
+  // renders this component (with onUpdate) once the row is FOCUSED via a tap —
+  // so "focused" already means "the user tapped to edit". Starting in `editing`
+  // lets a single tap land the caret in the TextInput instead of requiring a
+  // second tap, which previously fought the BrickList's focus-toggle Pressable
+  // (the 2nd tap toggled the row back to unfocused, so editing never engaged).
+  const [editing, setEditing] = useState(true);
   // Local draft so the parent only sees committed updates (parity with the
   // web brick, which also fires onUpdate on blur — see callsites that rely on
   // this in unified-bountiful-table.tsx).
