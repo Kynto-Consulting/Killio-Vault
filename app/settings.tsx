@@ -20,7 +20,9 @@ import { speak } from '@/tts/Tts';
 import { isCustomVoiceAvailable } from '@/tts/cartesia';
 import {
   capture as captureScreen,
+  isAccessibilityEnabled as isDirectScreenshotEnabled,
   isAvailable as screenCaptureAvailable,
+  openAccessibilitySettings as openDirectScreenshotSettings,
   requestPermission as requestScreenCapturePermission,
 } from '@/screen/ScreenCapture';
 import { useTranslations } from '@/i18n';
@@ -46,12 +48,14 @@ export default function SettingsScreen() {
   const [cartesia, setCartesia] = useState<boolean>(false);
   const [testing, setTesting] = useState<boolean>(false);
   const [shotBusy, setShotBusy] = useState<boolean>(false);
+  const [directShot, setDirectShot] = useState<boolean>(false);
 
   useEffect(() => {
     void hasConsent().then(setConsent);
     void getAssistantVoice().then(setVoice);
     void isWakeWordEnabled().then(setWakeOn);
     void isCustomVoiceAvailable().then(setCartesia);
+    void isDirectScreenshotEnabled().then(setDirectShot);
   }, []);
 
   const pickVoice = async (next: string) => {
@@ -94,6 +98,12 @@ export default function SettingsScreen() {
     } finally {
       setShotBusy(false);
     }
+  };
+
+  const openDirectShot = async () => {
+    await openDirectScreenshotSettings();
+    // Re-check shortly after returning from the accessibility settings screen.
+    setTimeout(() => void isDirectScreenshotEnabled().then(setDirectShot), 1200);
   };
 
   const choose = async (next: CaptureMode) => {
@@ -248,6 +258,25 @@ export default function SettingsScreen() {
             onPress={() => void grabScreenshot()}
             busy={shotBusy}
           />
+
+          {/* Direct screenshot (AccessibilityService — no recording/cast prompt) */}
+          <View style={{ marginTop: 12, gap: 6 }}>
+            <Body>{tShot('directTitle')}</Body>
+            <Text
+              style={{ fontFamily: fonts.semibold }}
+              className={`text-[10px] uppercase tracking-widest ${
+                directShot ? 'text-cyan' : 'text-muted-foreground'
+              }`}
+            >
+              {directShot ? tShot('directEnabled') : tShot('directDisabled')}
+            </Text>
+            <Body muted>{tShot('directHint')}</Body>
+            <Button
+              title={tShot('directEnable')}
+              variant="secondary"
+              onPress={() => void openDirectShot()}
+            />
+          </View>
         </Card>
       ) : null}
 

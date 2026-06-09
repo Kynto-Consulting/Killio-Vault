@@ -27,5 +27,25 @@
       android:name="dev.killio.screen.SystemAudioCaptureService"
       android:exported="false"
       android:foregroundServiceType="mediaProjection|microphone" />
+
+    <!--
+      DIRECT screenshot path (no MediaProjection): AccessibilityService that
+      captures the screen via takeScreenshot() (API 30+). The user enables it
+      once in Android's accessibility settings; afterwards Killio screenshots
+      without the cast/recording consent prompt or status-bar cast icon.
+      canTakeScreenshot=true (no content scraping) is declared in the linked
+      res/xml/killio_accessibility_config.xml.
+    -->
+    <service
+      android:name="dev.killio.screen.KillioScreenAccessibilityService"
+      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService" />
+      </intent-filter>
+      <meta-data
+        android:name="android.accessibilityservice"
+        android:resource="@xml/killio_accessibility_config" />
+    </service>
   </application>
 </manifest>

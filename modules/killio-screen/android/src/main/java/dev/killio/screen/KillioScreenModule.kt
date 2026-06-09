@@ -1,9 +1,12 @@
 package dev.killio.screen
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.provider.Settings
+import android.text.TextUtils
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
@@ -60,6 +63,36 @@ class KillioScreenModule : Module() {
 
     fun hasConsent(): Boolean =
       resultCode == Activity.RESULT_OK && resultData != null
+
+    /**
+     * True when KillioScreenAccessibilityService is enabled in Android's
+     * accessibility settings (ENABLED_ACCESSIBILITY_SERVICES contains our
+     * flattened component name). We additionally require a live INSTANCE so a
+     * stale settings entry never makes us claim capability we can't deliver.
+     */
+    fun isAccessibilityEnabled(ctx: Context): Boolean {
+      val component = ComponentName(
+        ctx.packageName,
+        KillioScreenAccessibilityService::class.java.name,
+      )
+      val enabled = Settings.Secure.getString(
+        ctx.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+      ) ?: return false
+      val flat = component.flattenToString()
+      val flatShort = component.flattenToShortString()
+      val splitter = TextUtils.SimpleStringSplitter(':')
+      splitter.setString(enabled)
+      while (splitter.hasNext()) {
+        val name = splitter.next()
+        if (name.equals(flat, ignoreCase = true) ||
+          name.equals(flatShort, ignoreCase = true)
+        ) {
+          return true
+        }
+      }
+      return false
+    }
   }
 
   override fun definition() = ModuleDefinition {
@@ -153,6 +186,86 @@ class KillioScreenModule : Module() {
         promise.resolve(out)
       } catch (t: Throwable) {
         promise.reject(CodedException("E_LIST_FAILED", t.message ?: "list failed", t))
+      }
+    }
+
+    // ── DIRECT screenshot path (AccessibilityService.takeScreenshot, API 30+) ──
+    // No MediaProjection: no "start recording/casting?" dialog, no cast icon.
+
+    /** True when our AccessibilityService is enabled (Settings.Secure check). */
+    AsyncFunction("isAccessibilityEnabled") { promise: Promise ->
+      try {
+        val ctx: Context = appContext.reactContext
+          ?: throw CodedException("E_NO_CONTEXT", "No React context", null)
+        val enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+          isAccessibilityEnabled(ctx)
+        promise.resolve(enabled)
+      } catch (t: Throwable) {
+        promise.reject(CodedException("E_A11Y_CHECK_FAILED", t.message ?: "check failed", t))
+      }
+    }
+
+    /** Opens Android's accessibility settings so the user can enable the service. */
+    AsyncFunction("openAccessibilitySettings") { promise: Promise ->
+      try {
+        val ctx: Context = appContext.reactContext
+          ?: throw CodedException("E_NO_CONTEXT", "No React context", null)
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        ctx.startActivity(intent)
+        promise.resolve(null)
+      } catch (t: Throwable) {
+        promise.reject(CodedException("E_A11Y_OPEN_FAILED", t.message ?: "open failed", t))
+      }
+    }
+
+    /**
+     * Captures the screen via the AccessibilityService (no MediaProjection),
+     * persisting it through the SAME ScreenStore as the MediaProjection path so
+     * the resolved { id, uri, ts, width, height } shape is identical.
+     */
+    AsyncFunction("captureViaAccessibility") { promise: Promise ->
+      try {
+        val ctx: Context = appContext.reactContext
+          ?: throw CodedException("E_NO_CONTEXT", "No React context", null)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+          throw CodedException(
+            "E_A11Y_UNAVAILABLE",
+            "Accessibility screenshot requires Android 11 (API 30)+",
+            null,
+          )
+        }
+        val service = KillioScreenAccessibilityService.instance
+        if (service == null) {
+          throw CodedException(
+            "E_A11Y_NOT_ENABLED",
+            "Accessibility service not enabled — call openAccessibilitySettings()",
+            null,
+          )
+        }
+        service.capture { shot, error ->
+          if (shot != null) {
+            promise.resolve(
+              mapOf(
+                "id" to shot.id,
+                "uri" to "file://" + shot.file.absolutePath,
+                "ts" to shot.ts.toDouble(),
+                "width" to shot.width,
+                "height" to shot.height,
+              ),
+            )
+          } else {
+            promise.reject(
+              CodedException("E_A11Y_CAPTURE_FAILED", error ?: "capture failed", null),
+            )
+          }
+        }
+      } catch (t: Throwable) {
+        if (t is CodedException) promise.reject(t)
+        else promise.reject(
+          CodedException("E_A11Y_CAPTURE_FAILED", t.message ?: "capture failed", t),
+        )
       }
     }
 

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Minimal accessibility config for KillioScreenAccessibilityService.
+
+  We ONLY need screenshot capability (canTakeScreenshot=true). We explicitly do
+  NOT retrieve window content (canRetrieveWindowContent=false) — this service is
+  for direct screenshots without MediaProjection, not for scraping UI text.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canTakeScreenshot="true"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/killio_accessibility_description"
+    android:notificationTimeout="0" />

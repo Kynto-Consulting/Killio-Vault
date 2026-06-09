@@ -610,6 +610,12 @@ export const MESSAGES: Record<Locale, Messages> = {
       title: 'Captura de pantalla',
       sub: 'Toma una captura de la pantalla actual. El asistente puede leerla si lo permites.',
       capture: '📸 Capturar pantalla',
+      directTitle: 'Captura directa (sin grabación)',
+      directHint:
+        'Activa el servicio de accesibilidad para que Killio capture la pantalla sin el aviso de grabación/transmisión ni el icono de transmisión.',
+      directEnabled: 'Activada',
+      directDisabled: 'Desactivada',
+      directEnable: 'Activar en Accesibilidad',
     },
     pushInbox: {
       title: 'Notificaciones',
@@ -1820,6 +1826,12 @@ export const MESSAGES: Record<Locale, Messages> = {
       title: 'Screen capture',
       sub: 'Take a snapshot of the current screen. The assistant can read it when you allow it.',
       capture: '📸 Capture screen',
+      directTitle: 'Direct screenshot (no recording)',
+      directHint:
+        'Enable the accessibility service so Killio can screenshot the screen without the recording/casting prompt or the cast icon.',
+      directEnabled: 'Enabled',
+      directDisabled: 'Disabled',
+      directEnable: 'Enable in Accessibility',
     },
     pushInbox: {
       title: 'Notifications',

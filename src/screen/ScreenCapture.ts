@@ -18,6 +18,12 @@ interface KillioScreenSpec {
   requestPermission(): Promise<boolean>;
   capture(): Promise<Screenshot>;
   list(): Promise<Screenshot[]>;
+  /** DIRECT screenshot path (AccessibilityService.takeScreenshot, API 30+):
+   *  no MediaProjection consent dialog, no cast icon. Once the user enables the
+   *  a11y service, capture() prefers this over MediaProjection. */
+  isAccessibilityEnabled(): Promise<boolean>;
+  openAccessibilitySettings(): Promise<void>;
+  captureViaAccessibility(): Promise<Screenshot>;
   /** Capture device PLAYBACK audio (remote call party / meeting / video) via
    *  AudioPlaybackCapture. Reuses the MediaProjection consent from
    *  requestPermission(). Emits 'onAudioFrame' (same shape as the mic path). */
@@ -44,8 +50,38 @@ export async function requestPermission(): Promise<boolean> {
   return native.requestPermission();
 }
 
+/**
+ * True when the DIRECT screenshot path (AccessibilityService.takeScreenshot,
+ * Android 11+) is enabled. When enabled, capture() screenshots without the
+ * MediaProjection "start recording/casting?" prompt or the cast status-bar icon.
+ */
+export async function isAccessibilityEnabled(): Promise<boolean> {
+  if (!native?.isAccessibilityEnabled) return false;
+  try {
+    return await native.isAccessibilityEnabled();
+  } catch {
+    return false;
+  }
+}
+
+/** Opens Android's accessibility settings so the user can enable the direct path. */
+export async function openAccessibilitySettings(): Promise<void> {
+  if (!native?.openAccessibilitySettings) return;
+  await native.openAccessibilitySettings();
+}
+
+/**
+ * Captures the current screen.
+ *
+ * PREFERS the direct AccessibilityService path when enabled (no recording/cast
+ * prompt, no cast icon); otherwise falls back to MediaProjection. No-op in
+ * Expo Go (native module absent).
+ */
 export async function capture(): Promise<Screenshot | null> {
   if (!native) return null;
+  if (await isAccessibilityEnabled()) {
+    return native.captureViaAccessibility();
+  }
   return native.capture();
 }
 

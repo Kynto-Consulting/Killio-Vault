@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="killio_accessibility_description">Allows Killio Vault to take a screenshot of the current screen directly, without the system screen-recording/casting prompt. Used only when you ask Killio to read your screen.</string>
+</resources>
