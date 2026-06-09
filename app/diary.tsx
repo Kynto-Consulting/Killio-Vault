@@ -27,7 +27,7 @@ export default function DiaryScreen() {
     // server wins). So you see what you just said without waiting for a flush.
     const local = getLocalSegments(today);
     const dbg = diaryDebug();
-    setDebug(`dbg: total=${dbg.total} hoy=${today} local=${local.length} fechas=${dbg.dates.join(',')}`);
+    setDebug(`dbg: total=${dbg.total} hoy=${today} local=${local.length} fechas=${dbg.dates.join(',')} | ${dbg.lastEnq}`);
     console.log(`[KillioDiary] view load today=${today} localSegments=${local.length}`);
     let hits: DiarySearchHit[] = [];
     try {
