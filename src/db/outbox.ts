@@ -189,7 +189,7 @@ export interface LocalSegment {
  * what was just captured immediately, before the next flush. Newest first.
  */
 /** On-screen debug snapshot (no adb needed): total rows + stored dates. */
-export function diaryDebug(): { total: number; dates: string[] } {
+export function diaryDebug(): { total: number; dates: string[]; lastEnq: string } {
   try {
     const db = getDb();
     const t = rowsOf<{ c: number }>(db.execute(`SELECT COUNT(*) AS c FROM diary_outbox`));
