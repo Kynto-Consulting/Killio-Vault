@@ -1,0 +1,11 @@
+{
+  "name": "killio-torch",
+  "version": "0.0.1",
+  "description": "Killio Vault local Expo module — device torch via CameraManager.setTorchMode (no camera preview, no permission prompt).",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "expo": {
+    "platforms": ["android"]
+  }
+}

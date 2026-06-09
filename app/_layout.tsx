@@ -19,7 +19,6 @@ import { WorkspaceCatalogProvider } from '@/workspace/WorkspaceCatalogContext';
 import { LocalWorkspaceProvider } from '@/local-workspace/LocalWorkspaceProvider';
 import { SideNav } from '@/nav/SideNav';
 import { WakeListener } from '@/wakeword/WakeListener';
-import { TorchHost } from '@/integrations/TorchHost';
 import { useAppFonts, fonts } from '@/theme/fonts';
 import { colors } from '@/theme/theme';
 
@@ -115,7 +114,6 @@ export default function RootLayout() {
                 <AppStack />
                 <SideNav />
                 <WakeListener />
-                <TorchHost />
               </NavProvider>
             </CaptureProvider>
             </DocumentsProvider>

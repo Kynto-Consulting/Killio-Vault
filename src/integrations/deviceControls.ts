@@ -7,8 +7,7 @@ import * as Haptics from 'expo-haptics';
 import * as DeviceInfo from 'expo-device';
 import * as Network from 'expo-network';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { Camera } from 'expo-camera';
-import { setTorch } from './torch';
+import * as Torch from './native/KillioTorch';
 
 /**
  * Additional device / local client-action integrations for the Vault assistant.
@@ -94,19 +93,18 @@ export async function batteryStatus(): Promise<{
 // ─── flashlight ────────────────────────────────────────────────────────────────
 
 export async function setFlashlight(on: boolean): Promise<{ on: boolean }> {
-  // Check first, prompt ONLY if not already granted. Calling
-  // requestCameraPermissionsAsync() unconditionally on every invocation made the
-  // system permission dialog re-open in a loop when the model retried the tool.
-  let status = (await Camera.getCameraPermissionsAsync()).status;
-  if (status !== 'granted') {
-    status = (await Camera.requestCameraPermissionsAsync()).status;
+  // Native torch via CameraManager.setTorchMode (KillioTorch module). This needs
+  // NO camera preview and NO CAMERA permission prompt — replacing the old, flaky
+  // hidden-<CameraView> approach that re-prompted for permission every toggle
+  // and often never engaged because the off-screen camera never started.
+  if (!Torch.isAvailable()) {
+    throw new Error('Torch unavailable on this build (requires the native APK, not Expo Go).');
   }
-  if (status !== 'granted') throw new Error('Camera permission denied (needed for the torch).');
-  // expo-camera 16 has no imperative torch API — the torch is a prop on
-  // <CameraView enableTorch>. We drive a hidden CameraView mounted at the app
-  // root (TorchHost) via shared state.
-  setTorch(on);
-  return { on };
+  if (!Torch.hasTorch()) {
+    throw new Error('This device has no flashlight.');
+  }
+  const result = await Torch.setTorch(on);
+  return { on: result };
 }
 
 // ─── set_brightness ──────────────────────────────────────────────────────────

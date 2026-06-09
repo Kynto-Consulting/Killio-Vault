@@ -3,33 +3,47 @@ import { Linking } from 'react-native';
 /**
  * Spotify control via deep links. No SDK / OAuth required: we open the
  * Spotify app (or fall back to the web player) using the `spotify:` URI
- * scheme. This covers play(uri|query), pause, next, prev and search. When
- * Spotify isn't installed, callers are routed to https://open.spotify.com.
+ * scheme. This covers play(uri|query) and search. When Spotify isn't
+ * installed, callers are routed to https://open.spotify.com.
  *
- * Native intent control (skip/pause without leaving the app) needs the
- * Spotify Android Remote SDK; that lives behind a future
- * `modules/killio-spotify` Expo module — this file works today via the
- * intent fallback.
+ * IMPORTANT LIMITATION: the public `spotify:` URI scheme has NO transport
+ * control deep links — there is no URI that pauses, skips, or goes to the
+ * previous track. Those require the Spotify Android App Remote SDK (a future
+ * `modules/killio-spotify` Expo module). So pause/next/previous here can only
+ * surface Spotify; they report `controlled:false` honestly so the assistant
+ * tells the user to use the Spotify UI instead of claiming it skipped.
  */
 const APP_PREFIX = 'spotify:';
 const WEB_FALLBACK = 'https://open.spotify.com';
 
-async function open(uri: string, fallback: string): Promise<{ opened: boolean; via: 'app' | 'web' }> {
+async function open(
+  uri: string,
+  fallback: string,
+): Promise<{ opened: boolean; via: 'app' | 'web' }> {
   try {
-    const supported = await Linking.canOpenURL(uri);
-    if (supported) {
+    if (await Linking.canOpenURL(uri)) {
       await Linking.openURL(uri);
       return { opened: true, via: 'app' };
     }
   } catch {
-    /* swallow */
+    /* fall through to web */
   }
   await Linking.openURL(fallback);
   return { opened: true, via: 'web' };
 }
 
-export async function play(opts: { uri?: string; query?: string }): Promise<{ opened: boolean; via: 'app' | 'web' }> {
-  if (opts.uri) return open(opts.uri, `${WEB_FALLBACK}/track/${encodeURIComponent(opts.uri)}`);
+export async function play(opts: {
+  uri?: string;
+  query?: string;
+}): Promise<{ opened: boolean; via: 'app' | 'web' }> {
+  // A bare spotify:track:<id> / spotify:album:<id> URI plays directly in the
+  // app. The web fallback needs the type/id split out of the URI.
+  if (opts.uri) {
+    const webPath = opts.uri.startsWith('spotify:')
+      ? `${WEB_FALLBACK}/${opts.uri.slice('spotify:'.length).replace(/:/g, '/')}`
+      : `${WEB_FALLBACK}/search/${encodeURIComponent(opts.uri)}`;
+    return open(opts.uri, webPath);
+  }
   if (opts.query) {
     return open(
       `${APP_PREFIX}search:${encodeURIComponent(opts.query)}`,
@@ -39,25 +53,41 @@ export async function play(opts: { uri?: string; query?: string }): Promise<{ op
   return open(`${APP_PREFIX}`, WEB_FALLBACK);
 }
 
-export async function pause(): Promise<{ ok: boolean }> {
-  // Spotify URIs don't expose a "pause" deep link — opening the app
-  // restores the user's last context; pause must come from the SDK once
-  // the native module lands.
-  await Linking.openURL(APP_PREFIX);
-  return { ok: false };
+/**
+ * Surface Spotify. The deep-link scheme cannot pause/skip, so we just bring the
+ * app forward and report that transport wasn't actually controlled.
+ */
+async function surface(): Promise<{ opened: boolean; controlled: false; reason: string }> {
+  const reason =
+    'Spotify deep links cannot control playback (pause/skip). Opened the app — use its controls.';
+  try {
+    if (await Linking.canOpenURL(APP_PREFIX)) {
+      await Linking.openURL(APP_PREFIX);
+      return { opened: true, controlled: false, reason };
+    }
+  } catch {
+    /* not installed */
+  }
+  await Linking.openURL(WEB_FALLBACK);
+  return { opened: true, controlled: false, reason };
 }
 
-export async function next(): Promise<{ ok: boolean }> {
-  await Linking.openURL(APP_PREFIX);
-  return { ok: false };
+export function pause() {
+  return surface();
 }
 
-export async function previous(): Promise<{ ok: boolean }> {
-  await Linking.openURL(APP_PREFIX);
-  return { ok: false };
+export function next() {
+  return surface();
 }
 
-export async function search(query: string): Promise<{ opened: boolean }> {
-  await Linking.openURL(`${WEB_FALLBACK}/search/${encodeURIComponent(query)}`);
-  return { opened: true };
+export function previous() {
+  return surface();
+}
+
+export async function search(query: string): Promise<{ opened: boolean; via: 'app' | 'web' }> {
+  // Prefer the in-app search screen; fall back to the web search page.
+  return open(
+    `${APP_PREFIX}search:${encodeURIComponent(query)}`,
+    `${WEB_FALLBACK}/search/${encodeURIComponent(query)}`,
+  );
 }

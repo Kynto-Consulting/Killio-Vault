@@ -109,10 +109,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     'expo-notifications',
     'expo-font',
-    [
-      'expo-camera',
-      { cameraPermission: 'Killio Vault usa la cámara para controlar la linterna.' },
-    ],
+    // Torch/flashlight is handled by the native killio-torch module via
+    // CameraManager.setTorchMode — it needs NO camera preview and NO CAMERA
+    // permission, so the expo-camera plugin is intentionally not included.
     'expo-brightness',
     './plugins/withVaultCapture',
     './plugins/withVaultWidgets',

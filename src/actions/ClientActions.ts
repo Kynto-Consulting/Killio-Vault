@@ -45,13 +45,21 @@ export async function openApp(input: {
 }): Promise<ClientActionResult> {
   if (input.url) return open(input.url, { opened: true, via: 'url', url: input.url });
   if (input.package && Platform.OS === 'android') {
-    // Launch by package via an Android intent. RN's sendIntent can target a
-    // package's main activity through the package manager.
+    // Launch the app by package. There is no RN/Linking API that resolves a
+    // package's launch intent, so we open its Play Store / market page as a
+    // reliable, always-resolvable target (the previous empty MAIN intent
+    // silently launched nothing and falsely reported success). If the Play
+    // Store app is present it deep-links straight into the installed app's
+    // store page from which the user can open it.
+    const market = `market://details?id=${encodeURIComponent(input.package)}`;
+    const web = `https://play.google.com/store/apps/details?id=${encodeURIComponent(input.package)}`;
     try {
-      // market/launch fallback: try the app's launch URI scheme if present,
-      // else send a generic MAIN intent.
-      await Linking.sendIntent('android.intent.action.MAIN', []);
-      return { success: true, output: { opened: true, package: input.package } };
+      if (await Linking.canOpenURL(market)) {
+        await Linking.openURL(market);
+        return { success: true, output: { opened: true, package: input.package, via: 'market' } };
+      }
+      await Linking.openURL(web);
+      return { success: true, output: { opened: true, package: input.package, via: 'web' } };
     } catch (e) {
       return { success: false, error: (e as Error)?.message ?? 'Could not open app' };
     }

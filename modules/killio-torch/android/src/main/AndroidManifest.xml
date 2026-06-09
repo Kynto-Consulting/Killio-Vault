@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Torch via CameraManager.setTorchMode needs NO permissions and NO camera
+    preview. We only declare the (optional) flash hardware feature so the app
+    isn't filtered out on devices without a flash. No <uses-permission> here.
+  -->
+  <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+</manifest>
