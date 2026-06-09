@@ -191,10 +191,10 @@ class VaultSpeechService : Service() {
           tokens = File(dir, "tokens.txt").absolutePath,
           numThreads = 2,
           provider = "cpu",
-          // modelType left empty → sherpa-onnx auto-detects the transducer type
-          // from the populated `transducer` config (the documented default for
-          // streaming Zipformer transducer models; avoids version drift on the
-          // exact modelType string).
+          // The kroko es/en streaming models are zipformer2 transducers. Setting
+          // it explicitly avoids a runtime auto-detect miss (recognizer fails to
+          // construct) flagged during integration.
+          modelType = "zipformer2",
         ),
         endpointConfig = EndpointConfig(),
         enableEndpoint = true,
@@ -740,7 +740,7 @@ class VaultSpeechService : Service() {
     Log.i("KillioSTT", "Silero VAD not found — downloading $VAD_URL (first run only)")
     return try {
       var lastEmit = 0L
-      downloadToPub(VAD_URL, dest) { downloaded, total ->
+      downloadTo(VAD_URL, dest) { downloaded, total ->
         val now = System.currentTimeMillis()
         if (now - lastEmit >= 500L) {
           lastEmit = now

@@ -16,11 +16,34 @@ android {
   defaultConfig {
     minSdkVersion safeExtGet('minSdkVersion', 26)
     targetSdkVersion safeExtGet('targetSdkVersion', 35)
-    // The project ships arm64-v8a only. The sherpa-onnx AAR bundles JNI .so for
-    // every ABI; restrict to arm64-v8a so the APK stays lean and matches the
-    // app-level abiFilters. (If the app ever adds armeabi-v7a, add it here too.)
+    // The project ships arm64-v8a only — and we only vendor the arm64-v8a sherpa
+    // .so (see sourceSets below), so restrict to arm64-v8a to match the
+    // app-level abiFilters. (If the app ever adds armeabi-v7a, vendor those .so
+    // into src/main/jniLibs/armeabi-v7a and add the ABI here too.)
     ndk {
       abiFilters 'arm64-v8a'
+    }
+  }
+
+  // ── sherpa-onnx (k2-fsa, Apache-2.0) — VENDORED, not a gradle dependency ─────
+  // sherpa-onnx does NOT publish a consumable Android artifact (the
+  // `com.k2fsa.sherpa.onnx:sherpa-onnx` JitPack coordinate is a 404). Android is
+  // distributed as a prebuilt tarball of JNI `.so` files PLUS Kotlin API SOURCE
+  // that must be vendored into the consuming project. We therefore vendor:
+  //   • the v1.13.2 prebuilt JNI libs  → src/main/jniLibs/arm64-v8a/*.so
+  //     (libsherpa-onnx-jni.so, libonnxruntime.so, libsherpa-onnx-c-api.so,
+  //      libsherpa-onnx-cxx-api.so). arm64-v8a only — matches abiFilters above.
+  //   • the v1.13.2 Kotlin API source  → src/main/java/com/k2fsa/sherpa/onnx/*.kt
+  //     (OnlineRecognizer, OnlineStream, Vad, SpeakerEmbeddingExtractor, …;
+  //      each declares `package com.k2fsa.sherpa.onnx` and loads the JNI via
+  //      `System.loadLibrary("sherpa-onnx-jni")` in its companion init).
+  // The Android Gradle Plugin auto-includes src/main/jniLibs and src/main/java by
+  // default; the explicit srcDirs below make that intent obvious / robust against
+  // any custom sourceSet the Expo module plugin may apply.
+  sourceSets {
+    main {
+      jniLibs.srcDirs += ['src/main/jniLibs']
+      java.srcDirs += ['src/main/java']
     }
   }
 }
@@ -29,27 +52,8 @@ def safeExtGet(prop, fallback) {
   rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
 }
 
-// ── sherpa-onnx (k2-fsa, Apache-2.0) — JitPack repo ──────────────────────────
-// The k2-fsa sherpa-onnx project publishes a full Android AAR through JitPack
-// (see https://github.com/k2-fsa/sherpa-onnx/blob/master/jitpack.yml — JitPack
-// downloads the official `sherpa-onnx-<ver>-android` release AAR and installs it
-// as `com.k2fsa.sherpa.onnx:sherpa-onnx:<ver>`). That AAR bundles BOTH the
-// Kotlin/Java API classes (`com.k2fsa.sherpa.onnx.*` — OnlineRecognizer, Vad,
-// SpeakerEmbeddingExtractor, …) AND the JNI `libsherpa-onnx-jni.so` /
-// `libonnxruntime.so` for all ABIs, so no manual .so placement / vendored API
-// sources are required. We pin v1.13.2 (the version the upstream jitpack.yml
-// targets) — the API surface used here (OnlineRecognizerConfig,
-// SileroVadModelConfig, SpeakerEmbeddingExtractorConfig, SpeakerEmbeddingManager)
-// matches that release. Apache-2.0: no API key, no usage limits, fully offline.
-repositories {
-  maven { url 'https://jitpack.io' }
-}
-
 dependencies {
-  // Fully on-device, streaming STT + Silero VAD + speaker-embedding voice-ID.
-  // The acoustic models are NOT bundled in the APK — they are downloaded once on
-  // first start into filesDir (see VaultSpeechService.ensureSttModel /
-  // ensureVadModel / ensureSpkModel), so this dependency adds only the native
-  // sherpa-onnx + onnxruntime runtime, not the models.
-  implementation "com.k2fsa.sherpa.onnx:sherpa-onnx:1.13.2"
+  // sherpa-onnx is vendored (see the `sourceSets`/jniLibs comment above) — no
+  // external coordinate. The acoustic models are NOT bundled in the APK: they are
+  // downloaded once on first start into filesDir (see VaultSpeechService).
 }
