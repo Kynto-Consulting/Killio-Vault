@@ -66,6 +66,30 @@ export async function stop(): Promise<void> {
 }
 
 /**
+ * Start a NON-RECORDING foreground service purely to keep the JS runtime alive
+ * in the background (so timers like the cron scheduler keep firing with the
+ * screen off). No microphone is opened — it uses the dataSync FGS type and needs
+ * no RECORD_AUDIO. No-op (throws-free) when the native module is absent (Expo
+ * Go) — callers treat that as "can't keep alive in background". */
+export async function startKeepAlive(
+  notificationText = 'Killio Vault tasks running',
+): Promise<void> {
+  if (!native) throw new Error('KillioCapture native module unavailable (use dev-build).');
+  await native.start({ keepAlive: true, notificationText });
+}
+
+/** Stop the keep-alive (or any) capture service. */
+export async function stopKeepAlive(): Promise<void> {
+  if (!native) return;
+  await native.stop();
+}
+
+/** True when the native keep-alive FGS is usable on this build. */
+export function canKeepAlive(): boolean {
+  return !!native;
+}
+
+/**
  * Whether the app is exempt from Doze / battery optimization. When false,
  * Android can suspend the capture foreground service while the screen is off.
  * Returns true when the native module is absent (nothing to gate in Expo Go).

@@ -1,4 +1,7 @@
+import { AppState, type AppStateStatus } from 'react-native';
+
 import * as Native from './native/KillioCapture';
+import { setCaptureFgsActive } from './capture-fgs-state';
 import * as ScreenAudio from '../screen/ScreenCapture';
 import * as Speech from '../stt/native/KillioSpeech';
 import { CaptureMode, isWithinWindows } from './schedule';
@@ -75,6 +78,12 @@ export class CaptureController {
   private sysFrameSub: { remove(): void } | null = null;
   private sysErrSub: { remove(): void } | null = null;
   private windowTimer: ReturnType<typeof setInterval> | null = null;
+  /** AppState subscription — only used to gate the 'on_screen' (foreground-only)
+   *  capture mode. Other modes ignore foreground/background entirely. */
+  private appStateSub: { remove(): void } | null = null;
+  /** Whether the app is currently in the foreground. Only consulted by the
+   *  'on_screen' mode; starts true (capture starts while the app is open). */
+  private appForeground = true;
   /** Local day last uploaded — drives the end-of-day flush on rollover. */
   private lastFlushDay: string | null = null;
   private readonly onStatus?: (s: CaptureStatus) => void;
@@ -171,6 +180,10 @@ export class CaptureController {
 
   private setStatus(s: CaptureStatus): void {
     this.status = s;
+    // Let the cron keep-alive coordinator know whether a capture FGS is up: only
+    // 'listening' means the recognizer/mic FGS is actually running. (Paused/
+    // degraded/idle = no FGS, so cron must hold its own to survive backgrounding.)
+    setCaptureFgsActive(s === 'listening');
     this.onStatus?.(s);
   }
 
@@ -224,6 +237,18 @@ export class CaptureController {
       this.setStatus('degraded');
     }
 
+    // Foreground gating for the 'on_screen' mode: pause capture when the app is
+    // backgrounded, resume when it returns to the foreground. Subscribed for ALL
+    // modes (cheap) but evaluateWindow only consults appForeground for on_screen,
+    // so 24/7 / windows capture is unaffected and keeps running in the background.
+    this.appForeground = AppState.currentState === 'active';
+    this.appStateSub = AppState.addEventListener('change', (s: AppStateStatus) => {
+      const fg = s === 'active';
+      if (fg === this.appForeground) return;
+      this.appForeground = fg;
+      if (this.mode.kind === 'on_screen') void this.evaluateWindow();
+    });
+
     // Periodic diary flush so transcripts actually show up in the diary soon
     // after they're spoken (not only before an agent call / end of day).
     // Every tick (60s) we flush any pending segments — ingest is idempotent +
@@ -243,6 +268,8 @@ export class CaptureController {
   async stop(): Promise<void> {
     if (this.windowTimer) clearInterval(this.windowTimer);
     this.windowTimer = null;
+    this.appStateSub?.remove();
+    this.appStateSub = null;
     this.frameSub?.remove();
     this.errSub?.remove();
     this.transcriptSub?.remove();
@@ -273,7 +300,12 @@ export class CaptureController {
 
   /** Starts/stops the native recognizer/mic based on the active schedule window. */
   private async evaluateWindow(): Promise<void> {
-    const active = isWithinWindows(this.mode, new Date());
+    // Schedule eligibility (24/7, windows, on_screen → always true; off → false).
+    // For the 'on_screen' mode we additionally require the app to be in the
+    // foreground: it pauses when backgrounded and resumes when reopened.
+    const active =
+      isWithinWindows(this.mode, new Date()) &&
+      (this.mode.kind !== 'on_screen' || this.appForeground);
     if (active && this.status !== 'listening') {
       if (this.wantsMic) {
         if (this.useSpeech) {

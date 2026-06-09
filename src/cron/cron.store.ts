@@ -103,6 +103,22 @@ export function dueCronJobs(now: number = Date.now()): CronJob[] {
   );
 }
 
+/**
+ * Count of currently-active jobs still under their run cap. Used by the
+ * CronRunner to decide whether a foreground service must stay up so the JS
+ * timer keeps firing while the app is backgrounded.
+ */
+export function activeCronJobCount(): number {
+  const db = getDb();
+  return Number(
+    rowsOf<{ c: number }>(
+      db.execute(
+        `SELECT COUNT(*) AS c FROM cron_jobs WHERE active = 1 AND runs_done < max_runs`,
+      ),
+    )[0]?.c ?? 0,
+  );
+}
+
 /** Delete a job by id. Returns true if a row was removed. */
 export function deleteCronJob(id: string): boolean {
   const db = getDb();

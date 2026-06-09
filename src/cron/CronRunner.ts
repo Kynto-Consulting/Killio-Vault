@@ -2,15 +2,27 @@ import { streamAgentChat, type AgentChatBody } from '../core/api/agent.client';
 import { getAccessToken, getActiveTeamId } from '../core/auth/token-store';
 import { isDbAvailable } from '../db/sqlite';
 import { runClientAction } from '../actions/ClientActions';
-import { dueCronJobs, markCronJobRan, type CronJob } from './cron.store';
+import { activeCronJobCount, dueCronJobs, markCronJobRan, type CronJob } from './cron.store';
+import { ensureCronKeepAlive, releaseCronKeepAlive } from './CronKeepAlive';
 
 /**
  * On-device scheduler for LOCAL cron jobs (saved recurring prompts).
  *
  * LOCAL-ONLY by design: this is a JS setInterval that only ticks WHILE THE VAULT
  * APP IS ALIVE (foreground or background-running). It is NOT a server cron — when
- * the app is closed, nothing fires. The cron_create tool description and the
- * backend prompt both state this so the assistant tells the user.
+ * the app is fully closed/swapped-away, nothing fires. The cron_create tool
+ * description and the backend prompt both state this so the assistant tells the
+ * user.
+ *
+ * BACKGROUND SURVIVAL: the tick below is deliberately NOT gated on AppState —
+ * it keeps firing when the app is backgrounded. BUT on Android the JS runtime is
+ * only kept alive in the background while a FOREGROUND SERVICE (FGS) holds it.
+ * Vault already runs a capture FGS (killio-speech / killio-capture) whenever
+ * capture is ON, so cron rides on that for free. When capture is OFF but active
+ * cron jobs exist, ensureCronKeepAlive() (see CronKeepAlive.ts) brings up an FGS
+ * so the timer survives backgrounding; releaseCronKeepAlive() drops it once no
+ * jobs remain. Without an FGS the OS suspends the timer shortly after the screen
+ * turns off and jobs only catch up when the app is next foregrounded.
  *
  * Each tick: find active, due jobs (next_run_at <= now, runs_done < max_runs) and
  * fire each one's prompt to the assistant via the SAME streaming path the
@@ -42,12 +54,24 @@ export function stopCronRunner(): void {
     clearInterval(timer);
     timer = null;
   }
+  // Drop any cron-owned FGS so we don't leak a notification when the scheduler
+  // stops (e.g. app teardown). No-op if capture owns the service.
+  void releaseCronKeepAlive();
 }
 
 async function tick(): Promise<void> {
   if (ticking) return; // never overlap ticks
   ticking = true;
   try {
+    // Keep an FGS up iff there are active jobs, so the timer survives the screen
+    // turning off (see header). Cheap COUNT; wrapped so it never breaks the tick.
+    try {
+      if (activeCronJobCount() > 0) void ensureCronKeepAlive();
+      else void releaseCronKeepAlive();
+    } catch {
+      /* keep-alive is best-effort; never block the tick on it */
+    }
+
     let jobs: CronJob[] = [];
     try {
       jobs = dueCronJobs(Date.now());

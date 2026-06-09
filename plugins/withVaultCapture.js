@@ -10,6 +10,10 @@ const PERMISSIONS = [
   'android.permission.RECORD_AUDIO',
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_MICROPHONE',
+  // Non-recording keep-alive FGS (dataSync type) that holds the JS runtime alive
+  // in the background so the local cron scheduler keeps ticking when capture is
+  // off. Android 14+ requires the type-specific permission.
+  'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
   // Phase 4: screen capture via MediaProjection.
   'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION',
   'android.permission.POST_NOTIFICATIONS',

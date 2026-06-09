@@ -21,6 +21,70 @@ import * as Media from './native/KillioMedia';
 const APP_PREFIX = 'spotify:';
 const WEB_FALLBACK = 'https://open.spotify.com';
 
+/**
+ * Detect a concrete Spotify destination the OS can open directly:
+ *   - a web link   https://open.spotify.com/{track|album|playlist|...}/<id>
+ *   - a URI scheme spotify:{track|album|playlist}:<id>  (or spotify:search:…)
+ * Returns the canonical open URL (the original https/URI is fine for Linking).
+ * Plain free-text queries (no URL/URI) return null → caller does in-app search.
+ */
+function detectSpotifyUrl(input?: string): string | null {
+  if (!input) return null;
+  const s = input.trim();
+  if (/^https?:\/\/(open|play)\.spotify\.com\/\S+/i.test(s)) return s;
+  if (/^spotify:[a-z]+(:|$)/i.test(s)) return s;
+  return null;
+}
+
+/** Convert a spotify: URI to its open.spotify.com web equivalent (fallback). */
+function uriToWeb(uri: string): string {
+  return uri.startsWith('spotify:')
+    ? `${WEB_FALLBACK}/${uri.slice('spotify:'.length).replace(/:/g, '/')}`
+    : `${WEB_FALLBACK}/search/${encodeURIComponent(uri)}`;
+}
+
+/**
+ * Resolve a play/open request into a deep link.
+ *
+ *  - A Spotify URL/URI (in `url`, `uri`, or embedded in `query`) → open it
+ *    directly so Spotify plays/opens that exact track/album/playlist.
+ *  - A free-text query → open the Spotify IN-APP SEARCH (spotify:search:<q>),
+ *    prefilled in the app, with a web search fallback.
+ *
+ * NOTE: true headless auto-play of a *query* would require resolving it to a
+ * track id via the Spotify Web API, which needs Premium + OAuth — not available
+ * here. The prefilled in-app search is the best free behavior; the user taps the
+ * top result. (Direct URLs/URIs DO auto-play because they already carry the id.)
+ */
+function resolveTarget(opts: {
+  url?: string;
+  uri?: string;
+  query?: string;
+}): { uri: string; fallback: string } {
+  // 1) An explicit URL/URI param, or a URL/URI pasted into the query field.
+  const direct =
+    detectSpotifyUrl(opts.url) ??
+    detectSpotifyUrl(opts.uri) ??
+    detectSpotifyUrl(opts.query);
+  if (direct) {
+    return {
+      uri: direct,
+      fallback: direct.startsWith('spotify:') ? uriToWeb(direct) : direct,
+    };
+  }
+  // 2) A bare spotify: URI without a scheme prefix (legacy `uri` path).
+  if (opts.uri) {
+    return { uri: opts.uri, fallback: uriToWeb(opts.uri) };
+  }
+  // 3) A free-text query → prefilled in-app search (no auto-play; see NOTE).
+  if (opts.query) {
+    const q = encodeURIComponent(opts.query);
+    return { uri: `${APP_PREFIX}search:${q}`, fallback: `${WEB_FALLBACK}/search/${q}` };
+  }
+  // 4) Nothing specific → just open Spotify.
+  return { uri: APP_PREFIX, fallback: WEB_FALLBACK };
+}
+
 async function open(
   uri: string,
   fallback: string,
@@ -38,48 +102,28 @@ async function open(
 }
 
 export async function play(opts: {
+  url?: string;
   uri?: string;
   query?: string;
 }): Promise<{ opened: boolean; via: 'app' | 'web' }> {
-  // A bare spotify:track:<id> / spotify:album:<id> URI plays directly in the
-  // app. The web fallback needs the type/id split out of the URI.
-  if (opts.uri) {
-    const webPath = opts.uri.startsWith('spotify:')
-      ? `${WEB_FALLBACK}/${opts.uri.slice('spotify:'.length).replace(/:/g, '/')}`
-      : `${WEB_FALLBACK}/search/${encodeURIComponent(opts.uri)}`;
-    return open(opts.uri, webPath);
-  }
-  if (opts.query) {
-    return open(
-      `${APP_PREFIX}search:${encodeURIComponent(opts.query)}`,
-      `${WEB_FALLBACK}/search/${encodeURIComponent(opts.query)}`,
-    );
-  }
-  return open(`${APP_PREFIX}`, WEB_FALLBACK);
+  // A direct URL/URI (track/album/playlist) plays/opens straight away; a bare
+  // query falls back to the prefilled in-app search (see resolveTarget NOTE).
+  const { uri, fallback } = resolveTarget(opts);
+  return open(uri, fallback);
 }
 
 /**
- * open — deep-link Spotify to a URI or to the in-app search screen for a query.
- * Used by the spotify_open client-action when the user explicitly wants to OPEN
- * Spotify (vs. background-search via the server-side spotify_search tool).
+ * open — deep-link Spotify to a URL/URI or to the in-app search screen for a
+ * query. Used by the spotify_open client-action when the user explicitly wants
+ * to OPEN Spotify (vs. background-search via the server-side spotify_search).
  */
 export async function openSpotify(opts: {
+  url?: string;
   uri?: string;
   query?: string;
 }): Promise<{ opened: boolean; via: 'app' | 'web' }> {
-  if (opts.uri) {
-    const webPath = opts.uri.startsWith('spotify:')
-      ? `${WEB_FALLBACK}/${opts.uri.slice('spotify:'.length).replace(/:/g, '/')}`
-      : `${WEB_FALLBACK}/search/${encodeURIComponent(opts.uri)}`;
-    return open(opts.uri, webPath);
-  }
-  if (opts.query) {
-    return open(
-      `${APP_PREFIX}search:${encodeURIComponent(opts.query)}`,
-      `${WEB_FALLBACK}/search/${encodeURIComponent(opts.query)}`,
-    );
-  }
-  return open(`${APP_PREFIX}`, WEB_FALLBACK);
+  const { uri, fallback } = resolveTarget(opts);
+  return open(uri, fallback);
 }
 
 /**

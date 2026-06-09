@@ -23,6 +23,9 @@ class StartOptions : Record {
   @Field var sampleRate: Int = 16_000
   @Field var frameSamples: Int = 320
   @Field var notificationText: String = "Killio Vault is listening"
+  /** When true, start a non-recording keep-alive FGS (no mic) so background JS
+   *  timers (cron) keep firing. See VaultCaptureService.keepAliveOnly. */
+  @Field var keepAlive: Boolean = false
 }
 
 class KillioCaptureModule : Module() {

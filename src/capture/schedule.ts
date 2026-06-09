@@ -17,6 +17,15 @@ export interface TimeWindow {
 export type CaptureMode =
   | { kind: 'always' }
   | { kind: 'windows'; windows: TimeWindow[] }
+  /**
+   * Selective capture: transcribe ONLY while the app is in the FOREGROUND
+   * (screen open). Capture pauses on background/inactive and resumes on active.
+   * The foreground gating itself lives in CaptureController (it listens to RN
+   * AppState); `isWithinWindows` treats this mode as always-eligible, so the
+   * AppState gate is the sole pause/resume driver. Lets the user record
+   * meetings/notes on demand without a 24/7 mic.
+   */
+  | { kind: 'on_screen' }
   | { kind: 'off' };
 
 export function minutesOfDay(d: Date): number {
@@ -26,6 +35,9 @@ export function minutesOfDay(d: Date): number {
 export function isWithinWindows(mode: CaptureMode, now: Date): boolean {
   if (mode.kind === 'off') return false;
   if (mode.kind === 'always') return true;
+  // on_screen is gated purely by AppState in CaptureController, so the schedule
+  // never blocks it (it's "always eligible"; the foreground listener pauses it).
+  if (mode.kind === 'on_screen') return true;
   const m = minutesOfDay(now);
   const today = now.getDay();
   return mode.windows.some((w) => {

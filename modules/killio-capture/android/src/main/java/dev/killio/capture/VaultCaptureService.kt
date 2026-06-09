@@ -34,6 +34,9 @@ class VaultCaptureService : Service() {
   @Volatile private var running = false
   private var worker: Thread? = null
   private var wakeLock: PowerManager.WakeLock? = null
+  /** True while the service is up purely to keep the JS runtime alive in the
+   *  background for the cron scheduler — NO microphone is opened in this mode. */
+  @Volatile private var keepAliveOnly = false
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -41,6 +44,18 @@ class VaultCaptureService : Service() {
     val sampleRate = intent?.getIntExtra("sampleRate", 16_000) ?: 16_000
     val frameSamples = intent?.getIntExtra("frameSamples", 320) ?: 320
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
+    // keepAlive: start an FGS with NO recording so a background JS timer (cron)
+    // stays alive. Uses the dataSync FGS type (no mic permission, no AudioRecord).
+    val keepAlive = intent?.getBooleanExtra("keepAlive", false) ?: false
+
+    if (keepAlive) {
+      // Non-recording keep-alive. Never opens the mic, so RECORD_AUDIO is not
+      // required. If a real recording start arrives later it upgrades below.
+      keepAliveOnly = true
+      startForegroundWithNotification(notifText, mic = false)
+      acquireWakeLock()
+      return START_STICKY
+    }
 
     // RECORD_AUDIO required before a microphone-typed FGS — otherwise Android 14+
     // throws SecurityException and crashes the app. Bail gracefully if not yet
@@ -51,7 +66,10 @@ class VaultCaptureService : Service() {
       return START_NOT_STICKY
     }
 
-    startForegroundWithNotification(notifText)
+    // Upgrading from a prior keep-alive start to real recording: re-issue the
+    // foreground notification as the microphone FGS type before opening the mic.
+    keepAliveOnly = false
+    startForegroundWithNotification(notifText, mic = true)
     acquireWakeLock()
     if (!running) {
       running = true
@@ -135,7 +153,7 @@ class VaultCaptureService : Service() {
     wakeLock = null
   }
 
-  private fun startForegroundWithNotification(text: String) {
+  private fun startForegroundWithNotification(text: String, mic: Boolean) {
     val nm = getSystemService(NotificationManager::class.java)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val channel = NotificationChannel(
@@ -152,8 +170,16 @@ class VaultCaptureService : Service() {
       .setOngoing(true)
       .build()
 
+    // Microphone capture needs the MICROPHONE FGS type; the non-recording
+    // keep-alive (cron) uses DATA_SYNC so it doesn't claim the mic or require
+    // RECORD_AUDIO. Pre-Q has no typed FGS.
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+      val type = if (mic) {
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+      } else {
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+      }
+      startForeground(NOTIF_ID, notification, type)
     } else {
       startForeground(NOTIF_ID, notification)
     }

@@ -160,7 +160,19 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
   const pushText = (txt: string) => {
     // Strip any dangling/unclosed <end_agent> control token (the closed form is
     // already consumed by MASTER_RE) so it never renders as raw text.
-    const t = txt.replace(/<end_agent\b[^>]*>[\s\S]*$/i, '').trim();
+    let t = txt.replace(/<end_agent\b[^>]*>[\s\S]*$/i, '');
+    // Streaming guard: an UNTERMINATED leading/trailing <think>/<thinking> open
+    // tag (the '<think' chars arrive before the closing '>' — or the whole
+    // reasoning block before its </think>) would briefly render as raw text.
+    // The complete <think>…</think> form is already normalized by MASTER_RE; here
+    // we drop the partial token so it never flickers as literal '<think'.
+    //  - trailing: a '<think'/'<thinking' with no '>' yet → cut from there on.
+    t = t.replace(/<think(?:ing)?(?:\s[^>]*)?$/i, '');
+    //  - trailing: an opened-but-not-closed <think …>… block at the buffer end.
+    t = t.replace(/<think(?:ing)?\b[^>]*>[\s\S]*$/i, '');
+    //  - leading: a stray closing </think> / </thinking> with no matching open.
+    t = t.replace(/^[\s\S]*?<\/think(?:ing)?>/i, '');
+    t = t.trim();
     if (t) blocks.push({ type: 'text', text: t });
   };
 

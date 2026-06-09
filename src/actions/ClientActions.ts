@@ -189,19 +189,29 @@ async function dispatchClientAction(
     // handled in the backend tool-executor — they never reach the device.
     case 'spotify_play':
       try {
-        // The backend resolves a free-form query → track URI before sending
-        // this action, so `uri` is usually present. play(uri) plays directly.
+        // A Spotify URL/URI (in `url`, `uri`, or pasted into `query`) plays
+        // directly; a free-form query opens the prefilled in-app search. The
+        // backend may also resolve a query → track URI before sending this.
         const r = await Spotify.play({
+          url: input.url as string | undefined,
           uri: input.uri as string | undefined,
           query: input.query as string | undefined,
         });
-        return tag({ success: true, output: { ...r, ...(input.uri ? { uri: input.uri } : {}) } });
+        return tag({
+          success: true,
+          output: {
+            ...r,
+            ...(input.url ? { url: input.url } : {}),
+            ...(input.uri ? { uri: input.uri } : {}),
+          },
+        });
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'spotify play failed' };
       }
     case 'spotify_open':
       try {
         const r = await Spotify.openSpotify({
+          url: input.url as string | undefined,
           uri: input.uri as string | undefined,
           query: input.query as string | undefined,
         });

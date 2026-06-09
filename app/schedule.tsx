@@ -66,6 +66,12 @@ export default function ScheduleScreen() {
           }
         />
         <Button
+          title={mode.kind === 'on_screen' ? `● ${t('modeOnScreen')}` : t('modeOnScreen')}
+          variant={mode.kind === 'on_screen' ? 'primary' : 'secondary'}
+          onPress={() => apply({ kind: 'on_screen' })}
+        />
+        {mode.kind === 'on_screen' ? <Body muted>{t('modeOnScreenHint')}</Body> : null}
+        <Button
           title={mode.kind === 'off' ? `● ${t('modeOff')}` : t('modeOff')}
           variant={mode.kind === 'off' ? 'primary' : 'secondary'}
           onPress={() => apply({ kind: 'off' })}

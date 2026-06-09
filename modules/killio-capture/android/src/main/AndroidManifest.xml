@@ -5,9 +5,15 @@
     the final APK.
   -->
   <application>
+    <!--
+      Two FGS types: `microphone` for normal 24/7 capture, and `dataSync` for the
+      non-recording cron keep-alive mode (keeps the JS runtime alive in the
+      background without opening the mic). Both must be declared so the runtime
+      startForeground(type) call is allowed.
+    -->
     <service
       android:name="dev.killio.capture.VaultCaptureService"
       android:exported="false"
-      android:foregroundServiceType="microphone" />
+      android:foregroundServiceType="microphone|dataSync" />
   </application>
 </manifest>
