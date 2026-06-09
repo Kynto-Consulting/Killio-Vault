@@ -296,13 +296,20 @@ function ThinkBlock({ text }: { text: string }) {
 }
 
 /** Renders a streamed assistant message: text (RichText) + tool chips + thinking + bricks. */
-export function AgentMessage({ content }: { content: string }) {
+export function AgentMessage({
+  content,
+  selectable = false,
+}: {
+  content: string;
+  /** Make the message's prose OS-selectable (Gemini-style chat bubbles). */
+  selectable?: boolean;
+}) {
   const blocks = parseAgentMarkup(content);
   if (blocks.length === 0) return null;
   return (
     <View className="gap-1">
       {blocks.map((b, i) => {
-        if (b.type === 'text') return <RichText key={i} content={b.text} />;
+        if (b.type === 'text') return <RichText key={i} content={b.text} selectable={selectable} />;
         if (b.type === 'tool') return <ToolChip key={i} tool={b.tool} />;
         if (b.type === 'brick')
           return (

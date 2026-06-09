@@ -46,7 +46,8 @@ import { useLayoutEffect } from 'react';
 import { useLocalSearchParams, useNavigation } from 'expo-router';
 
 import { Screen, Button, Input, RichText, AgentMessage } from '@/ui';
-import { Mic, Paperclip, X, SquarePen } from 'lucide-react-native';
+import { Mic, Paperclip, X, SquarePen, Copy, Pencil, RotateCcw, Check } from 'lucide-react-native';
+import { write as clipboardWrite } from '@/integrations/clipboard';
 import { fonts } from '@/theme/fonts';
 import * as DocumentPicker from 'expo-document-picker';
 import { uploadFile } from '@/core/api/uploads.client';
@@ -56,6 +57,7 @@ import { ModelStatusBanner } from '@/capture/ModelStatusBanner';
 import {
   streamAgentChat,
   getConversationMessages,
+  truncateConversation,
   type ClientActionEvent,
   type AgentChatBody,
 } from '@/core/api/agent.client';
@@ -102,6 +104,14 @@ export default function AssistantScreen() {
   const [listening, setListening] = useState(false);
   const [attachments, setAttachments] = useState<{ url: string; name: string; kind: 'img' | 'document' }[]>([]);
   const [uploading, setUploading] = useState(false);
+  // Per-message "Copiado" feedback: the id of the message whose Copy button was
+  // just tapped (checkmark shown for ~1.4s).
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  // When the user taps Edit on one of their messages we drop that message + the
+  // tail locally and stash its server id here; the next send() truncates the
+  // persisted conversation at that point before re-sending the edited turn so
+  // history matches on reload (same conversation, regenerated in place).
+  const truncateAfterId = useRef<string | undefined>(undefined);
   const convId = useRef<string | undefined>(undefined);
   const firstMsg = useRef<string>('');
   const lastUserMsg = useRef<string>('');
@@ -133,6 +143,83 @@ export default function AssistantScreen() {
     convId.current = undefined;
     firstMsg.current = '';
     lastUserMsg.current = '';
+    truncateAfterId.current = undefined;
+  };
+
+  // ── Gemini-style per-message actions ──────────────────────────────────────
+  // Copy the message's PLAIN text (markup/tool/asset tags stripped) to the OS
+  // clipboard, then flash a checkmark for ~1.4s.
+  const copyMessage = async (m: Msg) => {
+    const plain = stripTags(m.text);
+    try {
+      await clipboardWrite(plain);
+      setCopiedId(m.id);
+      setTimeout(() => setCopiedId((c) => (c === m.id ? null : c)), 1400);
+    } catch {
+      // clipboard unavailable — silently ignore
+    }
+  };
+
+  // Edit a USER message (Gemini "edit & regenerate"): drop that message + every
+  // message after it locally, put its plain text back in the composer, and mark
+  // the server-side truncation point so the next send() removes the persisted
+  // tail before re-sending — keeping convId.current (same conversation).
+  const editMessage = (index: number) => {
+    if (busy) return;
+    const target = messages[index];
+    if (!target || target.role !== 'user') return;
+    truncateAfterId.current =
+      target.id && !target.id.startsWith('u-') ? target.id : undefined;
+    setMessages((prev) => prev.slice(0, index));
+    setInput(stripTags(target.text));
+    setAttachments([]);
+  };
+
+  // Regenerate the LAST assistant reply: drop it locally, truncate the server
+  // tail from that assistant message, and re-run the previous user turn.
+  const regenerateLast = async () => {
+    if (busy) return;
+    let lastAssistant = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') {
+        lastAssistant = i;
+        break;
+      }
+    }
+    if (lastAssistant < 0) return;
+    // The user turn that produced it is the nearest preceding user message.
+    let userIdx = -1;
+    for (let i = lastAssistant - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx < 0) return;
+    const userMsg = messages[userIdx];
+    const assistantMsg = messages[lastAssistant];
+    // Server: remove the assistant reply (and anything after) so the regenerated
+    // answer is clean on reload. Best-effort.
+    if (
+      convId.current &&
+      activeTeam?.id &&
+      assistantMsg.id &&
+      !assistantMsg.id.startsWith('a-')
+    ) {
+      try {
+        await truncateConversation({
+          conversationId: convId.current,
+          teamId: activeTeam.id,
+          afterMessageId: assistantMsg.id,
+        });
+      } catch {
+        // offline / old backend — local regenerate still works
+      }
+    }
+    setMessages((prev) => prev.slice(0, lastAssistant));
+    const text = stripTags(userMsg.text);
+    lastUserMsg.current = text;
+    await runTurn(text, { userTurn: true });
   };
 
   // GPT-style header: agent/Killio title + a "new chat" button on the right.
@@ -437,6 +524,23 @@ export default function AssistantScreen() {
     if ((!text && attachments.length === 0) || busy) return;
     const assetTags = buildAssetTags();
     const displayText = text + (assetTags ? `\n${assetTags}` : '');
+    // If this send is an edited-message regenerate, truncate the persisted
+    // conversation at the original message BEFORE re-sending so reload-from-
+    // server matches the locally-dropped tail. Same conversation (convId
+    // unchanged). Best-effort: an offline/old-backend failure still re-sends.
+    const truncId = truncateAfterId.current;
+    truncateAfterId.current = undefined;
+    if (truncId && convId.current && activeTeam?.id) {
+      try {
+        await truncateConversation({
+          conversationId: convId.current,
+          teamId: activeTeam.id,
+          afterMessageId: truncId,
+        });
+      } catch {
+        // offline / old backend — local regenerate still works
+      }
+    }
     lastUserMsg.current = text;
     if (!firstMsg.current) firstMsg.current = (text || tFallback('attachment')).slice(0, 60);
     setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', text: displayText }]);
@@ -567,14 +671,34 @@ export default function AssistantScreen() {
             </View>
           </View>
         }
-        renderItem={({ item }) =>
+        renderItem={({ item, index }) =>
           item.role === 'user' ? (
-            <View className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-secondary px-4 py-2.5">
-              <RichText content={item.text} />
+            <View className="self-end max-w-[85%] items-end">
+              <View className="rounded-2xl rounded-br-md bg-secondary px-4 py-2.5">
+                <RichText content={item.text} selectable />
+              </View>
+              <MessageActions
+                copied={copiedId === item.id}
+                onCopy={() => void copyMessage(item)}
+                onEdit={busy ? undefined : () => editMessage(index)}
+                align="end"
+                t={t}
+              />
             </View>
           ) : (
-            <View className="self-start max-w-[88%] rounded-2xl rounded-bl-md border border-border bg-card px-4 py-2.5">
-              <AgentMessage content={item.text} />
+            <View className="self-start max-w-[88%] items-start">
+              <View className="rounded-2xl rounded-bl-md border border-border bg-card px-4 py-2.5">
+                <AgentMessage content={item.text} selectable />
+              </View>
+              <MessageActions
+                copied={copiedId === item.id}
+                onCopy={() => void copyMessage(item)}
+                onRegenerate={
+                  !busy && index === messages.length - 1 ? () => void regenerateLast() : undefined
+                }
+                align="start"
+                t={t}
+              />
             </View>
           )
         }
@@ -618,6 +742,57 @@ export default function AssistantScreen() {
         </View>
       </KeyboardAvoidingView>
     </Screen>
+  );
+}
+
+/**
+ * Subtle Gemini-style action row shown under each bubble: a Copy button (both
+ * roles), an Edit button (user messages), and an optional Regenerate button
+ * (last assistant message). Muted icon buttons; Copy flashes a checkmark +
+ * "Copiado" label briefly after a successful copy.
+ */
+function MessageActions({
+  copied,
+  onCopy,
+  onEdit,
+  onRegenerate,
+  align,
+  t,
+}: {
+  copied: boolean;
+  onCopy: () => void;
+  onEdit?: () => void;
+  onRegenerate?: () => void;
+  align: 'start' | 'end';
+  t: (k: string) => string;
+}) {
+  return (
+    <View
+      className={`mt-1 flex-row items-center gap-3 px-1 ${
+        align === 'end' ? 'self-end' : 'self-start'
+      }`}
+    >
+      <Pressable onPress={onCopy} hitSlop={8} className="flex-row items-center gap-1 active:opacity-60">
+        {copied ? (
+          <>
+            <Check size={14} color={colors.success} />
+            <Text className="text-[11px] text-muted-foreground">{t('copied')}</Text>
+          </>
+        ) : (
+          <Copy size={14} color={colors.mutedForeground} />
+        )}
+      </Pressable>
+      {onEdit ? (
+        <Pressable onPress={onEdit} hitSlop={8} className="active:opacity-60">
+          <Pencil size={14} color={colors.mutedForeground} />
+        </Pressable>
+      ) : null}
+      {onRegenerate ? (
+        <Pressable onPress={onRegenerate} hitSlop={8} className="active:opacity-60">
+          <RotateCcw size={14} color={colors.mutedForeground} />
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 

@@ -1,4 +1,4 @@
-import React, { Fragment, useCallback, useMemo, useState } from 'react';
+import React, { Fragment, createContext, useCallback, useContext, useMemo, useState } from 'react';
 import {
   Image,
   Linking,
@@ -45,6 +45,9 @@ interface RichTextProps {
   onReferencePress?(type: string, id: string): void;
   /** Disable specific styles (used by table cells, etc). Same flags as web. */
   disabledStyles?: string[];
+  /** Make all rendered text OS-selectable (long-press to select/copy). Used by
+   *  the assistant chat bubbles for a Gemini-like UX. */
+  selectable?: boolean;
   // ── Edit mode ──────────────────────────────────────────────────────────────
   // When `editable=true`, RichText flips to a TextInput that emits `onChange`
   // on every keystroke. Typing `@` (or `$`, `#`) opens the ReferencePicker
@@ -99,6 +102,15 @@ const HEADING_LINE_HEIGHTS = [30, 26, 22, 20, 18, 18];
 const FENCED_CODE_RE = /```[\w[\]-]*\n[\s\S]*?```/;
 const ASSET_RE = /<asset\b[^>]*\/?>/g;
 
+// When true, every leaf <Text> RichText renders is OS-selectable (long-press →
+// select/copy), mirroring Gemini's selectable chat bubbles. Threaded via context
+// so the dozen leaf renderers don't each need an extra prop. Default false keeps
+// existing call sites (doc/card bricks) unchanged.
+const SelectableContext = createContext(false);
+function useSelectable(): boolean {
+  return useContext(SelectableContext);
+}
+
 // ─── Public component ────────────────────────────────────────────────────────
 
 export function RichText({
@@ -107,6 +119,7 @@ export function RichText({
   size = 15,
   onReferencePress,
   disabledStyles = [],
+  selectable = false,
   editable,
   onChange,
   placeholder,
@@ -140,6 +153,59 @@ export function RichText({
       />
     );
   }
+  return (
+    <RichTextInner
+      content={content}
+      color={color}
+      size={size}
+      onReferencePress={onReferencePress}
+      disabledStyles={disabledStyles}
+      selectable={selectable}
+    />
+  );
+}
+
+/**
+ * Non-editable render path. Split out so the public RichText can wrap it once in
+ * the SelectableContext provider — the prop only needs to be set at the outer
+ * call site (the chat bubble); every recursive RichText/leaf Text below inherits
+ * it from context.
+ */
+function RichTextInner({
+  content,
+  color,
+  size,
+  onReferencePress,
+  disabledStyles,
+  selectable,
+}: {
+  content: string;
+  color: string;
+  size: number;
+  onReferencePress?(type: string, id: string): void;
+  disabledStyles: string[];
+  selectable: boolean;
+}) {
+  const inheritedSelectable = useSelectable();
+  const eff = selectable || inheritedSelectable;
+  const body = renderRichBody({ content, color, size, onReferencePress, disabledStyles });
+  if (!eff) return body;
+  return <SelectableContext.Provider value={true}>{body}</SelectableContext.Provider>;
+}
+
+function renderRichBody({
+  content,
+  color,
+  size,
+  onReferencePress,
+  disabledStyles,
+}: {
+  content: string;
+  color: string;
+  size: number;
+  onReferencePress?(type: string, id: string): void;
+  disabledStyles: string[];
+}): React.ReactElement | null {
   if (!content) return null;
   const noHeading = disabledStyles.includes('heading');
   const noSize = disabledStyles.includes('size');
@@ -255,13 +321,16 @@ function TextLines({
   noSize,
   onReferencePress,
 }: TextLinesProps) {
+  // Selectable propagates to descendant <Text> in RN, so setting it on the
+  // outer per-line Text makes the whole bubble's prose long-press-selectable.
+  const selectable = useSelectable();
   const hasMultilineWrappers =
     content.includes('\n') && /\[(?:size|color|bg|link|width):/.test(content);
   if (hasMultilineWrappers) {
     // Wrappers can span lines (e.g. [color:#abc]\nfoo\n[/color]). Render the
     // whole block in one pass so the balanced parser sees the full string.
     return (
-      <Text style={{ color, fontSize: size, lineHeight: size * 1.4 }}>
+      <Text selectable={selectable} style={{ color, fontSize: size, lineHeight: size * 1.4 }}>
         {renderWithWrappers(content, color, size, noSize)}
       </Text>
     );
@@ -319,6 +388,7 @@ function TextLines({
               return (
                 <Text
                   key={ti}
+                  selectable={selectable}
                   style={{ color, fontSize, fontFamily, lineHeight }}
                 >
                   {renderWithWrappers(tok.value, color, fontSize, noSize)}

@@ -1176,6 +1176,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       createEvent: '¿Crear evento "{{target}}"?',
       sendSms: '¿Enviar SMS a {{target}}?',
       genericAction: '¿Permitir esta acción?',
+      copied: 'Copiado',
     },
     captureModel: {
       downloading: 'Descargando modelo de voz… {{progress}}%',
@@ -2376,6 +2377,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       createEvent: 'Create event "{{target}}"?',
       sendSms: 'Send SMS to {{target}}?',
       genericAction: 'Allow this action?',
+      copied: 'Copied',
     },
     captureModel: {
       downloading: 'Downloading voice model… {{progress}}%',

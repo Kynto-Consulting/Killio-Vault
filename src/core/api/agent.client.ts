@@ -39,6 +39,26 @@ export async function getConversationMessages(
 }
 
 /**
+ * Truncate a conversation server-side: deletes `afterMessageId` and every
+ * message saved after it. Powers the Gemini-style "edit a user message +
+ * regenerate" flow — the client drops the local tail, calls this so the
+ * persisted history matches, then re-sends the edited turn on the same
+ * conversation. Best-effort: a failure (offline/old backend) is swallowed by
+ * the caller so the local regenerate still works; only the reload-from-server
+ * view would show the stale tail.
+ */
+export async function truncateConversation(params: {
+  conversationId: string;
+  teamId: string;
+  afterMessageId: string;
+}): Promise<void> {
+  await api.post(`/agent/conversations/${params.conversationId}/truncate`, {
+    teamId: params.teamId,
+    afterMessageId: params.afterMessageId,
+  });
+}
+
+/**
  * Streams a turn from POST /agent/chat/stream (SSE). Bridges the backend agent
  * loop into the Vault app: deltas render live, `client_action` events hand a
  * native action to the device, and `done` carries the conversationId to resume.
