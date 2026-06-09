@@ -60,6 +60,13 @@ export interface InlineFormatToolbarProps {
    * to keep the selected text highlighted (the markers shift the indices).
    */
   onSelectionAfterWrap?(range: { start: number; end: number }): void;
+  /**
+   * Fired on press-IN of ANY toolbar control (before the TextInput's onBlur
+   * runs). The host text brick uses this to know an imminent blur is caused by
+   * a toolbar tap — so it can keep editing (and refocus) instead of committing
+   * + exiting, which would unmount the toolbar before the format applies.
+   */
+  onInteractStart?(): void;
   /** Optional AI / comment hooks. When omitted, the buttons are hidden. */
   onAiAction?(action: 'improve' | 'fix' | 'explain' | 'suggest_edit'): void;
   onComment?(): void;
@@ -107,6 +114,7 @@ export function InlineFormatToolbar({
   disabledStyles = [],
   selection,
   onSelectionAfterWrap,
+  onInteractStart,
   onAiAction,
   onComment,
   onClose,
@@ -166,7 +174,19 @@ export function InlineFormatToolbar({
   };
 
   return (
-    <View className="rounded-xl border border-border bg-card p-2 gap-2 shadow-lg">
+    <View
+      className="rounded-xl border border-border bg-card p-2 gap-2 shadow-lg"
+      // Fire BEFORE the TextInput blur so the host brick can keep editing and
+      // refocus instead of committing + exiting (which unmounts this toolbar
+      // before the format applies). onTouchStart fires on the press-in of any
+      // child control. onStartShouldSetResponderCapture mirrors it for the rare
+      // case a child claims the responder first — neither blocks the child tap.
+      onTouchStart={() => onInteractStart?.()}
+      onStartShouldSetResponderCapture={() => {
+        onInteractStart?.();
+        return false;
+      }}
+    >
       {/* Row 1: basic decorations */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-1">
         {!dis('bold') ? (

@@ -103,6 +103,28 @@ export async function clear(): Promise<void> {
 }
 
 /**
+ * Is the stored voiceprint COMPATIBLE with an incoming `spk` embedding?
+ *
+ * The speaker model can change between app versions (the engine migrated from
+ * Vosk's 128-dim x-vector to sherpa-onnx 3D-Speaker CAM++'s 192-dim embedding).
+ * A voiceprint enrolled under the OLD model has a different dimension than the
+ * new model's `spk`, so cosine similarity is mathematically undefined and would
+ * silently never match — permanently tagging the owner as a guest.
+ *
+ * Returns false when the dims differ so callers can treat the user as
+ * NOT-enrolled (open behavior) and invalidate the stale voiceprint, prompting a
+ * re-enroll under the current model.
+ */
+export function isVoiceprintCompatible(spk: number[], voiceprint: number[]): boolean {
+  return (
+    Array.isArray(spk) &&
+    Array.isArray(voiceprint) &&
+    spk.length > 0 &&
+    voiceprint.length === spk.length
+  );
+}
+
+/**
  * Whether an utterance's x-vector matches a voiceprint at/above `threshold`.
  * Pure helper (no storage) so callers can pass a cached voiceprint and reuse it
  * across many transcripts without re-reading SecureStore.

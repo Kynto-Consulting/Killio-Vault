@@ -106,21 +106,24 @@ class VaultSpeechService : Service() {
     private val STT_FILES = listOf("encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt")
     // kroko repos name files identically → identity map.
     private val KROKO_FILES = STT_FILES.map { it to it }
-    // bookbot robust-es int8: ~27MB total (encoder int8 26MB) — SMALL model for
-    // 24/7 background (minimal battery/CPU) vs kroko es fp32 ~155MB. Remote names
-    // are epoch-tagged → map to the local encoder/decoder/joiner/tokens names.
-    private val BOOKBOT_ES_INT8 = listOf(
-      "encoder-epoch-80-avg-3-chunk-16-left-128.int8.onnx" to "encoder.onnx",
-      "decoder-epoch-80-avg-3-chunk-16-left-128.int8.onnx" to "decoder.onnx",
-      "joiner-epoch-80-avg-3-chunk-16-left-128.int8.onnx" to "joiner.onnx",
-      "tokens.txt" to "tokens.txt",
-    )
+
+    // NOTE (Bug 1 fix — model swap): the es model was previously bookbot
+    // robust-es int8. That repo is a PHONEME-recognition model: its tokens.txt
+    // holds only ~37 IPA phonemes (a e i o u b d t͡ʃ ɲ ɾ ʎ ʝ θ …) with NO word
+    // boundaries, so its decoded output is a run-on phoneme string like
+    // "todelosatatadelosrexa" — exactly the garbage seen on-device. It is NOT a
+    // text/orthographic ASR model. Switched es to the kroko Spanish streaming
+    // Zipformer, whose tokens.txt is a proper 651-entry BPE vocab with `▁` word
+    // boundaries (▁de ▁que ▁la …) → produces readable Spanish words. Tradeoff:
+    // kroko encoder is fp32 ~155MB vs bookbot int8 ~26MB; correctness wins.
+    // kroko uses identity file names, matching the recognizer's expected
+    // encoder.onnx/decoder.onnx/joiner.onnx/tokens.txt and modelType=zipformer2.
 
     private val MODELS: Map<String, SttModel> = mapOf(
       "es" to SttModel(
-        "sherpa-stt-es",
-        "bookbot/sherpa-onnx-zipformer-streaming-robust-es-v0",
-        BOOKBOT_ES_INT8,
+        "sherpa-stt-es-kroko",
+        "csukuangfj/sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06",
+        KROKO_FILES,
       ),
       "en" to SttModel(
         "sherpa-stt-en",
@@ -371,7 +374,13 @@ class VaultSpeechService : Service() {
         stream.acceptWaveform(samples, SAMPLE_RATE)
         stream.inputFinished()
         while (rec.isReady(stream)) rec.decode(stream)
-        rec.getResult(stream).text.trim()
+        val text = rec.getResult(stream).text.trim()
+        // Quality verification log: raw decoded text + sample count + duration.
+        Log.i(
+          "KillioSTT",
+          "DECODE segment samples=${samples.size} (~${samples.size * 1000L / SAMPLE_RATE}ms) raw=\"$text\"",
+        )
+        text
       } finally {
         stream.release()
       }

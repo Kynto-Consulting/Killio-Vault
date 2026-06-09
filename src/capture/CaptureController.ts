@@ -13,6 +13,8 @@ import { listAgents } from '../agents/local-agent.model';
 import {
   getVoiceprint,
   matchesVoiceprint,
+  isVoiceprintCompatible,
+  clear as clearVoiceprint,
   DEFAULT_MATCH_THRESHOLD,
 } from '../voiceid/voiceprint';
 
@@ -424,14 +426,31 @@ export class CaptureController {
     //   - voiceprint enrolled + spk present → isOwner = cosine match
     //   - voiceprint enrolled + spk missing → isOwner = false (can't verify)
     //   - no voiceprint enrolled            → isOwner = true (open, opt-in)
-    const enrolled = !!this.voiceprint;
+    let enrolled = !!this.voiceprint;
     let isOwner = true;
     try {
       if (enrolled) {
-        isOwner =
-          Array.isArray(e.spk) && e.spk.length > 0
-            ? matchesVoiceprint(e.spk, this.voiceprint!, DEFAULT_MATCH_THRESHOLD)
+        const spk = Array.isArray(e.spk) && e.spk.length > 0 ? e.spk : null;
+        // STALE-MODEL GUARD: a voiceprint enrolled under the OLD speaker model
+        // (Vosk 128-dim) has a different dim than the current model's spk
+        // (CAM++ 192-dim). Cosine similarity over mismatched dims never matches,
+        // which would permanently tag the owner as ':guest'. Detect the dim
+        // mismatch, drop the stale voiceprint (so the user can re-enroll under
+        // the current model), and fall back to OPEN (not-enrolled) behavior.
+        if (spk && !isVoiceprintCompatible(spk, this.voiceprint!)) {
+          console.warn(
+            `[KillioVoiceId] stored voiceprint dim=${this.voiceprint!.length} != spk dim=${spk.length}; ` +
+              'clearing stale voiceprint and treating as not-enrolled (re-enroll needed)',
+          );
+          this.voiceprint = null;
+          enrolled = false;
+          isOwner = true;
+          void clearVoiceprint().catch(() => {});
+        } else {
+          isOwner = spk
+            ? matchesVoiceprint(spk, this.voiceprint!, DEFAULT_MATCH_THRESHOLD)
             : false;
+        }
       }
     } catch (err) {
       console.warn('[KillioVoiceId] verify failed, treating as owner:', String(err));

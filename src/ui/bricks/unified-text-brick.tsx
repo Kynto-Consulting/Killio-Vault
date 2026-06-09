@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Pressable,
   TextInput,
@@ -136,7 +136,41 @@ export const UnifiedTextBrick: React.FC<TextBrickProps> = ({
     { start: number; end: number } | null
   >(null);
 
+  // Ref to the editor so we can re-focus it after a toolbar tap (tapping a
+  // toolbar button blurs the input on Android).
+  const inputRef = useRef<TextInput>(null);
+  // Set true the instant a toolbar control is touched, BEFORE the TextInput's
+  // onBlur fires. The blur handler reads this to decide whether the blur is a
+  // real "left the editor" (commit + exit) or just a toolbar tap (stay editing,
+  // refocus). Without this, tapping B/I blurred → setEditing(false) →
+  // the toolbar unmounted before the wrap applied, so B/I appeared to do
+  // nothing.
+  const toolbarInteractingRef = useRef(false);
+
   const hasSelection = selection.end > selection.start;
+
+  // Marks an imminent blur as toolbar-driven. Cleared shortly after so a later
+  // genuine blur (tap elsewhere) still exits edit mode.
+  const markToolbarInteract = () => {
+    toolbarInteractingRef.current = true;
+    setTimeout(() => {
+      toolbarInteractingRef.current = false;
+    }, 400);
+  };
+
+  const handleBlur = () => {
+    // Toolbar tap → don't exit; commit the in-progress draft and refocus so the
+    // selection/caret survives and the toolbar stays mounted.
+    if (toolbarInteractingRef.current) {
+      if (draft !== text) onUpdate(draft);
+      // Refocus on the next tick (after the toolbar's onPress has run + the
+      // draft/selection state has been applied).
+      setTimeout(() => inputRef.current?.focus(), 0);
+      return;
+    }
+    setEditing(false);
+    if (draft !== text) onUpdate(draft);
+  };
 
   const onSelectionChange = (
     e: NativeSyntheticEvent<TextInputSelectionChangeEventData>,
@@ -186,24 +220,28 @@ export const UnifiedTextBrick: React.FC<TextBrickProps> = ({
                 onChange={setDraft}
                 selection={selection}
                 onSelectionAfterWrap={setControlledSel}
+                onInteractStart={markToolbarInteract}
                 disabledStyles={disabledStyles}
                 onAiAction={
                   onAiAction ? (action) => onAiAction(action, draft) : undefined
                 }
                 onComment={onComment}
-                onClose={() => setEditing(false)}
+                onClose={() => {
+                  // Explicit close: override the toolbar-interaction guard so
+                  // the input's blur genuinely exits edit mode.
+                  toolbarInteractingRef.current = false;
+                  setEditing(false);
+                }}
               />
             </View>
           ) : null}
           <TextInput
+            ref={inputRef}
             value={draft}
             onChangeText={setDraft}
             onSelectionChange={onSelectionChange}
             selection={controlledSel ?? undefined}
-            onBlur={() => {
-              setEditing(false);
-              if (draft !== text) onUpdate(draft);
-            }}
+            onBlur={handleBlur}
             multiline
             autoFocus
             placeholder={t('placeholder')}
@@ -228,12 +266,18 @@ export const UnifiedTextBrick: React.FC<TextBrickProps> = ({
                 onChange={setDraft}
                 selection={selection}
                 onSelectionAfterWrap={setControlledSel}
+                onInteractStart={markToolbarInteract}
                 disabledStyles={disabledStyles}
                 onAiAction={
                   onAiAction ? (action) => onAiAction(action, draft) : undefined
                 }
                 onComment={onComment}
-                onClose={() => setEditing(false)}
+                onClose={() => {
+                  // Explicit close: override the toolbar-interaction guard so
+                  // the input's blur genuinely exits edit mode.
+                  toolbarInteractingRef.current = false;
+                  setEditing(false);
+                }}
               />
             </View>
           ) : null}
