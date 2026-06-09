@@ -25,14 +25,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#000000',
     },
-    // Phase 1+ adds RECORD_AUDIO + FOREGROUND_SERVICE_MICROPHONE (Android 14
-    // typed FGS) via the capture config plugin. Here we declare the
-    // device-tool permissions: SET_ALARM (set_alarm tool — without it the
-    // clock-app intent throws SecurityException) + VIBRATE (vibrate tool).
-    permissions: [
-      'com.android.alarm.permission.SET_ALARM',
-      'android.permission.VIBRATE',
-    ],
+    // IMPORTANT: do NOT set a `permissions` array here. Expo treats it as an
+    // EXCLUSIVE allowlist and marks every other permission `tools:node="remove"`
+    // in the merged manifest — which silently STRIPPED RECORD_AUDIO and broke
+    // the mic. ALL Vault permissions (RECORD_AUDIO, SET_ALARM, VIBRATE, FGS, …)
+    // are declared additively in plugins/withVaultCapture.js instead.
+    permissions: undefined,
     // Android App Links for killio.dev — when the user taps a killio.dev URL
     // on their phone and Vault is installed, the OS opens it directly inside
     // the app instead of the browser. Both `killio.dev` and `www.killio.dev`
@@ -118,14 +116,17 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       // Push-to-talk uses the offline Vosk engine, but the assistant composer's
       // "+" attach sheet offers Fotos (library) + Cámara (camera) + Archivos.
       // The camera path needs the CAMERA permission + usage strings, which this
-      // plugin injects. microphonePermission is disabled — we never record video.
+      // plugin injects. NOTE: do NOT set `microphonePermission: false` — that
+      // makes expo-image-picker inject `<uses-permission RECORD_AUDIO
+      // tools:node="remove"/>`, which STRIPS the RECORD_AUDIO that
+      // withVaultCapture declares → the mic/STT silently breaks. Omitting it
+      // leaves RECORD_AUDIO intact (we don't record video from the picker anyway).
       'expo-image-picker',
       {
         photosPermission:
           'Killio Vault accede a tus fotos para adjuntarlas en el chat del asistente.',
         cameraPermission:
           'Killio Vault usa la cámara para adjuntar una foto en el chat del asistente.',
-        microphonePermission: false,
       },
     ],
     // Torch/flashlight is handled by the native killio-torch module via

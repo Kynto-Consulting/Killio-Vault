@@ -33,6 +33,12 @@ const PERMISSIONS = [
   'android.permission.SEND_SMS',
   // Torch control (flashlight client-action) goes through expo-camera.
   'android.permission.CAMERA',
+  // set_alarm client-action — the clock-app intent throws SecurityException
+  // without this. (Declared HERE, additively, NOT via app.config `permissions`,
+  // because that array is an EXCLUSIVE allowlist that strips RECORD_AUDIO etc.)
+  'com.android.alarm.permission.SET_ALARM',
+  // vibrate client-action.
+  'android.permission.VIBRATE',
 ];
 
 module.exports = function withVaultCapture(config) {
