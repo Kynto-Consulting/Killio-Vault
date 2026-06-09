@@ -1177,6 +1177,10 @@ export const MESSAGES: Record<Locale, Messages> = {
       sendSms: '¿Enviar SMS a {{target}}?',
       genericAction: '¿Permitir esta acción?',
       copied: 'Copiado',
+      attachAdd: 'Adjuntar',
+      attachPhotos: 'Fotos',
+      attachCamera: 'Cámara',
+      attachFiles: 'Archivos',
     },
     captureModel: {
       downloading: 'Descargando modelo de voz… {{progress}}%',
@@ -2378,6 +2382,10 @@ export const MESSAGES: Record<Locale, Messages> = {
       sendSms: 'Send SMS to {{target}}?',
       genericAction: 'Allow this action?',
       copied: 'Copied',
+      attachAdd: 'Attach',
+      attachPhotos: 'Photos',
+      attachCamera: 'Camera',
+      attachFiles: 'Files',
     },
     captureModel: {
       downloading: 'Downloading voice model… {{progress}}%',

@@ -72,6 +72,215 @@ class VaultSpeechService : Service() {
     fun isModelPresent(ctx: android.content.Context): Boolean =
       modelRoot(File(ctx.filesDir, MODEL_DIR)) != null
 
+    // ── One-shot ↔ continuous-capture mic coordination ──────────────────────
+    // The 24/7 capture FGS owns the microphone through a single AudioRecord. A
+    // second AudioRecord (push-to-talk one-shot) cannot reliably co-exist with
+    // it on most devices. So the one-shot path PAUSES the running continuous
+    // loop (releasing its AudioRecord) for the duration of the capture, then
+    // RESUMES it. When no service is running the one-shot just opens its own
+    // AudioRecord directly. These statics are the rendezvous points.
+
+    /** The live service instance, set in onCreate / cleared in onDestroy. */
+    @Volatile private var instance: VaultSpeechService? = null
+
+    /**
+     * When true the running recognition loop releases its AudioRecord and idles
+     * (without tearing down the model/recognizer or the FGS) so a one-shot can
+     * own the mic. Set back to false to resume continuous capture.
+     */
+    @Volatile private var paused = false
+
+    /**
+     * Shared, cached offline Vosk language model. Loaded lazily by the first
+     * caller (continuous loop OR one-shot) and reused by both so the ~39MB model
+     * is opened only once. Guarded by [modelLock].
+     */
+    @Volatile private var sharedModel: Model? = null
+    private val modelLock = Any()
+
+    /**
+     * Ensure the offline model is present (download+unzip on first run) and
+     * loaded, returning the shared [Model]. Reused by the continuous loop and
+     * the one-shot path. Throws on hard failure (e.g. offline first run).
+     */
+    fun loadSharedModel(ctx: android.content.Context): Model {
+      sharedModel?.let { return it }
+      synchronized(modelLock) {
+        sharedModel?.let { return it }
+        val root = ensureModelStatic(ctx)
+          ?: throw java.io.IOException("Vosk model could not be prepared")
+        val m = Model(root.absolutePath)
+        sharedModel = m
+        return m
+      }
+    }
+
+    /**
+     * Static model download/unzip (no service instance required) so the one-shot
+     * can prepare the model even when 24/7 capture is off. Mirrors the instance
+     * ensureModel(): idempotent + offline after the one-time fetch.
+     */
+    private fun ensureModelStatic(ctx: android.content.Context): File? {
+      val base = File(ctx.filesDir, MODEL_DIR)
+      modelRoot(base)?.let { return it }
+
+      Log.i("KillioVosk", "Model not found (one-shot) — downloading $MODEL_URL (first run only)")
+      base.deleteRecursively()
+      base.mkdirs()
+      val tmpZip = File(ctx.filesDir, "$MODEL_DIR.download.zip")
+      if (tmpZip.exists()) tmpZip.delete()
+
+      val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 20_000
+        readTimeout = 60_000
+        requestMethod = "GET"
+      }
+      try {
+        conn.connect()
+        if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+          throw java.io.IOException("HTTP ${conn.responseCode} fetching model")
+        }
+        conn.inputStream.use { input ->
+          FileOutputStream(tmpZip).use { out -> input.copyTo(out, 64 * 1024) }
+        }
+      } finally {
+        conn.disconnect()
+      }
+      unzipStatic(tmpZip, base)
+      tmpZip.delete()
+      return modelRoot(base)
+    }
+
+    /** Static path-traversal-guarded unzip (no instance needed). */
+    private fun unzipStatic(zip: File, dest: File) {
+      ZipInputStream(zip.inputStream().buffered()).use { zis ->
+        var entry = zis.nextEntry
+        val destPath = dest.canonicalPath
+        while (entry != null) {
+          val outFile = File(dest, entry.name)
+          if (!outFile.canonicalPath.startsWith(destPath)) {
+            throw java.io.IOException("Zip entry escapes target dir: ${entry.name}")
+          }
+          if (entry.isDirectory) {
+            outFile.mkdirs()
+          } else {
+            outFile.parentFile?.mkdirs()
+            FileOutputStream(outFile).use { out -> zis.copyTo(out, 64 * 1024) }
+          }
+          zis.closeEntry()
+          entry = zis.nextEntry
+        }
+      }
+    }
+
+    /**
+     * One-shot push-to-talk recognition using the SAME offline Vosk engine as
+     * 24/7 capture. Blocking — call off the main thread.
+     *
+     * Flow: load (or reuse) the model → if continuous capture is running, PAUSE
+     * it so the mic is free → open a 16kHz mono PCM16 AudioRecord → feed frames
+     * to a fresh Recognizer until a FINAL result, OR ~1.5s of silence after
+     * speech began, OR a ~10s hard cap → return the parsed "text" → release the
+     * AudioRecord + recognizer → RESUME continuous capture. Returns "" if
+     * nothing was heard. Throws only on hard errors (mic init / model load).
+     */
+    fun recognizeOnceBlocking(ctx: android.content.Context, language: String): String {
+      val model = loadSharedModel(ctx)
+
+      // Free the mic for the one-shot if the 24/7 loop is currently capturing.
+      val svc = instance
+      val didPause = if (svc != null) {
+        paused = true
+        svc.awaitContinuousIdle(2_000)
+        true
+      } else false
+
+      var rec: Recognizer? = null
+      var recorder: AudioRecord? = null
+      try {
+        rec = Recognizer(model, SAMPLE_RATE.toFloat())
+
+        val minBuf = AudioRecord.getMinBufferSize(
+          SAMPLE_RATE,
+          AudioFormat.CHANNEL_IN_MONO,
+          AudioFormat.ENCODING_PCM_16BIT,
+        )
+        val frameSamples = maxOf(minBuf / 2, SAMPLE_RATE / 5)
+        val bufSize = maxOf(minBuf, frameSamples * 2)
+
+        recorder = AudioRecord(
+          MediaRecorder.AudioSource.MIC,
+          SAMPLE_RATE,
+          AudioFormat.CHANNEL_IN_MONO,
+          AudioFormat.ENCODING_PCM_16BIT,
+          bufSize,
+        )
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+          throw java.io.IOException("AudioRecord failed to initialize (one-shot)")
+        }
+
+        val buf = ShortArray(frameSamples)
+        recorder.startRecording()
+
+        val startMs = System.currentTimeMillis()
+        val hardCapMs = 10_000L          // absolute cap
+        val silenceTimeoutMs = 1_500L    // silence AFTER speech began → stop
+        var speechStarted = false
+        var lastVoiceMs = startMs
+
+        while (true) {
+          val read = recorder.read(buf, 0, frameSamples)
+          if (read <= 0) {
+            if (System.currentTimeMillis() - startMs > hardCapMs) break
+            continue
+          }
+          // Crude voice-activity gate: track peak amplitude to know when speech
+          // has begun and when it has gone quiet again.
+          var peak = 0
+          for (i in 0 until read) {
+            val a = kotlin.math.abs(buf[i].toInt())
+            if (a > peak) peak = a
+          }
+          val now = System.currentTimeMillis()
+          val isVoice = peak > 700 // ~2% of full-scale 16-bit
+          if (isVoice) {
+            speechStarted = true
+            lastVoiceMs = now
+          }
+
+          if (rec.acceptWaveForm(buf, read)) {
+            // Utterance boundary → final result. Take it if it has text.
+            val text = parseText(rec.result)
+            if (text.isNotEmpty()) return text
+            // Empty boundary but speech happened → fall through to silence/cap.
+          }
+
+          if (speechStarted && now - lastVoiceMs > silenceTimeoutMs) break
+          if (now - startMs > hardCapMs) break
+        }
+        // No mid-stream final → flush whatever was buffered.
+        return parseText(rec.finalResult)
+      } finally {
+        try { recorder?.stop() } catch (_: Exception) {}
+        try { recorder?.release() } catch (_: Exception) {}
+        try { rec?.close() } catch (_: Exception) {}
+        if (didPause) {
+          paused = false
+          instance?.resumeContinuous()
+        }
+      }
+    }
+
+    /** Parse the "text" field out of a Vosk result JSON ("" if none). */
+    private fun parseText(json: String?): String {
+      if (json.isNullOrBlank()) return ""
+      return try {
+        JSONObject(json).optString("text").trim()
+      } catch (_: Exception) {
+        ""
+      }
+    }
+
     /**
      * Vosk needs the directory that directly contains the model files (am/, conf/,
      * graph/, ivector/ …). The zip unpacks into a versioned subfolder
@@ -124,7 +333,35 @@ class VaultSpeechService : Service() {
   @Volatile private var recognizer: Recognizer? = null
   @Volatile private var audioRecord: AudioRecord? = null
 
+  // Signals the recognition loop has released the mic (paused) so a one-shot can
+  // safely open its own AudioRecord. Toggled true at the top of the pause branch.
+  @Volatile private var continuousIdle = false
+
   override fun onBind(intent: Intent?): IBinder? = null
+
+  override fun onCreate() {
+    super.onCreate()
+    instance = this
+  }
+
+  /**
+   * Block (up to [timeoutMs]) until the continuous loop has released its
+   * AudioRecord after `paused` was set. Called by the one-shot before it opens
+   * its own recorder so the two never contend for the mic.
+   */
+  fun awaitContinuousIdle(timeoutMs: Long) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (!continuousIdle && System.currentTimeMillis() < deadline) {
+      try { Thread.sleep(20) } catch (_: InterruptedException) { break }
+    }
+  }
+
+  /** Wake the paused continuous loop so it re-opens the mic and resumes. */
+  fun resumeContinuous() {
+    synchronized(pauseLock) { (pauseLock as Object).notifyAll() }
+  }
+
+  private val pauseLock = Any()
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
@@ -193,28 +430,23 @@ class VaultSpeechService : Service() {
 
   /** Worker body: ensure model → open AudioRecord → stream PCM16 into Vosk. */
   private fun recognitionLoop() {
-    val modelRoot = try {
+    // Reuse the shared model loader (download+unzip on first run, then cached).
+    // The same Model instance is shared with the one-shot path so the ~39MB
+    // model is opened exactly once. ensureModel() also drives the onModelStatus
+    // download/prepare banner for the continuous path.
+    val m: Model = try {
+      // Drive the progress banner through the instance ensureModel() first so
+      // the UI shows download/prepare; then hand the prepared dir to the shared
+      // loader (which no-ops the network call since the model is now on disk).
       ensureModel()
+      loadSharedModel(this)
     } catch (e: Exception) {
       emitError("Vosk model unavailable (offline first run?): ${e.message}")
       stopSelf()
       return
     }
-    if (modelRoot == null) {
-      emitError("Vosk model could not be prepared")
-      stopSelf()
-      return
-    }
-
-    val m: Model = try {
-      Model(modelRoot.absolutePath)
-    } catch (e: Exception) {
-      emitError("Failed to load Vosk model: ${e.message}")
-      stopSelf()
-      return
-    }
     model = m
-    Log.i("KillioVosk", "Model loaded from ${modelRoot.absolutePath}")
+    Log.i("KillioVosk", "Model loaded (shared)")
 
     val rec: Recognizer = try {
       Recognizer(m, SAMPLE_RATE.toFloat())
@@ -251,36 +483,62 @@ class VaultSpeechService : Service() {
     // ~0.2s of 16kHz mono PCM16 per read, but never below the device minimum.
     val frameSamples = maxOf(minBuf / 2, SAMPLE_RATE / 5)
     val bufSize = maxOf(minBuf, frameSamples * 2)
-
-    val recorder = try {
-      AudioRecord(
-        MediaRecorder.AudioSource.MIC,
-        SAMPLE_RATE,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT,
-        bufSize,
-      )
-    } catch (e: SecurityException) {
-      emitError("Microphone permission denied")
-      stopSelf()
-      return
-    }
-    if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-      emitError("AudioRecord failed to initialize")
-      recorder.release()
-      stopSelf()
-      return
-    }
-    audioRecord = recorder
-
     val buf = ShortArray(frameSamples)
-    recorder.startRecording()
+
+    // Opens + starts a fresh AudioRecord. Used on first entry and again every
+    // time the loop RESUMES after a one-shot released the mic.
+    fun openRecorder(): AudioRecord? {
+      val r = try {
+        AudioRecord(
+          MediaRecorder.AudioSource.MIC,
+          SAMPLE_RATE,
+          AudioFormat.CHANNEL_IN_MONO,
+          AudioFormat.ENCODING_PCM_16BIT,
+          bufSize,
+        )
+      } catch (e: SecurityException) {
+        emitError("Microphone permission denied")
+        return null
+      }
+      if (r.state != AudioRecord.STATE_INITIALIZED) {
+        emitError("AudioRecord failed to initialize")
+        r.release()
+        return null
+      }
+      r.startRecording()
+      audioRecord = r
+      return r
+    }
+
+    var recorder = openRecorder() ?: run { stopSelf(); return }
     // Model present + recognizer created + mic streaming → tell the UI the
     // download/prepare phase is over so it can hide any progress banner.
     emitModelStatus("ready")
     Log.i("KillioVosk", "Recognizer ready, AudioRecord started (16kHz) — listening loop running")
     try {
       while (running) {
+        // ── One-shot coordination ──────────────────────────────────────────
+        // A push-to-talk one-shot set `paused`: release OUR AudioRecord so it
+        // can own the mic, flag continuousIdle, then block on pauseLock until
+        // resumeContinuous() wakes us. The model/recognizer/FGS stay alive.
+        if (paused) {
+          try { recorder.stop() } catch (_: Exception) {}
+          try { recorder.release() } catch (_: Exception) {}
+          audioRecord = null
+          continuousIdle = true
+          synchronized(pauseLock) {
+            while (paused && running) {
+              try { (pauseLock as Object).wait(500) } catch (_: InterruptedException) {}
+            }
+          }
+          continuousIdle = false
+          if (!running) break
+          val reopened = openRecorder()
+          if (reopened == null) { stopSelf(); break }
+          recorder = reopened
+          Log.i("KillioVosk", "Continuous capture resumed after one-shot")
+          continue
+        }
         val read = recorder.read(buf, 0, frameSamples)
         if (read <= 0) continue
         // acceptWaveForm returns true at an utterance boundary → final result.
@@ -295,8 +553,11 @@ class VaultSpeechService : Service() {
     } catch (e: Exception) {
       if (running) emitError(e.message ?: "recognition error")
     } finally {
-      try { recorder.stop() } catch (_: Exception) {}
-      recorder.release()
+      audioRecord?.let {
+        try { it.stop() } catch (_: Exception) {}
+        try { it.release() } catch (_: Exception) {}
+      }
+      audioRecord = null
     }
   }
 
@@ -531,6 +792,9 @@ class VaultSpeechService : Service() {
 
   override fun onDestroy() {
     running = false
+    // If the loop is parked in the paused-wait, wake it so it can observe
+    // running=false and exit instead of blocking the worker.join below.
+    synchronized(pauseLock) { (pauseLock as Object).notifyAll() }
     releaseWakeLock()
     // Stop the worker loop, then release native resources it owns.
     worker?.join(800)
@@ -539,10 +803,13 @@ class VaultSpeechService : Service() {
     audioRecord = null
     try { recognizer?.close() } catch (_: Exception) {}
     recognizer = null
-    try { model?.close() } catch (_: Exception) {}
+    // NOTE: do NOT close the model here — it's the shared static instance reused
+    // by the one-shot path (loadSharedModel). Just drop our reference. The
+    // process-lifetime model is intentionally kept resident.
     model = null
     try { spkModel?.close() } catch (_: Exception) {}
     spkModel = null
+    if (instance === this) instance = null
     super.onDestroy()
   }
 }

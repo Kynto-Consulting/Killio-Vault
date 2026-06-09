@@ -29,12 +29,13 @@
  *     opening the linked room calls findRoomByEntity → same single room, full
  *     history (alternating user + AI Copilot messages).
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -45,11 +46,26 @@ import {
 import { useLayoutEffect } from 'react';
 import { useLocalSearchParams, useNavigation } from 'expo-router';
 
-import { Screen, Button, Input, RichText, AgentMessage } from '@/ui';
-import { Mic, Paperclip, X, SquarePen, Copy, Pencil, RotateCcw, Check } from 'lucide-react-native';
+import { Screen, RichText, AgentMessage } from '@/ui';
+import {
+  Mic,
+  Paperclip,
+  X,
+  SquarePen,
+  Copy,
+  Pencil,
+  RotateCcw,
+  Check,
+  Plus,
+  Send,
+  Image as ImageIcon,
+  Camera as CameraIcon,
+  File as FileIcon,
+} from 'lucide-react-native';
 import { write as clipboardWrite } from '@/integrations/clipboard';
 import { fonts } from '@/theme/fonts';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { uploadFile } from '@/core/api/uploads.client';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useCapture } from '@/capture/CaptureContext';
@@ -104,6 +120,8 @@ export default function AssistantScreen() {
   const [listening, setListening] = useState(false);
   const [attachments, setAttachments] = useState<{ url: string; name: string; kind: 'img' | 'document' }[]>([]);
   const [uploading, setUploading] = useState(false);
+  // Gemini-style "+" attach sheet (Fotos / Cámara / Archivos).
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   // Per-message "Copiado" feedback: the id of the message whose Copy button was
   // just tapped (checkmark shown for ~1.4s).
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -479,8 +497,79 @@ export default function AssistantScreen() {
     }
   };
 
-  // Pick + upload a file/image attachment (embedded as an <asset> tag on send).
-  const pickAttachment = async () => {
+  // Shared uploader: pushes one local asset (image OR document) through the chat
+  // upload pipeline and appends it as an attachment chip (embedded as an <asset>
+  // tag on send). Used by all three "+" sheet options below.
+  const uploadAttachment = async (a: {
+    uri: string;
+    name: string;
+    mimeType?: string | null;
+    kind: 'img' | 'document';
+  }) => {
+    if (!activeTeam?.id || uploading) return;
+    setUploading(true);
+    try {
+      const up = await uploadFile({
+        uri: a.uri,
+        name: a.name,
+        type: a.mimeType ?? (a.kind === 'img' ? 'image/jpeg' : 'application/octet-stream'),
+        ownerScopeType: 'team',
+        ownerScopeId: activeTeam.id,
+        usage: 'chat_attachment',
+      });
+      const url = String(up.url ?? '');
+      if (url) setAttachments((prev) => [...prev, { url, name: a.name, kind: a.kind }]);
+    } catch {
+      // ignore — user can retry
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // ── "+" attach sheet actions (Gemini bottom bar) ──────────────────────────
+  // Fotos → image library picker.
+  const pickPhoto = async () => {
+    setAttachMenuOpen(false);
+    if (!activeTeam?.id || uploading) return;
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return;
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+    });
+    if (res.canceled || !res.assets?.[0]) return;
+    const a = res.assets[0];
+    await uploadAttachment({
+      uri: a.uri,
+      name: a.fileName ?? `image-${Date.now()}.jpg`,
+      mimeType: a.mimeType,
+      kind: 'img',
+    });
+  };
+
+  // Cámara → take a photo.
+  const takePhoto = async () => {
+    setAttachMenuOpen(false);
+    if (!activeTeam?.id || uploading) return;
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) return;
+    const res = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+    });
+    if (res.canceled || !res.assets?.[0]) return;
+    const a = res.assets[0];
+    await uploadAttachment({
+      uri: a.uri,
+      name: a.fileName ?? `photo-${Date.now()}.jpg`,
+      mimeType: a.mimeType,
+      kind: 'img',
+    });
+  };
+
+  // Archivos → document picker (images, PDFs, text).
+  const pickDocument = async () => {
+    setAttachMenuOpen(false);
     if (!activeTeam?.id || uploading) return;
     const res = await DocumentPicker.getDocumentAsync({
       type: ['image/*', 'application/pdf', 'text/*'],
@@ -488,26 +577,12 @@ export default function AssistantScreen() {
     });
     if (res.canceled || !res.assets?.[0]) return;
     const a = res.assets[0];
-    setUploading(true);
-    try {
-      const up = await uploadFile({
-        uri: a.uri,
-        name: a.name ?? 'file',
-        type: a.mimeType ?? 'application/octet-stream',
-        ownerScopeType: 'team',
-        ownerScopeId: activeTeam.id,
-        usage: 'chat_attachment',
-      });
-      const url = String(up.url ?? '');
-      if (url) {
-        const kind = (a.mimeType ?? '').startsWith('image/') ? 'img' : 'document';
-        setAttachments((prev) => [...prev, { url, name: a.name ?? 'file', kind }]);
-      }
-    } catch {
-      // ignore â€” user can retry
-    } finally {
-      setUploading(false);
-    }
+    await uploadAttachment({
+      uri: a.uri,
+      name: a.name ?? 'file',
+      mimeType: a.mimeType,
+      kind: (a.mimeType ?? '').startsWith('image/') ? 'img' : 'document',
+    });
   };
 
   const buildAssetTags = (): string =>
@@ -717,31 +792,132 @@ export default function AssistantScreen() {
             ))}
           </View>
         ) : null}
-        <View className="flex-row items-center gap-2 border-t border-border bg-background px-4 py-3">
-          <Pressable
-            onPress={pickAttachment}
-            className="h-11 w-11 items-center justify-center rounded-full bg-secondary active:opacity-80"
-          >
-            <Paperclip size={18} color={uploading ? colors.cyan : colors.foreground} />
-          </Pressable>
-          <Pressable
-            onPress={micPress}
-            className={`h-11 w-11 items-center justify-center rounded-full ${listening ? 'bg-destructive' : 'bg-secondary'}`}
-          >
-            <Mic size={18} color={colors.foreground} />
-          </Pressable>
-          <View className="flex-1">
-            <Input
+        {/* Gemini-style composer: rounded pill with a "+" attach button on the
+            left, the text field in the middle, and a right button that toggles
+            between Mic (empty input → push-to-talk) and Send (has text). */}
+        <View className="border-t border-border bg-background px-4 py-3">
+          <View className="flex-row items-center gap-1.5 rounded-full border border-border bg-card pl-1.5 pr-1.5 py-1">
+            <Pressable
+              onPress={() => setAttachMenuOpen(true)}
+              hitSlop={6}
+              className="h-9 w-9 items-center justify-center rounded-full active:opacity-70"
+              accessibilityRole="button"
+              accessibilityLabel={t('attachAdd')}
+            >
+              <Plus size={22} color={uploading ? colors.cyan : colors.foreground} />
+            </Pressable>
+            <TextInput
               placeholder={listening ? t('listening') : t('placeholder')}
+              placeholderTextColor={colors.mutedForeground}
               value={input}
               onChangeText={setInput}
               onSubmitEditing={send}
+              returnKeyType="send"
+              multiline
+              style={{ fontFamily: fonts.regular, color: colors.foreground, maxHeight: 120 }}
+              className="flex-1 px-2 text-base"
             />
+            {input.trim().length > 0 ? (
+              <Pressable
+                onPress={send}
+                disabled={busy}
+                className={`h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80 ${
+                  busy ? 'opacity-50' : ''
+                }`}
+                accessibilityRole="button"
+                accessibilityLabel={tc('send')}
+              >
+                <Send size={18} color={colors.primaryForeground} />
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={micPress}
+                className={`h-9 w-9 items-center justify-center rounded-full ${
+                  listening ? 'bg-destructive' : 'bg-secondary'
+                } active:opacity-80`}
+                accessibilityRole="button"
+                accessibilityLabel={t('listening')}
+              >
+                <Mic size={18} color={colors.foreground} />
+              </Pressable>
+            )}
           </View>
-          <Button title={tc('send')} onPress={send} busy={busy} />
         </View>
       </KeyboardAvoidingView>
+
+      {/* "+" attach options sheet: Fotos / Cámara / Archivos */}
+      <AttachSheet
+        visible={attachMenuOpen}
+        onClose={() => setAttachMenuOpen(false)}
+        onPhotos={() => void pickPhoto()}
+        onCamera={() => void takePhoto()}
+        onFiles={() => void pickDocument()}
+        t={t}
+      />
     </Screen>
+  );
+}
+
+/**
+ * Gemini-style bottom-sheet that the composer "+" opens. Three attach options:
+ * Fotos (image library), Cámara (camera), Archivos (document picker).
+ */
+function AttachSheet({
+  visible,
+  onClose,
+  onPhotos,
+  onCamera,
+  onFiles,
+  t,
+}: {
+  visible: boolean;
+  onClose(): void;
+  onPhotos(): void;
+  onCamera(): void;
+  onFiles(): void;
+  t: (k: string) => string;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-background/70 justify-end" onPress={onClose}>
+        <Pressable
+          onPress={(e) => e.stopPropagation()}
+          className="rounded-t-2xl border-t border-border bg-card"
+        >
+          <View className="items-center pt-2 pb-1">
+            <View className="h-1 w-10 rounded-full bg-border" />
+          </View>
+          <AttachItem icon={<ImageIcon size={18} color={colors.cyan} />} label={t('attachPhotos')} onPress={onPhotos} />
+          <AttachItem icon={<CameraIcon size={18} color={colors.cyan} />} label={t('attachCamera')} onPress={onCamera} />
+          <AttachItem icon={<FileIcon size={18} color={colors.cyan} />} label={t('attachFiles')} onPress={onFiles} />
+          <View style={{ height: 12 }} />
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function AttachItem({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: ReactNode;
+  label: string;
+  onPress(): void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className="flex-row items-center gap-3 px-4 py-3 active:bg-secondary"
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      {icon}
+      <Text style={{ fontFamily: fonts.medium }} className="flex-1 text-sm text-foreground">
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 

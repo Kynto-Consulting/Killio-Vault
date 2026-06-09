@@ -1,28 +1,30 @@
 package dev.killio.speech
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import androidx.core.content.ContextCompat
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.records.Field
 import expo.modules.kotlin.records.Record
+import kotlin.concurrent.thread
 
 /**
- * Free, credential-less on-device STT using Android's SpeechRecognizer, run in a
+ * Free, credential-less, fully offline on-device STT powered by Vosk, run in a
  * foreground service so the diary keeps transcribing with the screen locked.
+ * Both the 24/7 capture (start/stop) and the push-to-talk one-shot
+ * (recognizeOnce) use the SAME Vosk engine (VaultSpeechService) — never Android's
+ * SpeechRecognizer, whose offline Soda model returned empty/NO_SPEECH.
  *
  * JS API (src/stt/native/KillioSpeech.ts):
  *   isRecognitionAvailable() -> Boolean
  *   start({ language, notificationText, preferOffline }) -> Promise
  *   stop() -> Promise
+ *   recognizeOnce(language) -> Promise<String>   // offline Vosk one-shot
  *   events: onTranscript { text:String, ts:Double }, onError { message:String }
  */
 class SpeechStartOptions : Record {
@@ -91,66 +93,35 @@ class KillioSpeechModule : Module() {
       Unit
     }
 
-    // One-shot recognition for push-to-talk in the assistant. Resolves with the
-    // recognized text (or '' if nothing heard); rejects on hard errors.
+    // One-shot push-to-talk recognition using the SAME offline Vosk engine as
+    // 24/7 capture (VaultSpeechService) — NOT Android's SpeechRecognizer, whose
+    // offline Soda model returns empty/NO_SPEECH on the target devices.
+    //
+    // Resolves with the recognized text (or '' if nothing was heard); rejects
+    // only on hard errors (no mic permission, model load / AudioRecord failure).
+    // Runs entirely off the main thread (model open + blocking AudioRecord read
+    // loop). If the 24/7 capture service is running, the one-shot transparently
+    // pauses it for the duration so the mic isn't double-opened, then resumes.
     AsyncFunction("recognizeOnce") { language: String, promise: Promise ->
       val ctx: Context? = appContext.reactContext
       if (ctx == null) {
         promise.reject("no_context", "No React context", null)
         return@AsyncFunction
       }
-      Handler(Looper.getMainLooper()).post {
-        if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
-          promise.reject("unavailable", "Speech recognition not available", null)
-          return@post
-        }
-        val recognizer = SpeechRecognizer.createSpeechRecognizer(ctx)
-        var settled = false
-        fun finish(text: String?, errCode: String?) {
-          if (settled) return
-          settled = true
-          try { recognizer.destroy() } catch (_: Exception) {}
-          if (errCode != null) promise.reject(errCode, errCode, null)
-          else promise.resolve(text ?: "")
-        }
-        recognizer.setRecognitionListener(object : RecognitionListener {
-          override fun onResults(results: Bundle?) {
-            val text = results
-              ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-              ?.firstOrNull()
-              ?.trim()
-            finish(text, null)
-          }
-          override fun onError(error: Int) {
-            // No-match / timeout → resolve empty (user said nothing).
-            if (error == SpeechRecognizer.ERROR_NO_MATCH ||
-                error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-              finish("", null)
-            } else {
-              finish(null, "stt_error_$error")
-            }
-          }
-          override fun onReadyForSpeech(params: Bundle?) {}
-          override fun onBeginningOfSpeech() {}
-          override fun onRmsChanged(rmsdB: Float) {}
-          override fun onBufferReceived(buffer: ByteArray?) {}
-          override fun onEndOfSpeech() {}
-          override fun onPartialResults(partialResults: Bundle?) {}
-          override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-          putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-          putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
-          putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-        }
+      // RECORD_AUDIO guard — without it AudioRecord throws SecurityException.
+      if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+          != PackageManager.PERMISSION_GRANTED) {
+        promise.reject("no_mic_permission", "RECORD_AUDIO not granted", null)
+        return@AsyncFunction
+      }
+      thread(start = true) {
         try {
-          recognizer.startListening(intent)
+          val text = VaultSpeechService.recognizeOnceBlocking(ctx, language)
+          promise.resolve(text)
         } catch (e: Exception) {
-          finish(null, "start_failed")
+          promise.reject("recognize_failed", e.message ?: "one-shot recognition failed", e)
         }
       }
-      // Handler.post() returns Boolean; pin the lambda to Unit so it matches
-      // the early no-context return path.
       Unit
     }
   }

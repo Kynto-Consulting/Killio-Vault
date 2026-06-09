@@ -109,6 +109,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     'expo-notifications',
     'expo-font',
+    [
+      // Push-to-talk uses the offline Vosk engine, but the assistant composer's
+      // "+" attach sheet offers Fotos (library) + Cámara (camera) + Archivos.
+      // The camera path needs the CAMERA permission + usage strings, which this
+      // plugin injects. microphonePermission is disabled — we never record video.
+      'expo-image-picker',
+      {
+        photosPermission:
+          'Killio Vault accede a tus fotos para adjuntarlas en el chat del asistente.',
+        cameraPermission:
+          'Killio Vault usa la cámara para adjuntar una foto en el chat del asistente.',
+        microphonePermission: false,
+      },
+    ],
     // Torch/flashlight is handled by the native killio-torch module via
     // CameraManager.setTorchMode — it needs NO camera preview and NO CAMERA
     // permission, so the expo-camera plugin is intentionally not included.
