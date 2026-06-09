@@ -23,6 +23,12 @@ export type MarkupBlock =
   | { type: 'think'; text: string }
   | { type: 'brick'; kind: string; content: Record<string, any> };
 
+// Tools that still EXECUTE in the agent loop but must NEVER render a visible
+// tool pill/chip. ai_generate_room_name silently titles the conversation — its
+// invoke + tool_status/tool_output stay in the stream so the loop runs it, but
+// we skip emitting any 'tool' block so the user never sees a chip.
+const HIDDEN_TOOLS = new Set(['ai_generate_room_name']);
+
 const STATUS_RE = /<tool_status\s+([^>]+?)\/?>/gi;
 const OUTPUT_RE = /<tool_output\s+([^>]*?)>([\s\S]*?)<\/tool_output>/gi;
 const INVOKE_RE = /<(?:async_)?invoke\s+([^>]*?)>([\s\S]*?)<\/(?:async_)?invoke>/gi;
@@ -190,7 +196,9 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
       const a = attrs(tag.match(/<(?:async_)?invoke\s+([^>]*?)>/i)?.[1] ?? '');
       const id = a.id || a.name || '';
       const st = states.get(id);
-      if (st) blocks.push({ type: 'tool', tool: st });
+      // Hidden tool (e.g. ai_generate_room_name): executed in the loop but never
+      // shown as a chip. Skip emitting the 'tool' block.
+      if (st && !HIDDEN_TOOLS.has(st.name)) blocks.push({ type: 'tool', tool: st });
     } else if (/^<tool_call/i.test(tag)) {
       const a = attrs(tag);
       let id = a.id || a.name;
@@ -206,7 +214,7 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
         }
       }
       const st = id ? states.get(id) : undefined;
-      if (st) blocks.push({ type: 'tool', tool: st });
+      if (st && !HIDDEN_TOOLS.has(st.name)) blocks.push({ type: 'tool', tool: st });
     } else if (/^<asset\b/i.test(tag)) {
       // <asset type="brick" kind="text">{json}</asset>  → inline brick preview.
       // Other asset types (img/document) are handled by RichText inside text blocks.
