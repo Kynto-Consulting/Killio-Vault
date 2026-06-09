@@ -172,28 +172,39 @@ export interface LocalSegment {
  * the on-device outbox — including ones not yet uploaded. Lets the diary show
  * what was just captured immediately, before the next flush. Newest first.
  */
+/** On-screen debug snapshot (no adb needed): total rows + stored dates. */
+export function diaryDebug(): { total: number; dates: string[] } {
+  try {
+    const db = getDb();
+    const t = rowsOf<{ c: number }>(db.execute(`SELECT COUNT(*) AS c FROM diary_outbox`));
+    const d = rowsOf<{ date: string }>(db.execute(`SELECT DISTINCT date FROM diary_outbox ORDER BY date DESC LIMIT 6`));
+    return { total: Number(t[0]?.c ?? 0), dates: d.map((r) => r.date) };
+  } catch (e) {
+    return { total: -1, dates: [String(e).slice(0, 40)] };
+  }
+}
+
+/** Local-day [start,end) epoch-ms range for a YYYY-MM-DD string (device-local). */
+function dayRange(date: string): [number, number] {
+  const [y, m, d] = date.split('-').map((n) => parseInt(n, 10));
+  const start = new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0).getTime();
+  return [start, start + 24 * 60 * 60 * 1000];
+}
+
 export function getLocalSegments(date: string): LocalSegment[] {
   try {
     const db = getDb();
+    // Filter by the ts EPOCH RANGE rather than the `date` TEXT column. The exact
+    // `date = ?` string match was returning 0 rows even though rows for today
+    // existed (the stored date string and the query string can desync), so we
+    // derive the local-day window from the same date and match on ts — robust.
+    const [start, end] = dayRange(date);
     const rows = rowsOf<OutboxRow>(
       db.execute(
-        `SELECT * FROM diary_outbox WHERE date = ? ORDER BY ts DESC LIMIT 500`,
-        [date],
+        `SELECT * FROM diary_outbox WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 500`,
+        [start, end],
       ),
     );
-    try {
-      const totalRes = db.execute(`SELECT COUNT(*) AS c FROM diary_outbox`);
-      const totalRows = (totalRes as any)?.rows;
-      const total = Array.isArray(totalRows) ? totalRows[0]?.c : totalRows?._array?.[0]?.c ?? totalRows?.item?.(0)?.c;
-      const distinctRes = db.execute(`SELECT DISTINCT date FROM diary_outbox LIMIT 5`);
-      const dRows = (distinctRes as any)?.rows;
-      const dates = (Array.isArray(dRows) ? dRows : dRows?._array ?? []).map((r: any) => r.date);
-      console.log(
-        `[KillioDiary] getLocalSegments date="${date}" filteredRows=${rows.length} TOTAL=${total} storedDates=${JSON.stringify(dates)} rawType=${Array.isArray((db.execute(`SELECT * FROM diary_outbox LIMIT 1`) as any)?.rows) ? 'array' : typeof (db.execute(`SELECT * FROM diary_outbox LIMIT 1`) as any)?.rows}`,
-      );
-    } catch (e) {
-      console.warn('[KillioDiary] diag failed: ' + String(e));
-    }
     return rows.map((r) => ({
       text: r.text,
       ts: r.ts,
