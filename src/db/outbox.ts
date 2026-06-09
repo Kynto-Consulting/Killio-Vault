@@ -181,13 +181,15 @@ export function getLocalSegments(date: string): LocalSegment[] {
         [date],
       ),
     );
+    console.log(`[KillioDiary] getLocalSegments date=${date} rows=${rows.length}`);
     return rows.map((r) => ({
       text: r.text,
       ts: r.ts,
       source: r.source,
       pending: r.status === 'pending',
     }));
-  } catch {
+  } catch (err) {
+    console.warn(`[KillioDiary] getLocalSegments FAILED date=${date}: ${String(err)}`);
     return [];
   }
 }

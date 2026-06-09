@@ -25,6 +25,7 @@ export default function DiaryScreen() {
     // uploaded "pending" ones), then merge in the server diary (deduped by ts,
     // server wins). So you see what you just said without waiting for a flush.
     const local = getLocalSegments(today);
+    console.log(`[KillioDiary] view load today=${today} localSegments=${local.length}`);
     let hits: DiarySearchHit[] = [];
     try {
       if (activeTeam?.id) hits = await searchDiary({ teamId: activeTeam.id, date: today });
