@@ -9,6 +9,7 @@ import * as Clipboard from '../integrations/clipboard';
 import * as ShareInt from '../integrations/share';
 import * as DeviceControls from '../integrations/deviceControls';
 import * as AppLinks from '../integrations/appDeepLinks';
+import * as Cron from '../cron/cron.store';
 
 /**
  * Executes client-action tools on the device. The backend agent loop pauses the
@@ -447,6 +448,57 @@ async function dispatchClientAction(
         return tag({ success: true, output: { ...r, app: 'deeplink' } });
       } catch (e) {
         return { success: false, error: (e as Error)?.message ?? 'open deeplink failed' };
+      }
+
+    // ─── Local cron jobs (on-device recurring prompts) ─────────────────────────
+    // LOCAL-ONLY: jobs only fire while the Vault app is alive (see CronRunner).
+    case 'cron_create':
+      try {
+        const r = Cron.createCronJob({
+          schedule: String(input.schedule ?? ''),
+          prompt: String(input.prompt ?? ''),
+          conversationId: (input.conversationId as string | undefined) ?? null,
+          label: (input.label as string | undefined) ?? null,
+          maxRuns: input.maxRuns as number | undefined,
+        });
+        if (!r.created) return { success: false, error: r.error ?? 'could not create cron job' };
+        return {
+          success: true,
+          output: {
+            created: true,
+            id: r.id,
+            nextRun: r.nextRun ?? null,
+            // Surfaced so the AI reminds the user of the local-only limitation.
+            note: 'Runs locally only while the Vault app is open.',
+          },
+        };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'cron create failed' };
+      }
+    case 'cron_list':
+      try {
+        const jobs = Cron.listCronJobs().map((j) => ({
+          id: j.id,
+          schedule: j.schedule,
+          prompt: j.prompt,
+          label: j.label,
+          conversationId: j.conversation_id,
+          active: j.active === 1,
+          runsDone: j.runs_done,
+          maxRuns: j.max_runs,
+          nextRun: j.next_run_at,
+          lastRun: j.last_run_at,
+        }));
+        return { success: true, output: { count: jobs.length, jobs } };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'cron list failed' };
+      }
+    case 'cron_delete':
+      try {
+        const deleted = Cron.deleteCronJob(String(input.id ?? ''));
+        return { success: true, output: { deleted, id: input.id ?? null } };
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'cron delete failed' };
       }
 
     default:

@@ -78,6 +78,28 @@ function migrate(d: DB): void {
   d.execute(
     `CREATE INDEX IF NOT EXISTS agent_memory_agent_idx ON agent_memory (agent_id, created_at);`,
   );
+
+  // Local cron jobs — saved recurring prompts. When due, the prompt is re-sent
+  // to the assistant as if the user typed it (into conversation_id) by the
+  // on-device CronRunner. LOCAL-ONLY: only fires while the Vault app is alive.
+  d.execute(`
+    CREATE TABLE IF NOT EXISTS cron_jobs (
+      id               TEXT PRIMARY KEY,
+      schedule         TEXT NOT NULL,        -- 5-field cron expr "min hour dom mon dow"
+      prompt           TEXT NOT NULL,
+      conversation_id  TEXT,                 -- target conversation (null = let backend pick)
+      label            TEXT,
+      max_runs         INTEGER NOT NULL DEFAULT 50,
+      runs_done        INTEGER NOT NULL DEFAULT 0,
+      active           INTEGER NOT NULL DEFAULT 1,  -- 1 active, 0 deactivated
+      next_run_at      INTEGER,              -- UTC epoch ms of the next due fire
+      last_run_at      INTEGER,
+      created_at       INTEGER NOT NULL
+    );
+  `);
+  d.execute(
+    `CREATE INDEX IF NOT EXISTS cron_jobs_active_idx ON cron_jobs (active, next_run_at);`,
+  );
 }
 
 /** Normalizes op-sqlite result rows across versions. */

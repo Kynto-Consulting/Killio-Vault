@@ -19,6 +19,7 @@ import { WorkspaceCatalogProvider } from '@/workspace/WorkspaceCatalogContext';
 import { LocalWorkspaceProvider } from '@/local-workspace/LocalWorkspaceProvider';
 import { SideNav } from '@/nav/SideNav';
 import { WakeListener } from '@/wakeword/WakeListener';
+import { startCronRunner, stopCronRunner } from '@/cron/CronRunner';
 import { useAppFonts, fonts } from '@/theme/fonts';
 import { colors } from '@/theme/theme';
 
@@ -96,6 +97,13 @@ export default function RootLayout() {
   useEffect(() => {
     if (fontsLoaded) void SplashScreen.hideAsync();
   }, [fontsLoaded]);
+
+  // Start the on-device cron scheduler (local recurring prompts). It only fires
+  // while the app is alive — see CronRunner. Safe no-op without native SQLite.
+  useEffect(() => {
+    startCronRunner();
+    return () => stopCronRunner();
+  }, []);
 
   if (!fontsLoaded) return null;
 
