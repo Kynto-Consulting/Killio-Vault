@@ -8,6 +8,7 @@ import * as AppIntent from '../integrations/appIntent';
 import * as Clipboard from '../integrations/clipboard';
 import * as ShareInt from '../integrations/share';
 import * as DeviceControls from '../integrations/deviceControls';
+import * as AppLinks from '../integrations/appDeepLinks';
 
 /**
  * Executes client-action tools on the device. The backend agent loop pauses the
@@ -342,6 +343,112 @@ async function dispatchClientAction(
         return { success: false, error: (e as Error)?.message ?? 'device info failed' };
       }
 
+    // ─── App deep-links (Gemini-style app control via Android Intents) ─────────
+    case 'youtube_search':
+      try {
+        const r = await AppLinks.youtubeSearch(String(input.query ?? ''));
+        return tag({ success: true, output: { ...r, app: 'youtube', query: input.query ?? '' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'youtube search failed' };
+      }
+    case 'youtube_open':
+      try {
+        const r = await AppLinks.youtubeOpen({
+          url: input.url as string | undefined,
+          videoId: input.videoId as string | undefined,
+        });
+        return tag({ success: true, output: { ...r, app: 'youtube' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'youtube open failed' };
+      }
+    case 'maps_search':
+      try {
+        const r = await AppLinks.mapsSearch(String(input.query ?? ''));
+        return tag({ success: true, output: { ...r, app: 'maps', query: input.query ?? '' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'maps search failed' };
+      }
+    case 'maps_navigate':
+      try {
+        const r = await AppLinks.mapsNavigate(String(input.destination ?? ''));
+        return tag({ success: true, output: { ...r, app: 'maps', destination: input.destination ?? '' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'maps navigate failed' };
+      }
+    case 'instagram_open':
+      try {
+        const r = await AppLinks.instagramOpen(input.username as string | undefined);
+        return tag({ success: true, output: { ...r, app: 'instagram', username: input.username ?? null } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'instagram open failed' };
+      }
+    case 'gmail_compose':
+      try {
+        const r = await AppLinks.gmailCompose({
+          to: input.to as string | undefined,
+          subject: input.subject as string | undefined,
+          body: input.body as string | undefined,
+        });
+        return tag({ success: true, output: { ...r, app: 'gmail', to: input.to ?? null } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'gmail compose failed' };
+      }
+    case 'twitter_search':
+      try {
+        const r = await AppLinks.twitterSearch(String(input.query ?? ''));
+        return tag({ success: true, output: { ...r, app: 'twitter', query: input.query ?? '' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'twitter search failed' };
+      }
+    case 'x_open':
+      try {
+        const r = await AppLinks.xOpen({
+          url: input.url as string | undefined,
+          username: input.username as string | undefined,
+        });
+        return tag({ success: true, output: { ...r, app: 'twitter', username: input.username ?? null } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'x open failed' };
+      }
+    case 'telegram_open':
+      try {
+        const r = await AppLinks.telegramOpen(input.username as string | undefined);
+        return tag({ success: true, output: { ...r, app: 'telegram', username: input.username ?? null } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'telegram open failed' };
+      }
+    case 'tiktok_search':
+      try {
+        const r = await AppLinks.tiktokSearch(String(input.query ?? ''));
+        return tag({ success: true, output: { ...r, app: 'tiktok', query: input.query ?? '' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'tiktok search failed' };
+      }
+    case 'play_store_open':
+      try {
+        const r = await AppLinks.playStoreOpen({
+          package: input.package as string | undefined,
+          query: input.query as string | undefined,
+        });
+        return tag({ success: true, output: { ...r, app: 'play_store' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'play store open failed' };
+      }
+    case 'uber_request':
+      try {
+        const r = await AppLinks.uberRequest(input.dropoff as string | undefined);
+        return tag({ success: true, output: { ...r, app: 'uber', dropoff: input.dropoff ?? null } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'uber request failed' };
+      }
+    case 'open_deeplink':
+      try {
+        const r = await AppLinks.openDeeplink(String(input.uri ?? ''));
+        return tag({ success: true, output: { ...r, app: 'deeplink' } });
+      } catch (e) {
+        return { success: false, error: (e as Error)?.message ?? 'open deeplink failed' };
+      }
+
     default:
       return { success: false, error: `Unknown client action: ${tool}` };
   }
@@ -363,6 +470,8 @@ export const NEEDS_CONFIRM = new Set([
   'set_timer',
   'set_brightness',
   'flashlight',
+  // Transactional app deep-link (costs the user money) — confirm. Searches/opens do not.
+  'uber_request',
 ]);
 
 /** Tools whose only effect is on the Vault app itself (no native side effect). */
