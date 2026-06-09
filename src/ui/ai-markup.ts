@@ -182,6 +182,28 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
     if (t) blocks.push({ type: 'text', text: t });
   };
 
+  // Dedupe tool chips by logical call (name + input). During live streaming the
+  // SAME call arrives twice — once as the model's own <invoke> in its delta text,
+  // once as the synthesized <invoke> injected by onToolStart (different ids) —
+  // which rendered as two chips. We keep ONE chip per call and upgrade it to the
+  // most-resolved state (done/error + output beats a bare running invoke).
+  const toolKeyIndex = new Map<string, number>();
+  const toolScore = (tl: ToolState): number =>
+    (tl.status === 'done' || tl.status === 'error' ? 2 : tl.status === 'approval' ? 1 : 0) +
+    (tl.output !== undefined ? 1 : 0);
+  const pushTool = (st: ToolState) => {
+    if (HIDDEN_TOOLS.has(st.name)) return; // executed but never shown (e.g. ai_generate_room_name)
+    const key = `${st.name}::${JSON.stringify(st.input ?? {})}`;
+    const existingIdx = toolKeyIndex.get(key);
+    if (existingIdx !== undefined) {
+      const prev = blocks[existingIdx];
+      if (prev.type === 'tool' && toolScore(st) > toolScore(prev.tool)) prev.tool = st;
+      return; // duplicate of an already-rendered call → don't add a second chip
+    }
+    toolKeyIndex.set(key, blocks.length);
+    blocks.push({ type: 'tool', tool: st });
+  };
+
   while ((m = MASTER_RE.exec(content))) {
     pushText(content.slice(last, m.index));
     last = m.index + m[0].length;
@@ -196,9 +218,7 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
       const a = attrs(tag.match(/<(?:async_)?invoke\s+([^>]*?)>/i)?.[1] ?? '');
       const id = a.id || a.name || '';
       const st = states.get(id);
-      // Hidden tool (e.g. ai_generate_room_name): executed in the loop but never
-      // shown as a chip. Skip emitting the 'tool' block.
-      if (st && !HIDDEN_TOOLS.has(st.name)) blocks.push({ type: 'tool', tool: st });
+      if (st) pushTool(st);
     } else if (/^<tool_call/i.test(tag)) {
       const a = attrs(tag);
       let id = a.id || a.name;
@@ -214,7 +234,7 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
         }
       }
       const st = id ? states.get(id) : undefined;
-      if (st && !HIDDEN_TOOLS.has(st.name)) blocks.push({ type: 'tool', tool: st });
+      if (st) pushTool(st);
     } else if (/^<asset\b/i.test(tag)) {
       // <asset type="brick" kind="text">{json}</asset>  → inline brick preview.
       // Other asset types (img/document) are handled by RichText inside text blocks.
