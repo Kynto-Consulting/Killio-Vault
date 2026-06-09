@@ -15,6 +15,18 @@ export function getDb(): DB {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { open } = require('@op-engineering/op-sqlite');
   const handle = open({ name: 'killio_vault.db' }) as DB;
+  // CRITICAL FIX: op-sqlite v11's `execute()` is ASYNC (returns Promise<QueryResult>).
+  // All our DB code calls it SYNCHRONOUSLY (`rowsOf(db.execute(...))`), so reads
+  // were parsing `.rows` off a Promise → ALWAYS [] (empty diary, agents, cron…)
+  // and INSERTs (un-awaited Promises) never reliably persisted. Alias `execute`
+  // to the SYNCHRONOUS `executeSync` so every existing call site works as written.
+  const anyHandle = handle as unknown as {
+    execute?: unknown;
+    executeSync?: (q: string, p?: unknown[]) => unknown;
+  };
+  if (typeof anyHandle.executeSync === 'function') {
+    anyHandle.execute = anyHandle.executeSync.bind(handle);
+  }
   migrate(handle);
   db = handle;
   return handle;
