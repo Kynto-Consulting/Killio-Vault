@@ -9,7 +9,13 @@ import React, {
 
 import { CaptureController, CaptureStatus, ModelStatus } from './CaptureController';
 import { CaptureMode } from './schedule';
-import { getCaptureMode, setCaptureMode } from '../settings/settings-store';
+import {
+  getCaptureMode,
+  setCaptureMode,
+  getSttLanguage,
+  setSttLanguage,
+  type SttLanguage,
+} from '../settings/settings-store';
 import { pendingCount, flushOutbox } from '../db/outbox';
 import { hasMicrophone, requestCapturePermissions } from './permissions';
 
@@ -18,9 +24,14 @@ interface CaptureState {
   /** Offline STT model download/prepare progress (null = ready/idle). */
   modelStatus: ModelStatus;
   mode: CaptureMode;
+  /** Offline STT recognition language (es-ES / en-US). */
+  sttLanguage: SttLanguage;
   nativeAvailable: boolean;
   pending: number;
   setMode(mode: CaptureMode): Promise<void>;
+  /** Change the STT recognition language; persists + restarts capture so the
+   *  matching offline model loads (downloaded on first use of a language). */
+  setSttLang(lang: SttLanguage): Promise<void>;
   refreshPending(): void;
   /** Duck capture while TTS speaks. */
   setMuted(muted: boolean): void;
@@ -43,6 +54,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<CaptureStatus>('idle');
   const [modelStatus, setModelStatus] = useState<ModelStatus>(null);
   const [mode, setModeState] = useState<CaptureMode>({ kind: 'off' });
+  const [sttLanguage, setSttLanguageState] = useState<SttLanguage>('es-ES');
+  /** Live language used when (re)building the controller. Mirrors sttLanguage
+   *  but read synchronously inside async closures without a stale-state race. */
+  const langRef = useRef<SttLanguage>('es-ES');
   const [pending, setPending] = useState(0);
   const nativeAvailable = CaptureController.nativeReady();
 
@@ -50,8 +65,12 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       const saved = await getCaptureMode();
       setModeState(saved);
+      const lang = await getSttLanguage();
+      langRef.current = lang;
+      setSttLanguageState(lang);
       const controller = new CaptureController({
         mode: saved,
+        language: lang,
         onStatus: setStatus,
         onModelStatus: setModelStatus,
       });
@@ -111,14 +130,54 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  /**
+   * Switch the offline STT recognition language. Persists the choice, then
+   * rebuilds the capture controller so the matching Vosk model is loaded
+   * (downloaded on first use of a language, offline thereafter). If capture is
+   * currently active it is stopped and restarted on the new language.
+   */
+  const setSttLang = async (lang: SttLanguage) => {
+    if (lang === langRef.current) return;
+    langRef.current = lang;
+    setSttLanguageState(lang);
+    await setSttLanguage(lang);
+
+    const prev = controllerRef.current;
+    const wasRunning =
+      prev != null &&
+      (prev.getStatus() === 'listening' || prev.getStatus() === 'paused');
+    await prev?.stop();
+
+    const controller = new CaptureController({
+      mode,
+      language: lang,
+      onStatus: setStatus,
+      onModelStatus: setModelStatus,
+    });
+    controllerRef.current = controller;
+    controller.setOnWake(wakeCbRef.current);
+    controller.setOnCommandUtterance(cmdCbRef.current);
+    if (mode.kind !== 'off' && wasRunning) {
+      const hasMic = await hasMicrophone();
+      const granted = hasMic ? true : (await requestCapturePermissions()).microphone;
+      if (granted) {
+        await controller.start();
+      } else {
+        setStatus('degraded');
+      }
+    }
+  };
+
   const value = useMemo<CaptureState>(
     () => ({
       status,
       modelStatus,
       mode,
+      sttLanguage,
       nativeAvailable,
       pending,
       setMode,
+      setSttLang,
       refreshPending: () => setPending(safePending()),
       setMuted: (m) => controllerRef.current?.setMuted(m),
       flushNow: async () => {
@@ -143,7 +202,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
         void controllerRef.current?.refreshVoiceprint();
       },
     }),
-    [status, modelStatus, mode, nativeAvailable, pending],
+    [status, modelStatus, mode, sttLanguage, nativeAvailable, pending],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

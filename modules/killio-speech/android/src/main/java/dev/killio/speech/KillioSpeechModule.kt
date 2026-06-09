@@ -75,6 +75,11 @@ class KillioSpeechModule : Module() {
       } else {
         ctx.startService(intent)
       }
+      // Explicit Unit — startForegroundService/startService return a
+      // ComponentName/Boolean, which Expo cannot serialize ("Unknown type: class
+      // android.content.ComponentName") and would REJECT the call → JS sees the
+      // 24/7 capture as status='error' even though the Vosk FGS actually started.
+      Unit
     }
 
     AsyncFunction("stop") {

@@ -2,12 +2,67 @@ import * as SecureStore from 'expo-secure-store';
 
 import { CaptureMode } from '../capture/schedule';
 
+import { NativeModules, Platform } from 'react-native';
+
 const CAPTURE_MODE_KEY = 'killio.captureMode';
 const CONSENT_KEY = 'killio.captureConsentAt';
 const VOICE_KEY = 'killio.assistantVoice';
 const WAKE_WORD_KEY = 'killio.wakeWordEnabled';
+const STT_LANGUAGE_KEY = 'killio.sttLanguage';
 
 const DEFAULT_MODE: CaptureMode = { kind: 'off' };
+
+/**
+ * Supported offline STT recognition languages. Each maps 1:1 to a Vosk model
+ * bundled-on-demand by the native side (es → vosk-model-small-es-0.42,
+ * en → vosk-model-small-en-us-0.15). The value is an IETF locale tag passed to
+ * Speech.start({ language }) / recognizeOnce(language); the native side parses
+ * the leading code (es/en) to pick the model.
+ */
+export const STT_LANGUAGES = ['es-ES', 'en-US'] as const;
+export type SttLanguage = (typeof STT_LANGUAGES)[number];
+
+/**
+ * Best-effort device language → a supported STT locale. Reads the OS locale
+ * without an extra dependency (RN exposes it via NativeModules). Falls back to
+ * Spanish when the device language is neither es nor en.
+ */
+function deviceSttDefault(): SttLanguage {
+  let tag = '';
+  try {
+    if (Platform.OS === 'ios') {
+      const s: any = NativeModules.SettingsManager?.settings;
+      tag =
+        s?.AppleLocale ||
+        (Array.isArray(s?.AppleLanguages) ? s.AppleLanguages[0] : '') ||
+        '';
+    } else {
+      tag = (NativeModules.I18nManager?.localeIdentifier as string) || '';
+    }
+  } catch {
+    tag = '';
+  }
+  const code = tag.toLowerCase().replace('_', '-').split('-')[0];
+  if (code === 'en') return 'en-US';
+  return 'es-ES';
+}
+
+/**
+ * Offline STT recognition language (es-ES / en-US). Default = device locale's
+ * language if es or en, else es-ES. The native Vosk model for the chosen
+ * language is downloaded on first use and offline thereafter.
+ */
+export async function getSttLanguage(): Promise<SttLanguage> {
+  const raw = await SecureStore.getItemAsync(STT_LANGUAGE_KEY);
+  if (raw && (STT_LANGUAGES as readonly string[]).includes(raw)) {
+    return raw as SttLanguage;
+  }
+  return deviceSttDefault();
+}
+
+export async function setSttLanguage(lang: SttLanguage): Promise<void> {
+  await SecureStore.setItemAsync(STT_LANGUAGE_KEY, lang);
+}
 
 export async function getCaptureMode(): Promise<CaptureMode> {
   const raw = await SecureStore.getItemAsync(CAPTURE_MODE_KEY);

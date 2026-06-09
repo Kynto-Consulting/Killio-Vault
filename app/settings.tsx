@@ -26,6 +26,7 @@ import {
   requestPermission as requestScreenCapturePermission,
 } from '@/screen/ScreenCapture';
 import { useTranslations } from '@/i18n';
+import { STT_LANGUAGES, type SttLanguage } from '@/settings/settings-store';
 
 /** Default work-hours window: 09:00–18:00. */
 const WORK_HOURS: CaptureMode = {
@@ -36,11 +37,12 @@ const WORK_HOURS: CaptureMode = {
 export default function SettingsScreen() {
   const router = useRouter();
   const t = useTranslations('capture');
+  const tStt = useTranslations('sttLanguage');
   const tVoice = useTranslations('voicePicker');
   const tWake = useTranslations('wakeWordSettings');
   const tShot = useTranslations('screenCapture');
   const tVid = useTranslations('voiceId');
-  const { mode, setMode, status } = useCapture();
+  const { mode, setMode, status, sttLanguage, setSttLang } = useCapture();
   const { entitlements } = useEntitlements();
   const [consent, setConsent] = useState<boolean | null>(null);
   const [voice, setVoice] = useState<string>('es-ES');
@@ -170,6 +172,26 @@ export default function SettingsScreen() {
         <Feature label={t('wakeWord')} on={entitlements.policy.wakeWord} />
         <Body muted>{t('localAgents', { n: entitlements.policy.localAgents ?? '∞' })}</Body>
         {entitlements.tier === 'free' ? <Body muted>{t('upsell')}</Body> : null}
+      </Card>
+
+      {/* STT recognition language ──────────────────────────────────────── */}
+      <Card>
+        <Body>{tStt('title')}</Body>
+        <Body muted>{tStt('sub')}</Body>
+        <View style={{ gap: 8, marginTop: 8 }}>
+          {STT_LANGUAGES.map((code: SttLanguage) => {
+            const on = sttLanguage === code;
+            const label = code === 'en-US' ? tStt('en') : tStt('es');
+            return (
+              <Button
+                key={code}
+                title={label}
+                variant={on ? 'primary' : 'secondary'}
+                onPress={() => void setSttLang(code)}
+              />
+            );
+          })}
+        </View>
       </Card>
 
       {/* Voice picker ───────────────────────────────────────────────────── */}

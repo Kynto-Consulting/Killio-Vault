@@ -576,6 +576,12 @@ export const MESSAGES: Record<Locale, Messages> = {
       testText: 'Hola, soy Killio. ¿En qué puedo ayudarte hoy?',
       testError: 'No se pudo reproducir la voz. Inténtalo de nuevo.',
     },
+    sttLanguage: {
+      title: 'Idioma de reconocimiento',
+      sub: 'Idioma del transcriptor offline (24/7 y pulsar para hablar). El modelo se descarga la primera vez y luego funciona sin conexión.',
+      es: 'Español',
+      en: 'English',
+    },
     wakeWordSettings: {
       title: 'Palabra clave',
       sub: 'Activa la escucha de "Hey Killio" / "Oye Killio" en segundo plano.',
@@ -1791,6 +1797,12 @@ export const MESSAGES: Record<Locale, Messages> = {
       testing: 'Playing…',
       testText: 'Hi, I am Killio. How can I help you today?',
       testError: 'Could not play the voice. Please try again.',
+    },
+    sttLanguage: {
+      title: 'Recognition language',
+      sub: 'Language of the offline transcriber (24/7 and push-to-talk). The model downloads on first use, then works offline.',
+      es: 'Español',
+      en: 'English',
     },
     wakeWordSettings: {
       title: 'Wake word',

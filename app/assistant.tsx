@@ -101,7 +101,7 @@ export default function AssistantScreen() {
   const tWake = useTranslations('wakeListener');
   const navigation = useNavigation();
   const { activeTeam } = useAuth();
-  const { setMuted, flushNow } = useCapture();
+  const { setMuted, flushNow, sttLanguage } = useCapture();
   const { agentId, conversationId, action } = useLocalSearchParams<{
     agentId?: string;
     conversationId?: string;
@@ -719,7 +719,10 @@ export default function AssistantScreen() {
     }
     setListening(true);
     try {
-      const text = await recognizeOnce(agent?.voice === 'cartesia' ? 'es-ES' : agent?.voice ?? 'es-ES');
+      // Push-to-talk recognizes in the user-selected offline STT language
+      // (es-ES / en-US), independent of the agent's TTS voice — the same model
+      // the 24/7 capture uses, so no extra download.
+      const text = await recognizeOnce(sttLanguage);
       if (text.trim()) {
         setInput(text.trim());
         recentCtx.current = recentTranscriptText(60_000); // last minute of diary

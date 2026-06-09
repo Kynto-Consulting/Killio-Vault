@@ -56,9 +56,38 @@ class VaultSpeechService : Service() {
     private const val CHANNEL_ID = "killio_vault_speech"
     private const val NOTIF_ID = 4712
     private const val SAMPLE_RATE = 16_000
-    private const val MODEL_DIR = "vosk-model-es"
-    private const val MODEL_URL =
-      "https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip"
+
+    // ── Multi-language model registry ───────────────────────────────────────
+    // Each supported recognition language maps to its own offline Vosk model:
+    // a filesDir subfolder (so each language caches independently — switching
+    // languages never re-downloads the other) and the alphacephei zip URL.
+    // The Spanish small model (~39MB) is the existing default; English US small
+    // (~40MB) is fetched on first use of `en` with the identical pattern.
+    private data class LangModel(val dir: String, val url: String)
+
+    private val MODELS: Map<String, LangModel> = mapOf(
+      "es" to LangModel(
+        "vosk-model-es",
+        "https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip",
+      ),
+      "en" to LangModel(
+        "vosk-model-en",
+        "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+      ),
+    )
+    private const val DEFAULT_LANG = "es"
+
+    /**
+     * Normalize a passed locale/language to a supported model CODE.
+     * Accepts "es", "es-ES", "en", "en-US", … → "es"/"en"; unknown → default.
+     */
+    private fun langCode(language: String?): String {
+      val code = language?.trim()?.lowercase()?.substringBefore('-')?.substringBefore('_') ?: ""
+      return if (MODELS.containsKey(code)) code else DEFAULT_LANG
+    }
+
+    private fun modelFor(language: String?): LangModel =
+      MODELS[langCode(language)] ?: MODELS[DEFAULT_LANG]!!
 
     // Speaker-identification model (~13MB). Loaded alongside the language model
     // and attached via recognizer.setSpeakerModel(); each final result then
@@ -68,9 +97,9 @@ class VaultSpeechService : Service() {
     private const val SPK_MODEL_URL =
       "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip"
 
-    /** True once the model has been downloaded + unzipped into filesDir. */
-    fun isModelPresent(ctx: android.content.Context): Boolean =
-      modelRoot(File(ctx.filesDir, MODEL_DIR)) != null
+    /** True once the model for [language] has been downloaded + unzipped. */
+    fun isModelPresent(ctx: android.content.Context, language: String? = null): Boolean =
+      modelRoot(File(ctx.filesDir, modelFor(language).dir)) != null
 
     // ── One-shot ↔ continuous-capture mic coordination ──────────────────────
     // The 24/7 capture FGS owns the microphone through a single AudioRecord. A
@@ -91,26 +120,29 @@ class VaultSpeechService : Service() {
     @Volatile private var paused = false
 
     /**
-     * Shared, cached offline Vosk language model. Loaded lazily by the first
-     * caller (continuous loop OR one-shot) and reused by both so the ~39MB model
-     * is opened only once. Guarded by [modelLock].
+     * Shared, cached offline Vosk language models, keyed by language CODE
+     * (es/en). Loaded lazily by the first caller (continuous loop OR one-shot)
+     * and reused by both so each ~40MB model is opened only once. Switching
+     * languages keeps both resident (the map grows), so toggling back and forth
+     * never reloads. Guarded by [modelLock].
      */
-    @Volatile private var sharedModel: Model? = null
+    private val sharedModels = HashMap<String, Model>()
     private val modelLock = Any()
 
     /**
-     * Ensure the offline model is present (download+unzip on first run) and
-     * loaded, returning the shared [Model]. Reused by the continuous loop and
-     * the one-shot path. Throws on hard failure (e.g. offline first run).
+     * Ensure the offline model for [language] is present (download+unzip on
+     * first run) and loaded, returning the shared [Model] for that language.
+     * Reused by the continuous loop and the one-shot path. Throws on hard
+     * failure (e.g. offline first run). Cache keyed by language code.
      */
-    fun loadSharedModel(ctx: android.content.Context): Model {
-      sharedModel?.let { return it }
+    fun loadSharedModel(ctx: android.content.Context, language: String? = null): Model {
+      val code = langCode(language)
       synchronized(modelLock) {
-        sharedModel?.let { return it }
-        val root = ensureModelStatic(ctx)
-          ?: throw java.io.IOException("Vosk model could not be prepared")
+        sharedModels[code]?.let { return it }
+        val root = ensureModelStatic(ctx, code)
+          ?: throw java.io.IOException("Vosk model could not be prepared ($code)")
         val m = Model(root.absolutePath)
-        sharedModel = m
+        sharedModels[code] = m
         return m
       }
     }
@@ -118,19 +150,22 @@ class VaultSpeechService : Service() {
     /**
      * Static model download/unzip (no service instance required) so the one-shot
      * can prepare the model even when 24/7 capture is off. Mirrors the instance
-     * ensureModel(): idempotent + offline after the one-time fetch.
+     * ensureModel(): idempotent + offline after the one-time fetch. Resolves the
+     * dir/URL for [language] so each language caches independently on disk.
      */
-    private fun ensureModelStatic(ctx: android.content.Context): File? {
-      val base = File(ctx.filesDir, MODEL_DIR)
+    private fun ensureModelStatic(ctx: android.content.Context, language: String? = null): File? {
+      val lm = modelFor(language)
+      val code = langCode(language)
+      val base = File(ctx.filesDir, lm.dir)
       modelRoot(base)?.let { return it }
 
-      Log.i("KillioVosk", "Model not found (one-shot) — downloading $MODEL_URL (first run only)")
+      Log.i("KillioVosk", "[$code] Model not found (one-shot) — downloading ${lm.url} (first run only)")
       base.deleteRecursively()
       base.mkdirs()
-      val tmpZip = File(ctx.filesDir, "$MODEL_DIR.download.zip")
+      val tmpZip = File(ctx.filesDir, "${lm.dir}.download.zip")
       if (tmpZip.exists()) tmpZip.delete()
 
-      val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
+      val conn = (URL(lm.url).openConnection() as HttpURLConnection).apply {
         connectTimeout = 20_000
         readTimeout = 60_000
         requestMethod = "GET"
@@ -185,7 +220,8 @@ class VaultSpeechService : Service() {
      * nothing was heard. Throws only on hard errors (mic init / model load).
      */
     fun recognizeOnceBlocking(ctx: android.content.Context, language: String): String {
-      val model = loadSharedModel(ctx)
+      Log.i("KillioVosk", "[${langCode(language)}] one-shot recognizeOnce (lang=$language)")
+      val model = loadSharedModel(ctx, language)
 
       // Free the mic for the one-shot if the 24/7 loop is currently capturing.
       val svc = instance
@@ -328,6 +364,11 @@ class VaultSpeechService : Service() {
   private var worker: Thread? = null
   @Volatile private var running = false
 
+  /** Recognition language code (es/en) for THIS continuous capture session,
+   *  parsed from the "language" intent extra. Drives which model dir/URL the
+   *  worker loop loads. Defaults to the registry default until onStartCommand. */
+  @Volatile private var langCode: String = DEFAULT_LANG
+
   @Volatile private var model: Model? = null
   @Volatile private var spkModel: SpeakerModel? = null
   @Volatile private var recognizer: Recognizer? = null
@@ -365,6 +406,9 @@ class VaultSpeechService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
+    // Resolve the recognition language (es/en) from the passed locale extra
+    // (e.g. "es-ES"→es, "en-US"→en) so the worker loads the matching model.
+    langCode = Companion.langCode(intent?.getStringExtra("language"))
 
     // Starting a microphone-typed foreground service without RECORD_AUDIO granted
     // throws SecurityException and crashes the whole app (Android 14+). On a fresh
@@ -439,14 +483,14 @@ class VaultSpeechService : Service() {
       // the UI shows download/prepare; then hand the prepared dir to the shared
       // loader (which no-ops the network call since the model is now on disk).
       ensureModel()
-      loadSharedModel(this)
+      loadSharedModel(this, langCode)
     } catch (e: Exception) {
       emitError("Vosk model unavailable (offline first run?): ${e.message}")
       stopSelf()
       return
     }
     model = m
-    Log.i("KillioVosk", "Model loaded (shared)")
+    Log.i("KillioVosk", "[$langCode] Model loaded (shared)")
 
     val rec: Recognizer = try {
       Recognizer(m, SAMPLE_RATE.toFloat())
@@ -596,24 +640,25 @@ class VaultSpeechService : Service() {
    * entirely (the offline guarantee). Runs on the worker thread.
    */
   private fun ensureModel(): File? {
-    val base = File(filesDir, MODEL_DIR)
+    val lm = modelFor(langCode)
+    val base = File(filesDir, lm.dir)
     modelRoot(base)?.let {
       // Cached path: no download bar — the model is already on disk. The UI
       // will get the definitive "ready" once the recognizer is up.
-      Log.i("KillioVosk", "Model already present (offline) at ${it.absolutePath}")
+      Log.i("KillioVosk", "[$langCode] Model already present (offline) at ${it.absolutePath}")
       emitModelStatus("ready")
       return it
     }
 
     // First run (or a previous partial download): (re)fetch the zip.
-    Log.i("KillioVosk", "Model not found — downloading $MODEL_URL (first run only)")
+    Log.i("KillioVosk", "[$langCode] Model not found — downloading ${lm.url} (first run only)")
     base.deleteRecursively()
     base.mkdirs()
 
-    val tmpZip = File(filesDir, "$MODEL_DIR.download.zip")
+    val tmpZip = File(filesDir, "${lm.dir}.download.zip")
     if (tmpZip.exists()) tmpZip.delete()
 
-    val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
+    val conn = (URL(lm.url).openConnection() as HttpURLConnection).apply {
       connectTimeout = 20_000
       readTimeout = 60_000
       requestMethod = "GET"
