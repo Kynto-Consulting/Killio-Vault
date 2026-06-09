@@ -80,6 +80,7 @@ import {
 import { logConversation } from '@/core/api/vault.client';
 import { runClientAction, NEEDS_CONFIRM } from '@/actions/ClientActions';
 import { recognizeOnce, isAvailable as sttAvailable } from '@/stt/native/KillioSpeech';
+import { hasMicrophone, requestCapturePermissions } from '@/capture/permissions';
 import { recentTranscriptText } from '@/db/outbox';
 import { speak, stopSpeaking } from '@/tts/Tts';
 import { getAgent, type LocalAgent } from '@/agents/local-agent.model';
@@ -701,6 +702,21 @@ export default function AssistantScreen() {
       setInput((v) => v); // no-op in Expo Go; PTT needs the dev-build
       return;
     }
+    // The one-shot Vosk recognizer opens an AudioRecord, which throws
+    // SecurityException (rejects 'no_mic_permission') without RECORD_AUDIO. The
+    // general-view mic previously failed silently because it never requested it
+    // (capture-mode activation was the only request path). Ask here too.
+    try {
+      const granted =
+        (await hasMicrophone()) || (await requestCapturePermissions()).microphone;
+      if (!granted) {
+        console.warn('[KillioCapture] PTT mic denied — RECORD_AUDIO not granted');
+        Alert.alert(t('micPermissionTitle'), t('micPermissionBody'));
+        return;
+      }
+    } catch (e) {
+      console.warn('[KillioCapture] PTT permission check failed:', String(e));
+    }
     setListening(true);
     try {
       const text = await recognizeOnce(agent?.voice === 'cartesia' ? 'es-ES' : agent?.voice ?? 'es-ES');
@@ -708,9 +724,12 @@ export default function AssistantScreen() {
         setInput(text.trim());
         recentCtx.current = recentTranscriptText(60_000); // last minute of diary
         voiceTurn.current = true; // voice â†’ speak the reply
+      } else {
+        console.log('[KillioVosk] PTT one-shot returned empty (no speech detected)');
       }
-    } catch {
-      // ignore â€” user can type
+    } catch (e) {
+      // Surface hard failures (model load / mic init) instead of failing dark.
+      console.warn('[KillioVosk] PTT recognizeOnce failed:', String(e));
     } finally {
       setListening(false);
     }

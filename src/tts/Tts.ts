@@ -85,22 +85,53 @@ export async function speak(text: string, opts: SpeakOptions = {}): Promise<void
     }
 
     await new Promise<void>((resolve) => {
-      const onStart = () => opts.onStart?.();
+      // react-native-tts 4.x extends NativeEventEmitter. Its legacy
+      // removeEventListener() delegates to EventEmitter.removeListener(), which
+      // THROWS on modern React Native ("removeListener() ... has been removed").
+      // When tts-finish fired we used to call removeEventListener inside the
+      // listener — that synchronous throw escaped into the native event-dispatch
+      // path and tore down the JS context = the "black screen when the voice
+      // finishes" crash. addEventListener() returns the addListener()
+      // subscription, so we keep those and call .remove() (the safe API), all
+      // wrapped in try/catch so cleanup can never throw into the dispatcher.
+      let settled = false;
+      const onStart = () => {
+        try {
+          opts.onStart?.();
+        } catch (err) {
+          console.warn('[tts] onStart handler threw', err);
+        }
+      };
+      let subStart: { remove?(): void } | undefined;
+      let subFinish: { remove?(): void } | undefined;
+      let subCancel: { remove?(): void } | undefined;
       const onDone = () => {
-        tts.removeEventListener?.('tts-start', onStart);
-        tts.removeEventListener?.('tts-finish', onDone);
-        tts.removeEventListener?.('tts-cancel', onDone);
-        opts.onFinish?.();
+        if (settled) return;
+        settled = true;
+        try {
+          subStart?.remove?.();
+          subFinish?.remove?.();
+          subCancel?.remove?.();
+        } catch (err) {
+          console.warn('[tts] listener cleanup threw', err);
+        }
+        try {
+          opts.onFinish?.();
+        } catch (err) {
+          // onFinish typically un-ducks capture (setMuted(false)); a throw here
+          // must never crash the screen.
+          console.warn('[tts] onFinish handler threw', err);
+        }
         resolve();
       };
-      tts.addEventListener('tts-start', onStart);
-      tts.addEventListener('tts-finish', onDone);
-      tts.addEventListener('tts-cancel', onDone);
       try {
+        subStart = tts.addEventListener('tts-start', onStart);
+        subFinish = tts.addEventListener('tts-finish', onDone);
+        subCancel = tts.addEventListener('tts-cancel', onDone);
         tts.stop();
         tts.speak(clean);
       } catch (e) {
-        // speak() threw synchronously — clean up and resolve.
+        // addEventListener / speak() threw synchronously — clean up and resolve.
         opts.onError?.(e);
         onDone();
       }

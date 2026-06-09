@@ -132,6 +132,12 @@ export default function SettingsScreen() {
             onPress={() => choose(WORK_HOURS)}
           />
           <Button
+            title={active === 'on_screen' ? t('active', { label: t('onScreen') }) : t('onScreen')}
+            variant={active === 'on_screen' ? 'primary' : 'secondary'}
+            onPress={() => choose({ kind: 'on_screen' })}
+          />
+          {active === 'on_screen' ? <Body muted>{t('onScreenHint')}</Body> : null}
+          <Button
             title={active === 'off' ? t('active', { label: t('off') }) : t('off')}
             variant={active === 'off' ? 'primary' : 'secondary'}
             onPress={() => choose({ kind: 'off' })}

@@ -201,6 +201,10 @@ export class CaptureController {
 
     const speechOk = Speech.isAvailable() && Speech.isRecognitionAvailable();
     const nativeOk = Native.isAvailable();
+    console.log(
+      `[KillioCapture] start source=${this.source} mode=${this.mode.kind} ` +
+        `vosk(speech)=${speechOk} audioRecord(native)=${nativeOk} screenAudio=${ScreenAudio.isAvailable()}`,
+    );
 
     // First-start Doze exemption: if a native capture path exists but the app
     // isn't battery-optimization-exempt, prompt the system dialog once. Without
@@ -219,21 +223,42 @@ export class CaptureController {
     }
 
     if (this.wantsMic && speechOk) {
+      console.log('[KillioCapture] mic path = Vosk (KillioSpeech) offline recognizer');
       this.transcriptSub = Speech.onTranscript((e) => this.handleTranscript(e));
-      this.errSub = Speech.onError(() => this.setStatus('error'));
+      // A Vosk runtime error (e.g. the model failed to download on first run
+      // with no network) is recoverable: surface it as 'error' but DON'T leave
+      // the engine wedged — evaluateWindow() will retry Speech.start() on the
+      // next window tick once connectivity returns. We log a clear marker so the
+      // on-device log reveals the failure point.
+      this.errSub = Speech.onError((e) => {
+        console.warn(`[KillioVosk] capture engine error: ${e.message}`);
+        this.setStatus('error');
+      });
       // Offline model download/prepare progress for the first-run banner. Clear
       // it back to null once ready so the banner hides.
       this.modelStatusSub = Speech.onModelStatus((e) => {
+        console.log(`[KillioVosk] model status: ${e.state}${e.progress != null ? ` ${e.progress}%` : ''}`);
         this.setModelStatus(e.state === 'ready' ? null : e);
       });
     } else if (this.wantsMic && nativeOk) {
+      console.log('[KillioCapture] mic path = AudioRecord+VAD (KillioCapture) fallback');
       this.frameSub = Native.onAudioFrame((e) => this.handleFrame(e));
-      this.errSub = Native.onError(() => this.setStatus('error'));
+      this.errSub = Native.onError((e) => {
+        console.warn(`[KillioCapture] AudioRecord engine error: ${e.message}`);
+        this.setStatus('error');
+      });
     } else if (this.wantsSystem && ScreenAudio.isAvailable()) {
       // System-only path is fully wired above; nothing more to set up.
     } else {
-      // Degraded mode — capture loop runs but mic is dark. Status stays
-      // 'degraded' so the UI can tell the user without blocking them.
+      // Degraded mode — NO native capture path is usable for this source on this
+      // build (Expo Go, or no recognizer + no AudioRecord module). The capture
+      // loop still runs (outbox + day-rollover flushes) so typed text is still
+      // diary-flushed; only the mic is dark. This is the ONLY place 'degraded'
+      // is set for a mic source, and only when BOTH Vosk and AudioRecord are
+      // absent — never when one of them works.
+      console.warn(
+        `[KillioCapture] DEGRADED — no usable mic path (vosk=${speechOk} audioRecord=${nativeOk}); mic is dark`,
+      );
       this.setStatus('degraded');
     }
 
@@ -306,13 +331,28 @@ export class CaptureController {
     const active =
       isWithinWindows(this.mode, new Date()) &&
       (this.mode.kind !== 'on_screen' || this.appForeground);
+    // A mic source is only servable when a native engine exists. When neither
+    // Vosk nor AudioRecord is present we stay 'degraded' (mic dark) and must NOT
+    // call Speech/Native.start() — Native.start() throws "module unavailable",
+    // which would reject this promise (it's awaited from start()).
+    const micServable =
+      this.wantsMic && (this.useSpeech || Native.isAvailable());
     if (active && this.status !== 'listening') {
-      if (this.wantsMic) {
-        if (this.useSpeech) {
-          await Speech.start({ language: this.language });
-        } else {
-          await Native.start({ notificationText: 'Killio Vault is listening' });
+      if (this.wantsMic && micServable) {
+        try {
+          if (this.useSpeech) {
+            await Speech.start({ language: this.language });
+          } else {
+            await Native.start({ notificationText: 'Killio Vault is listening' });
+          }
+        } catch (e) {
+          console.warn(`[KillioCapture] engine start failed: ${String(e)}`);
+          this.setStatus('error');
+          return;
         }
+      } else if (this.wantsMic && !micServable) {
+        // No usable mic engine — keep the loop alive in degraded mode.
+        this.setStatus('degraded');
       }
       if (this.wantsSystem && ScreenAudio.isAvailable()) {
         // Reuses the MediaProjection consent; prompts once if not yet granted.
@@ -327,7 +367,10 @@ export class CaptureController {
           if (!this.wantsMic) this.setStatus('degraded');
         }
       }
-      if (this.status !== 'degraded') this.setStatus('listening');
+      if (this.status !== 'degraded') {
+        console.log('[KillioCapture] listening (mic active)');
+        this.setStatus('listening');
+      }
     } else if (!active && this.status === 'listening') {
       if (this.wantsMic) {
         if (this.useSpeech) {
