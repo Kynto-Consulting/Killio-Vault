@@ -3,12 +3,19 @@ import * as SecureStore from 'expo-secure-store';
 /**
  * Offline owner voice-ID ("voiceprint").
  *
- * Vosk's speaker model emits a 128-dim x-vector embedding (`spk`) for every
- * final utterance. We enroll the owner once by averaging a handful of those
- * vectors into a single L2-normalized voiceprint, persisted locally. On each
- * later transcript we compare its x-vector to the stored voiceprint by cosine
+ * The on-device speaker model emits a speaker EMBEDDING (`spk`) for every final
+ * utterance. We enroll the owner once by averaging a handful of those vectors
+ * into a single L2-normalized voiceprint, persisted locally. On each later
+ * transcript we compare its embedding to the stored voiceprint by cosine
  * similarity; >= a threshold means "this is the owner". Fully on-device — no
  * audio or vectors ever leave the phone.
+ *
+ * DIM-AGNOSTIC: this module never hardcodes the embedding dimension — enroll()
+ * uses whatever length arrives and cosineSimilarity() only compares
+ * equal-length vectors. The engine migrated from Vosk (128-dim x-vector) to
+ * sherpa-onnx 3D-Speaker CAM++ (192-dim); no change was needed here beyond the
+ * match threshold (CAM++ same-speaker cosine sits lower than Vosk x-vectors —
+ * see DEFAULT_MATCH_THRESHOLD).
  *
  * This gates only the WAKE/assistant action: when a voiceprint is enrolled, the
  * wake word fires only for the owner. With no voiceprint enrolled the system
@@ -18,9 +25,12 @@ import * as SecureStore from 'expo-secure-store';
 
 const VOICEPRINT_KEY = 'killio.voiceprint';
 
-/** Default match threshold for cosine similarity (tunable). Vosk x-vectors of
- *  the same speaker typically sit ~0.80+; different speakers fall well below. */
-export const DEFAULT_MATCH_THRESHOLD = 0.8;
+/** Default match threshold for cosine similarity (tunable).
+ *  Engine note: with sherpa-onnx 3D-Speaker CAM++ embeddings, same-speaker
+ *  cosine typically sits ~0.65+ while different speakers fall below ~0.45, so
+ *  the threshold is 0.65 (the old Vosk x-vector value was 0.80, which is too
+ *  strict for CAM++ and would reject the owner). */
+export const DEFAULT_MATCH_THRESHOLD = 0.65;
 
 /** L2-normalize a vector. Returns a zero vector unchanged (avoids /0). */
 function l2normalize(v: number[]): number[] {

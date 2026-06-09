@@ -13,11 +13,11 @@ const STT_LANGUAGE_KEY = 'killio.sttLanguage';
 const DEFAULT_MODE: CaptureMode = { kind: 'off' };
 
 /**
- * Supported offline STT recognition languages. Each maps 1:1 to a Vosk model
- * bundled-on-demand by the native side (es → vosk-model-small-es-0.42,
- * en → vosk-model-small-en-us-0.15). The value is an IETF locale tag passed to
- * Speech.start({ language }) / recognizeOnce(language); the native side parses
- * the leading code (es/en) to pick the model.
+ * Supported offline STT recognition languages. Each maps 1:1 to a sherpa-onnx
+ * streaming Zipformer model downloaded-on-demand by the native side (es →
+ * sherpa-onnx-streaming-zipformer-es-kroko, en → ...-en-kroko). The value is an
+ * IETF locale tag passed to Speech.start({ language }) / recognizeOnce(language);
+ * the native side parses the leading code (es/en) to pick the model.
  */
 export const STT_LANGUAGES = ['es-ES', 'en-US'] as const;
 export type SttLanguage = (typeof STT_LANGUAGES)[number];
@@ -49,7 +49,7 @@ function deviceSttDefault(): SttLanguage {
 
 /**
  * Offline STT recognition language (es-ES / en-US). Default = device locale's
- * language if es or en, else es-ES. The native Vosk model for the chosen
+ * language if es or en, else es-ES. The native sherpa-onnx model for the chosen
  * language is downloaded on first use and offline thereafter.
  */
 export async function getSttLanguage(): Promise<SttLanguage> {

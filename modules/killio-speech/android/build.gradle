@@ -16,6 +16,12 @@ android {
   defaultConfig {
     minSdkVersion safeExtGet('minSdkVersion', 26)
     targetSdkVersion safeExtGet('targetSdkVersion', 35)
+    // The project ships arm64-v8a only. The sherpa-onnx AAR bundles JNI .so for
+    // every ABI; restrict to arm64-v8a so the APK stays lean and matches the
+    // app-level abiFilters. (If the app ever adds armeabi-v7a, add it here too.)
+    ndk {
+      abiFilters 'arm64-v8a'
+    }
   }
 }
 
@@ -23,10 +29,27 @@ def safeExtGet(prop, fallback) {
   rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
 }
 
+// ── sherpa-onnx (k2-fsa, Apache-2.0) — JitPack repo ──────────────────────────
+// The k2-fsa sherpa-onnx project publishes a full Android AAR through JitPack
+// (see https://github.com/k2-fsa/sherpa-onnx/blob/master/jitpack.yml — JitPack
+// downloads the official `sherpa-onnx-<ver>-android` release AAR and installs it
+// as `com.k2fsa.sherpa.onnx:sherpa-onnx:<ver>`). That AAR bundles BOTH the
+// Kotlin/Java API classes (`com.k2fsa.sherpa.onnx.*` — OnlineRecognizer, Vad,
+// SpeakerEmbeddingExtractor, …) AND the JNI `libsherpa-onnx-jni.so` /
+// `libonnxruntime.so` for all ABIs, so no manual .so placement / vendored API
+// sources are required. We pin v1.13.2 (the version the upstream jitpack.yml
+// targets) — the API surface used here (OnlineRecognizerConfig,
+// SileroVadModelConfig, SpeakerEmbeddingExtractorConfig, SpeakerEmbeddingManager)
+// matches that release. Apache-2.0: no API key, no usage limits, fully offline.
+repositories {
+  maven { url 'https://jitpack.io' }
+}
+
 dependencies {
-  // Fully on-device, streaming STT. The acoustic/language model is NOT bundled in
-  // the APK — it is downloaded once on first start into filesDir (see
-  // VaultSpeechService.ensureModel), so this dependency adds only the small native
-  // Vosk/Kaldi runtime, not the ~39MB model.
-  implementation "com.alphacephei:vosk-android:0.3.47"
+  // Fully on-device, streaming STT + Silero VAD + speaker-embedding voice-ID.
+  // The acoustic models are NOT bundled in the APK — they are downloaded once on
+  // first start into filesDir (see VaultSpeechService.ensureSttModel /
+  // ensureVadModel / ensureSpkModel), so this dependency adds only the native
+  // sherpa-onnx + onnxruntime runtime, not the models.
+  implementation "com.k2fsa.sherpa.onnx:sherpa-onnx:1.13.2"
 }

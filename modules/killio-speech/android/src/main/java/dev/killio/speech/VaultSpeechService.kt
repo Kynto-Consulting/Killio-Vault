@@ -17,38 +17,56 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
 import org.json.JSONArray
-import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
-import org.vosk.SpeakerModel
+import com.k2fsa.sherpa.onnx.EndpointConfig
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineStream
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
+import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
+import com.k2fsa.sherpa.onnx.Vad
+import com.k2fsa.sherpa.onnx.VadModelConfig
 import java.io.File
 import java.io.FileOutputStream
 import android.util.Log
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipInputStream
 import kotlin.concurrent.thread
 
 /**
- * Continuous, fully on-device speech recognition powered by Vosk (Kaldi).
+ * Continuous, fully on-device speech recognition powered by Sherpa-ONNX
+ * (k2-fsa, Apache-2.0). This REPLACES the previous Vosk (Kaldi) engine — the
+ * win is a true streaming Zipformer transducer (low CPU), an integrated Silero
+ * VAD that gates decoding (battery), and an open speaker-embedding model for
+ * offline voice-ID. No API key, no usage limits, 100% offline after the
+ * one-time model fetch (Apache-2.0).
  *
- * Replaces the previous Android SpeechRecognizer/RecognizerIntent core, which on
- * some devices (Samsung A34, es-ES) fired onStartOfSpeech but returned empty
- * results + NO_SPEECH_DETECTED every cycle because Google's offline Soda model
- * never transcribed. Vosk streams continuously from a raw AudioRecord PCM16 feed
- * — no per-utterance restart, no NO_SPEECH cycling, no Google/cloud dependency.
- *
- * Model strategy (offline guarantee): the small Spanish model (~39MB) is NOT
- * bundled in the APK. On first start it is downloaded once over HTTP into
- * filesDir/vosk-model-es/ and unzipped; every subsequent start loads it from
- * there with no network access. After the one-time fetch the engine is 100%
- * offline. If the download fails (e.g. no network on first run) we emit an error
- * event and stopSelf gracefully instead of crashing.
- *
- * Final transcripts are emitted to JS with a UTC timestamp, preserving the exact
- * event contract consumed by src/capture/CaptureController.ts:
- *   onTranscript { text: String, ts: Double (UTC ms) }
+ * The PUBLIC EVENT CONTRACT to JS is byte-for-byte identical to the Vosk impl,
+ * so src/capture/CaptureController.ts, src/voiceid/voiceprint.ts, the wake-word
+ * scan and the diary all keep working unchanged:
+ *   onTranscript { text: String, ts: Double (UTC ms), spk?: JSON-array string }
  *   onError      { message: String }
+ *   onModelStatus{ state, progress?, bytes?, total?, message? }
+ *
+ * Model strategy (offline guarantee): NONE of the models are bundled in the APK.
+ * On first start the STT (es/en streaming Zipformer), the Silero VAD, and the
+ * speaker-embedding model are downloaded once over HTTP into filesDir and reused
+ * offline on every subsequent start. STT models are per-language (es/en) so
+ * switching languages never re-downloads the other. If a download fails (e.g. no
+ * network on first run) we emit onError + onModelStatus error and stopSelf
+ * gracefully instead of crashing; voice-ID degrades to "no spk" if only the
+ * speaker model is missing.
+ *
+ * Engine flow (continuous): AudioRecord PCM16 16kHz → normalize to FloatArray →
+ * Silero VAD.acceptWaveform. When VAD emits a finished speech segment we (a) feed
+ * its samples through a fresh OnlineRecognizer stream → getResult().text → emit
+ * onTranscript, and (b) feed the same samples through the SpeakerEmbeddingExtractor
+ * → FloatArray embedding → forward as the "spk" vector (same JSON-array-string
+ * shape Vosk used). Decoding only runs on detected speech, so the recognizer is
+ * idle during silence (battery).
  */
 class VaultSpeechService : Service() {
   companion object {
@@ -57,173 +75,317 @@ class VaultSpeechService : Service() {
     private const val NOTIF_ID = 4712
     private const val SAMPLE_RATE = 16_000
 
-    // ── Multi-language model registry ───────────────────────────────────────
-    // Each supported recognition language maps to its own offline Vosk model:
-    // a filesDir subfolder (so each language caches independently — switching
-    // languages never re-downloads the other) and the alphacephei zip URL.
-    // The Spanish small model (~39MB) is the existing default; English US small
-    // (~40MB) is fetched on first use of `en` with the identical pattern.
-    private data class LangModel(val dir: String, val url: String)
+    // ── Multi-language streaming STT model registry ─────────────────────────
+    // Each supported recognition language maps to its own offline sherpa-onnx
+    // streaming Zipformer transducer. sherpa-onnx ships these as a tar.bz2 in
+    // the GitHub `asr-models` release, but to avoid bundling a bzip2/tar
+    // extractor we download the THREE loose ONNX files + tokens.txt directly
+    // from the upstream HuggingFace repo (resolve/main/<file>) into a per-lang
+    // filesDir subfolder. Each language caches independently; switching never
+    // re-downloads the other.
+    //
+    //   es → csukuangfj/sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06
+    //        (the FIRST dedicated SPANISH streaming Zipformer in sherpa-onnx;
+    //         encoder ~155MB fp32, decoder/joiner tiny). This is the closest
+    //         real Spanish streaming model — there is no smaller/int8 es variant
+    //         published yet, so we use fp32. Kroko-ASR, Apache-2.0 compatible.
+    //   en → csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06
+    //        (small English streaming Zipformer, encoder ~70MB fp32).
+    private data class SttModel(val dir: String, val hfRepo: String)
 
-    private val MODELS: Map<String, LangModel> = mapOf(
-      "es" to LangModel(
-        "vosk-model-es",
-        "https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip",
+    private const val HF_BASE = "https://huggingface.co"
+    private const val HF_REVISION = "main"
+    // The three transducer ONNX parts + tokens are named identically across the
+    // kroko streaming repos, so one list serves every language.
+    private val STT_FILES = listOf("encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt")
+
+    private val MODELS: Map<String, SttModel> = mapOf(
+      "es" to SttModel(
+        "sherpa-stt-es",
+        "csukuangfj/sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06",
       ),
-      "en" to LangModel(
-        "vosk-model-en",
-        "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+      "en" to SttModel(
+        "sherpa-stt-en",
+        "csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
       ),
     )
     private const val DEFAULT_LANG = "es"
 
-    /**
-     * Normalize a passed locale/language to a supported model CODE.
-     * Accepts "es", "es-ES", "en", "en-US", … → "es"/"en"; unknown → default.
-     */
+    /** Normalize "es"/"es-ES"/"en-US"/… → supported model code; unknown→default. */
     private fun langCode(language: String?): String {
       val code = language?.trim()?.lowercase()?.substringBefore('-')?.substringBefore('_') ?: ""
       return if (MODELS.containsKey(code)) code else DEFAULT_LANG
     }
 
-    private fun modelFor(language: String?): LangModel =
+    private fun modelFor(language: String?): SttModel =
       MODELS[langCode(language)] ?: MODELS[DEFAULT_LANG]!!
 
-    // Speaker-identification model (~13MB). Loaded alongside the language model
-    // and attached via recognizer.setSpeakerModel(); each final result then
-    // carries a 128-dim "spk" x-vector we forward to JS for voice-ID. Same
-    // download/unzip/offline pattern as the language model above.
-    private const val SPK_MODEL_DIR = "vosk-model-spk"
+    // ── Silero VAD model (single ~2MB ONNX) ─────────────────────────────────
+    // Gates decoding so the recognizer only runs on detected speech (battery).
+    // Downloaded once from the sherpa-onnx `asr-models` GitHub release.
+    private const val VAD_DIR = "sherpa-vad"
+    private const val VAD_FILE = "silero_vad.onnx"
+    private const val VAD_URL =
+      "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+
+    // ── Speaker-embedding model (single ONNX) for voice-ID ──────────────────
+    // 3D-Speaker CAM++ (zh+en, ~28MB), the standard small sherpa-onnx speaker
+    // model. Emits a 192-dim L2-comparable embedding per utterance — we forward
+    // it as the "spk" vector exactly like the old Vosk 128-dim x-vector. The dim
+    // differs (192 vs 128); src/voiceid/voiceprint.ts is dim-agnostic so it
+    // stores/compares whatever dim the model emits. Same download/offline
+    // pattern as above. Apache-2.0 / CC-BY model.
+    private const val SPK_MODEL_DIR = "sherpa-spk"
+    private const val SPK_MODEL_FILE = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
     private const val SPK_MODEL_URL =
-      "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip"
+      "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
 
-    /** True once the model for [language] has been downloaded + unzipped. */
+    /** True once the STT model for [language] has been fully downloaded. */
     fun isModelPresent(ctx: android.content.Context, language: String? = null): Boolean =
-      modelRoot(File(ctx.filesDir, modelFor(language).dir)) != null
+      sttModelComplete(File(ctx.filesDir, modelFor(language).dir))
 
-    // ── One-shot ↔ continuous-capture mic coordination ──────────────────────
-    // The 24/7 capture FGS owns the microphone through a single AudioRecord. A
-    // second AudioRecord (push-to-talk one-shot) cannot reliably co-exist with
-    // it on most devices. So the one-shot path PAUSES the running continuous
-    // loop (releasing its AudioRecord) for the duration of the capture, then
-    // RESUMES it. When no service is running the one-shot just opens its own
-    // AudioRecord directly. These statics are the rendezvous points.
-
-    /** The live service instance, set in onCreate / cleared in onDestroy. */
+    // ── One-shot ↔ continuous-capture mic coordination (UNCHANGED contract) ──
     @Volatile private var instance: VaultSpeechService? = null
-
-    /**
-     * When true the running recognition loop releases its AudioRecord and idles
-     * (without tearing down the model/recognizer or the FGS) so a one-shot can
-     * own the mic. Set back to false to resume continuous capture.
-     */
     @Volatile private var paused = false
 
     /**
-     * Shared, cached offline Vosk language models, keyed by language CODE
-     * (es/en). Loaded lazily by the first caller (continuous loop OR one-shot)
-     * and reused by both so each ~40MB model is opened only once. Switching
-     * languages keeps both resident (the map grows), so toggling back and forth
-     * never reloads. Guarded by [modelLock].
+     * Shared, cached offline OnlineRecognizer instances keyed by language CODE
+     * (es/en). A sherpa-onnx OnlineRecognizer is reusable across many streams
+     * (createStream() per utterance), so one recognizer per language is opened
+     * once and reused by both the continuous loop and the one-shot path.
      */
-    private val sharedModels = HashMap<String, Model>()
+    private val sharedRecognizers = HashMap<String, OnlineRecognizer>()
     private val modelLock = Any()
 
+    /** Process-wide shared speaker-embedding extractor (lazy, best-effort). */
+    @Volatile private var sharedSpk: SpeakerEmbeddingExtractor? = null
+    @Volatile private var sharedSpkTried = false
+    private val spkLock = Any()
+
     /**
-     * Ensure the offline model for [language] is present (download+unzip on
-     * first run) and loaded, returning the shared [Model] for that language.
-     * Reused by the continuous loop and the one-shot path. Throws on hard
-     * failure (e.g. offline first run). Cache keyed by language code.
+     * Ensure + load the shared streaming recognizer for [language]. Downloads
+     * the model on first run (throws on hard failure / offline first run).
      */
-    fun loadSharedModel(ctx: android.content.Context, language: String? = null): Model {
+    fun loadSharedRecognizer(ctx: android.content.Context, language: String? = null): OnlineRecognizer {
       val code = langCode(language)
       synchronized(modelLock) {
-        sharedModels[code]?.let { return it }
-        val root = ensureModelStatic(ctx, code)
-          ?: throw java.io.IOException("Vosk model could not be prepared ($code)")
-        val m = Model(root.absolutePath)
-        sharedModels[code] = m
-        return m
+        sharedRecognizers[code]?.let { return it }
+        val dir = ensureSttModelStatic(ctx, code)
+          ?: throw java.io.IOException("Sherpa STT model could not be prepared ($code)")
+        val r = buildRecognizer(dir)
+        sharedRecognizers[code] = r
+        return r
       }
     }
 
+    /** Build an OnlineRecognizer over a prepared model dir (loose ONNX files). */
+    private fun buildRecognizer(dir: File): OnlineRecognizer {
+      val config = OnlineRecognizerConfig(
+        featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+        modelConfig = OnlineModelConfig(
+          transducer = OnlineTransducerModelConfig(
+            encoder = File(dir, "encoder.onnx").absolutePath,
+            decoder = File(dir, "decoder.onnx").absolutePath,
+            joiner = File(dir, "joiner.onnx").absolutePath,
+          ),
+          tokens = File(dir, "tokens.txt").absolutePath,
+          numThreads = 2,
+          provider = "cpu",
+          // modelType left empty → sherpa-onnx auto-detects the transducer type
+          // from the populated `transducer` config (the documented default for
+          // streaming Zipformer transducer models; avoids version drift on the
+          // exact modelType string).
+        ),
+        endpointConfig = EndpointConfig(),
+        enableEndpoint = true,
+        decodingMethod = "greedy_search",
+      )
+      // assetManager = null → load from absolute filesystem paths (filesDir).
+      return OnlineRecognizer(null, config)
+    }
+
     /**
-     * Static model download/unzip (no service instance required) so the one-shot
-     * can prepare the model even when 24/7 capture is off. Mirrors the instance
-     * ensureModel(): idempotent + offline after the one-time fetch. Resolves the
-     * dir/URL for [language] so each language caches independently on disk.
+     * Process-wide shared speaker-embedding extractor. Best-effort: returns null
+     * (never throws) if the model can't be downloaded/loaded so STT keeps working
+     * without voice-ID. Cached after the first successful load.
      */
-    private fun ensureModelStatic(ctx: android.content.Context, language: String? = null): File? {
-      val lm = modelFor(language)
-      val code = langCode(language)
-      val base = File(ctx.filesDir, lm.dir)
-      modelRoot(base)?.let { return it }
-
-      Log.i("KillioVosk", "[$code] Model not found (one-shot) — downloading ${lm.url} (first run only)")
-      base.deleteRecursively()
-      base.mkdirs()
-      val tmpZip = File(ctx.filesDir, "${lm.dir}.download.zip")
-      if (tmpZip.exists()) tmpZip.delete()
-
-      val conn = (URL(lm.url).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 20_000
-        readTimeout = 60_000
-        requestMethod = "GET"
-      }
-      try {
-        conn.connect()
-        if (conn.responseCode != HttpURLConnection.HTTP_OK) {
-          throw java.io.IOException("HTTP ${conn.responseCode} fetching model")
+    fun loadSharedSpk(ctx: android.content.Context): SpeakerEmbeddingExtractor? {
+      synchronized(spkLock) {
+        sharedSpk?.let { return it }
+        if (sharedSpkTried && sharedSpk == null) return null
+        sharedSpkTried = true
+        return try {
+          val f = ensureSpkModelStatic(ctx) ?: return null
+          val ext = SpeakerEmbeddingExtractor(
+            null,
+            SpeakerEmbeddingExtractorConfig(model = f.absolutePath, numThreads = 1, provider = "cpu"),
+          )
+          sharedSpk = ext
+          Log.i("KillioSTT", "Speaker-embedding model loaded (dim=${ext.dim()})")
+          ext
+        } catch (e: Exception) {
+          Log.w("KillioSTT", "Speaker model load failed (continuing without voice-ID): ${e.message}")
+          null
         }
-        conn.inputStream.use { input ->
-          FileOutputStream(tmpZip).use { out -> input.copyTo(out, 64 * 1024) }
-        }
-      } finally {
-        conn.disconnect()
       }
-      unzipStatic(tmpZip, base)
-      tmpZip.delete()
-      return modelRoot(base)
     }
 
-    /** Static path-traversal-guarded unzip (no instance needed). */
-    private fun unzipStatic(zip: File, dest: File) {
-      ZipInputStream(zip.inputStream().buffered()).use { zis ->
-        var entry = zis.nextEntry
-        val destPath = dest.canonicalPath
-        while (entry != null) {
-          val outFile = File(dest, entry.name)
-          if (!outFile.canonicalPath.startsWith(destPath)) {
-            throw java.io.IOException("Zip entry escapes target dir: ${entry.name}")
-          }
-          if (entry.isDirectory) {
-            outFile.mkdirs()
-          } else {
-            outFile.parentFile?.mkdirs()
-            FileOutputStream(outFile).use { out -> zis.copyTo(out, 64 * 1024) }
-          }
-          zis.closeEntry()
-          entry = zis.nextEntry
-        }
+    // ── Model presence / download helpers ────────────────────────────────────
+
+    /** All four STT files present in [dir]? */
+    private fun sttModelComplete(dir: File): Boolean =
+      dir.isDirectory && STT_FILES.all { File(dir, it).let { f -> f.exists() && f.length() > 0 } }
+
+    /**
+     * Static STT download (no service instance) so the one-shot can prepare the
+     * model with 24/7 capture off. Idempotent + offline after the one-time fetch.
+     * Downloads each loose file from the HuggingFace repo. No progress events
+     * here (the continuous path drives onModelStatus via the instance method).
+     */
+    private fun ensureSttModelStatic(ctx: android.content.Context, language: String? = null): File? {
+      val sm = modelFor(language)
+      val code = langCode(language)
+      val dir = File(ctx.filesDir, sm.dir)
+      if (sttModelComplete(dir)) return dir
+
+      Log.i("KillioSTT", "[$code] STT model incomplete (one-shot) — downloading from ${sm.hfRepo} (first run only)")
+      dir.mkdirs()
+      for (name in STT_FILES) {
+        val dest = File(dir, name)
+        if (dest.exists() && dest.length() > 0) continue
+        val url = "$HF_BASE/${sm.hfRepo}/resolve/$HF_REVISION/$name"
+        downloadTo(url, dest, null)
+      }
+      return if (sttModelComplete(dir)) dir else null
+    }
+
+    /** Static speaker-model download (single ONNX). Returns null on failure. */
+    private fun ensureSpkModelStatic(ctx: android.content.Context): File? {
+      val dest = File(File(ctx.filesDir, SPK_MODEL_DIR).apply { mkdirs() }, SPK_MODEL_FILE)
+      if (dest.exists() && dest.length() > 0) return dest
+      return try {
+        Log.i("KillioSTT", "Speaker model not found — downloading $SPK_MODEL_URL (first run only)")
+        downloadTo(SPK_MODEL_URL, dest, null)
+        if (dest.exists() && dest.length() > 0) dest else null
+      } catch (e: Exception) {
+        Log.w("KillioSTT", "Speaker model download failed: ${e.message}")
+        null
       }
     }
 
     /**
-     * One-shot push-to-talk recognition using the SAME offline Vosk engine as
-     * 24/7 capture. Blocking — call off the main thread.
-     *
-     * Flow: load (or reuse) the model → if continuous capture is running, PAUSE
-     * it so the mic is free → open a 16kHz mono PCM16 AudioRecord → feed frames
-     * to a fresh Recognizer until a FINAL result, OR ~1.5s of silence after
-     * speech began, OR a ~10s hard cap → return the parsed "text" → release the
-     * AudioRecord + recognizer → RESUME continuous capture. Returns "" if
-     * nothing was heard. Throws only on hard errors (mic init / model load).
+     * Download [url] → [dest] following redirects (HuggingFace + GitHub release
+     * assets 302 to a CDN). Optionally reports byte progress via [onProgress].
+     * Writes to a .part file then renames so a partial download is never seen as
+     * complete. Throws on hard failure.
+     */
+    private fun downloadTo(url: String, dest: File, onProgress: ((downloaded: Long, total: Long) -> Unit)?) {
+      val part = File(dest.parentFile, "${dest.name}.part")
+      if (part.exists()) part.delete()
+      var current = url
+      var redirects = 0
+      while (true) {
+        val conn = (URL(current).openConnection() as HttpURLConnection).apply {
+          connectTimeout = 20_000
+          readTimeout = 60_000
+          requestMethod = "GET"
+          instanceFollowRedirects = false
+          setRequestProperty("User-Agent", "KillioVault")
+        }
+        try {
+          conn.connect()
+          val rc = conn.responseCode
+          if (rc in 300..399) {
+            val loc = conn.getHeaderField("Location")
+              ?: throw java.io.IOException("Redirect with no Location ($rc) for $current")
+            if (++redirects > 5) throw java.io.IOException("Too many redirects for $url")
+            current = if (loc.startsWith("http")) loc else URL(URL(current), loc).toString()
+            continue
+          }
+          if (rc != HttpURLConnection.HTTP_OK) {
+            throw java.io.IOException("HTTP $rc fetching $current")
+          }
+          val total = conn.contentLength.toLong()
+          conn.inputStream.use { input ->
+            FileOutputStream(part).use { out ->
+              val buffer = ByteArray(64 * 1024)
+              var downloaded = 0L
+              while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                out.write(buffer, 0, n)
+                downloaded += n
+                onProgress?.invoke(downloaded, total)
+              }
+            }
+          }
+          break
+        } finally {
+          conn.disconnect()
+        }
+      }
+      if (dest.exists()) dest.delete()
+      if (!part.renameTo(dest)) {
+        part.copyTo(dest, overwrite = true)
+        part.delete()
+      }
+    }
+
+    /**
+     * Normalize PCM16 shorts → [-1,1] floats, which is what every sherpa-onnx
+     * acceptWaveform(FloatArray) expects.
+     */
+    private fun toFloat(buf: ShortArray, len: Int): FloatArray {
+      val out = FloatArray(len)
+      for (i in 0 until len) out[i] = buf[i] / 32768.0f
+      return out
+    }
+
+    /**
+     * Run one full speech segment ([samples], normalized floats) through a fresh
+     * recognizer stream and return the decoded text ("" if none). Stateless per
+     * call — uses createStream() + inputFinished() + decode-to-drain.
+     */
+    private fun decodeSegment(rec: OnlineRecognizer, samples: FloatArray): String {
+      val stream: OnlineStream = rec.createStream()
+      return try {
+        stream.acceptWaveform(samples, SAMPLE_RATE)
+        stream.inputFinished()
+        while (rec.isReady(stream)) rec.decode(stream)
+        rec.getResult(stream).text.trim()
+      } finally {
+        stream.release()
+      }
+    }
+
+    /** Speaker embedding for [samples]; null on any failure / not-ready. */
+    private fun embedSegment(ext: SpeakerEmbeddingExtractor, samples: FloatArray): FloatArray? {
+      return try {
+        val s = ext.createStream()
+        try {
+          s.acceptWaveform(samples, SAMPLE_RATE)
+          s.inputFinished()
+          if (!ext.isReady(s)) return null
+          ext.compute(s)
+        } finally {
+          s.release()
+        }
+      } catch (e: Exception) {
+        Log.w("KillioSTT", "embed failed: ${e.message}")
+        null
+      }
+    }
+
+    /**
+     * One-shot push-to-talk recognition using the SAME sherpa-onnx engine as
+     * 24/7 capture. Blocking — call off the main thread. (UNCHANGED contract:
+     * pauses the continuous loop for mic exclusivity, returns "" if nothing
+     * heard, throws only on hard errors.)
      */
     fun recognizeOnceBlocking(ctx: android.content.Context, language: String): String {
-      Log.i("KillioVosk", "[${langCode(language)}] one-shot recognizeOnce (lang=$language)")
-      val model = loadSharedModel(ctx, language)
+      Log.i("KillioSTT", "[${langCode(language)}] one-shot recognizeOnce (lang=$language)")
+      val rec = loadSharedRecognizer(ctx, language)
 
-      // Free the mic for the one-shot if the 24/7 loop is currently capturing.
       val svc = instance
       val didPause = if (svc != null) {
         paused = true
@@ -231,132 +393,72 @@ class VaultSpeechService : Service() {
         true
       } else false
 
-      var rec: Recognizer? = null
       var recorder: AudioRecord? = null
       try {
-        rec = Recognizer(model, SAMPLE_RATE.toFloat())
-
         val minBuf = AudioRecord.getMinBufferSize(
-          SAMPLE_RATE,
-          AudioFormat.CHANNEL_IN_MONO,
-          AudioFormat.ENCODING_PCM_16BIT,
+          SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
         )
         val frameSamples = maxOf(minBuf / 2, SAMPLE_RATE / 5)
         val bufSize = maxOf(minBuf, frameSamples * 2)
 
         recorder = AudioRecord(
-          MediaRecorder.AudioSource.MIC,
-          SAMPLE_RATE,
-          AudioFormat.CHANNEL_IN_MONO,
-          AudioFormat.ENCODING_PCM_16BIT,
-          bufSize,
+          MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
+          AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize,
         )
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
           throw java.io.IOException("AudioRecord failed to initialize (one-shot)")
         }
 
-        val buf = ShortArray(frameSamples)
-        recorder.startRecording()
+        // Stream straight into a single OnlineStream with endpointing — return
+        // as soon as sherpa detects an endpoint (end of utterance), with a crude
+        // amplitude silence-timeout and a hard cap as safety nets.
+        val stream = rec.createStream()
+        try {
+          val buf = ShortArray(frameSamples)
+          recorder.startRecording()
+          val startMs = System.currentTimeMillis()
+          val hardCapMs = 10_000L
+          val silenceTimeoutMs = 1_500L
+          var speechStarted = false
+          var lastVoiceMs = startMs
+          while (true) {
+            val read = recorder.read(buf, 0, frameSamples)
+            if (read <= 0) {
+              if (System.currentTimeMillis() - startMs > hardCapMs) break
+              continue
+            }
+            var peak = 0
+            for (i in 0 until read) {
+              val a = kotlin.math.abs(buf[i].toInt())
+              if (a > peak) peak = a
+            }
+            val now = System.currentTimeMillis()
+            if (peak > 700) { speechStarted = true; lastVoiceMs = now }
 
-        val startMs = System.currentTimeMillis()
-        val hardCapMs = 10_000L          // absolute cap
-        val silenceTimeoutMs = 1_500L    // silence AFTER speech began → stop
-        var speechStarted = false
-        var lastVoiceMs = startMs
-
-        while (true) {
-          val read = recorder.read(buf, 0, frameSamples)
-          if (read <= 0) {
-            if (System.currentTimeMillis() - startMs > hardCapMs) break
-            continue
+            stream.acceptWaveform(toFloat(buf, read), SAMPLE_RATE)
+            while (rec.isReady(stream)) rec.decode(stream)
+            if (rec.isEndpoint(stream)) {
+              val text = rec.getResult(stream).text.trim()
+              if (text.isNotEmpty()) return text
+              rec.reset(stream)
+            }
+            if (speechStarted && now - lastVoiceMs > silenceTimeoutMs) break
+            if (now - startMs > hardCapMs) break
           }
-          // Crude voice-activity gate: track peak amplitude to know when speech
-          // has begun and when it has gone quiet again.
-          var peak = 0
-          for (i in 0 until read) {
-            val a = kotlin.math.abs(buf[i].toInt())
-            if (a > peak) peak = a
-          }
-          val now = System.currentTimeMillis()
-          val isVoice = peak > 700 // ~2% of full-scale 16-bit
-          if (isVoice) {
-            speechStarted = true
-            lastVoiceMs = now
-          }
-
-          if (rec.acceptWaveForm(buf, read)) {
-            // Utterance boundary → final result. Take it if it has text.
-            val text = parseText(rec.result)
-            if (text.isNotEmpty()) return text
-            // Empty boundary but speech happened → fall through to silence/cap.
-          }
-
-          if (speechStarted && now - lastVoiceMs > silenceTimeoutMs) break
-          if (now - startMs > hardCapMs) break
+          stream.inputFinished()
+          while (rec.isReady(stream)) rec.decode(stream)
+          return rec.getResult(stream).text.trim()
+        } finally {
+          stream.release()
         }
-        // No mid-stream final → flush whatever was buffered.
-        return parseText(rec.finalResult)
       } finally {
         try { recorder?.stop() } catch (_: Exception) {}
         try { recorder?.release() } catch (_: Exception) {}
-        try { rec?.close() } catch (_: Exception) {}
         if (didPause) {
           paused = false
           instance?.resumeContinuous()
         }
       }
-    }
-
-    /** Parse the "text" field out of a Vosk result JSON ("" if none). */
-    private fun parseText(json: String?): String {
-      if (json.isNullOrBlank()) return ""
-      return try {
-        JSONObject(json).optString("text").trim()
-      } catch (_: Exception) {
-        ""
-      }
-    }
-
-    /**
-     * Vosk needs the directory that directly contains the model files (am/, conf/,
-     * graph/, ivector/ …). The zip unpacks into a versioned subfolder
-     * (vosk-model-small-es-0.42/), so resolve to whichever dir holds conf/mfcc.conf.
-     */
-    private fun modelRoot(base: File): File? {
-      if (!base.isDirectory) return null
-      if (File(base, "conf/mfcc.conf").exists() || File(base, "am/final.mdl").exists()) {
-        return base
-      }
-      base.listFiles()?.forEach { child ->
-        if (child.isDirectory &&
-          (File(child, "conf/mfcc.conf").exists() || File(child, "am/final.mdl").exists())
-        ) {
-          return child
-        }
-      }
-      return null
-    }
-
-    /**
-     * The speaker model zip unpacks into a versioned subfolder
-     * (vosk-model-spk-0.4/) whose loadable dir contains `final.ext` (the
-     * x-vector extractor) plus mean/transform files — it has no conf/mfcc.conf,
-     * so it needs its own marker-file resolver.
-     */
-    private fun spkModelRoot(base: File): File? {
-      if (!base.isDirectory) return null
-      val hasMarker = { d: File -> File(d, "final.ext").exists() || File(d, "mean").exists() }
-      if (hasMarker(base)) return base
-      val children = base.listFiles()?.filter { it.isDirectory } ?: emptyList()
-      children.forEach { if (hasMarker(it)) return it }
-      // Fallback: the spk-0.4 zip may use different marker names. If there's
-      // exactly one subdirectory, assume it's the model root. Log the layout
-      // so we can see the real structure if this still misses.
-      if (children.size == 1) return children[0]
-      Log.w("KillioVosk", "spkModelRoot miss — base=${base.list()?.joinToString()} children=${children.joinToString { it.name + ":" + (it.list()?.take(6)?.joinToString("|") ?: "") }}")
-      // Last resort: if base itself holds files (flat extract), use base.
-      if ((base.listFiles()?.any { it.isFile } == true)) return base
-      return null
     }
   }
 
@@ -364,19 +466,16 @@ class VaultSpeechService : Service() {
   private var worker: Thread? = null
   @Volatile private var running = false
 
-  /** Recognition language code (es/en) for THIS continuous capture session,
-   *  parsed from the "language" intent extra. Drives which model dir/URL the
-   *  worker loop loads. Defaults to the registry default until onStartCommand. */
+  /** Recognition language code (es/en) for THIS session. */
   @Volatile private var langCode: String = DEFAULT_LANG
 
-  @Volatile private var model: Model? = null
-  @Volatile private var spkModel: SpeakerModel? = null
-  @Volatile private var recognizer: Recognizer? = null
+  @Volatile private var recognizer: OnlineRecognizer? = null
+  @Volatile private var vad: Vad? = null
+  @Volatile private var spk: SpeakerEmbeddingExtractor? = null
   @Volatile private var audioRecord: AudioRecord? = null
 
-  // Signals the recognition loop has released the mic (paused) so a one-shot can
-  // safely open its own AudioRecord. Toggled true at the top of the pause branch.
   @Volatile private var continuousIdle = false
+  private val pauseLock = Any()
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -385,11 +484,6 @@ class VaultSpeechService : Service() {
     instance = this
   }
 
-  /**
-   * Block (up to [timeoutMs]) until the continuous loop has released its
-   * AudioRecord after `paused` was set. Called by the one-shot before it opens
-   * its own recorder so the two never contend for the mic.
-   */
   fun awaitContinuousIdle(timeoutMs: Long) {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (!continuousIdle && System.currentTimeMillis() < deadline) {
@@ -397,23 +491,14 @@ class VaultSpeechService : Service() {
     }
   }
 
-  /** Wake the paused continuous loop so it re-opens the mic and resumes. */
   fun resumeContinuous() {
     synchronized(pauseLock) { (pauseLock as Object).notifyAll() }
   }
 
-  private val pauseLock = Any()
-
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
-    // Resolve the recognition language (es/en) from the passed locale extra
-    // (e.g. "es-ES"→es, "en-US"→en) so the worker loads the matching model.
     langCode = Companion.langCode(intent?.getStringExtra("language"))
 
-    // Starting a microphone-typed foreground service without RECORD_AUDIO granted
-    // throws SecurityException and crashes the whole app (Android 14+). On a fresh
-    // install the runtime permission isn't granted yet, so bail gracefully — JS
-    // re-starts capture once the user grants the mic. (KEPT from prior impl.)
     if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
         != PackageManager.PERMISSION_GRANTED) {
       stopSelf()
@@ -425,18 +510,11 @@ class VaultSpeechService : Service() {
 
     if (!running) {
       running = true
-      // Model load + (first-run) download + the AudioRecord read loop all run off
-      // the main thread. Vosk decoding is CPU-bound and the download can block.
       worker = thread(start = true) { recognitionLoop() }
     }
     return START_STICKY
   }
 
-  /**
-   * PARTIAL_WAKE_LOCK keeps the CPU alive so the AudioRecord→Vosk loop keeps
-   * decoding with the screen off. Without it Doze suspends the worker within
-   * seconds of the display turning off and 24/7 capture stops. (KEPT.)
-   */
   private fun acquireWakeLock() {
     if (wakeLock?.isHeld == true) return
     val pm = getSystemService(PowerManager::class.java)
@@ -453,15 +531,7 @@ class VaultSpeechService : Service() {
     wakeLock = null
   }
 
-  /**
-   * Emit a model lifecycle update to JS via the shared emitter. Mirrors the
-   * onTranscript/onError contract — a single `onModelStatus` event carrying a
-   * `state` string plus optional progress fields. States:
-   *   downloading { progress:Int 0..100, bytes:Long, total:Long }
-   *   preparing   (indeterminate — unzip in progress)
-   *   ready       (model present + recognizer created)
-   *   error       { message:String }
-   */
+  /** Emit a model lifecycle update to JS (UNCHANGED contract). */
   private fun emitModelStatus(state: String, progress: Int = -1, bytes: Long = -1, total: Long = -1, message: String? = null) {
     emitter?.invoke("onModelStatus", Bundle().apply {
       putString("state", state)
@@ -472,73 +542,69 @@ class VaultSpeechService : Service() {
     })
   }
 
-  /** Worker body: ensure model → open AudioRecord → stream PCM16 into Vosk. */
+  /**
+   * Worker body: ensure + load STT model (drives onModelStatus) → load Silero
+   * VAD → load speaker model (best-effort) → open AudioRecord → stream PCM into
+   * the VAD, decode each finished speech segment + compute its speaker embedding.
+   */
   private fun recognitionLoop() {
-    // Reuse the shared model loader (download+unzip on first run, then cached).
-    // The same Model instance is shared with the one-shot path so the ~39MB
-    // model is opened exactly once. ensureModel() also drives the onModelStatus
-    // download/prepare banner for the continuous path.
-    val m: Model = try {
-      // Drive the progress banner through the instance ensureModel() first so
-      // the UI shows download/prepare; then hand the prepared dir to the shared
-      // loader (which no-ops the network call since the model is now on disk).
-      ensureModel()
-      loadSharedModel(this, langCode)
+    val rec: OnlineRecognizer = try {
+      ensureSttModelWithProgress()        // download bar
+      loadSharedRecognizer(this, langCode) // shared, cached
     } catch (e: Exception) {
-      emitError("Vosk model unavailable (offline first run?): ${e.message}")
-      stopSelf()
-      return
-    }
-    model = m
-    Log.i("KillioVosk", "[$langCode] Model loaded (shared)")
-
-    val rec: Recognizer = try {
-      Recognizer(m, SAMPLE_RATE.toFloat())
-    } catch (e: Exception) {
-      emitError("Failed to create Vosk recognizer: ${e.message}")
+      emitError("Sherpa STT model unavailable (offline first run?): ${e.message}")
       stopSelf()
       return
     }
     recognizer = rec
+    Log.i("KillioSTT", "[$langCode] Recognizer loaded (sherpa-onnx, shared)")
 
-    // Attach the speaker model (best-effort). When present, every final result
-    // gains a 128-dim "spk" x-vector we forward to JS for owner voice-ID. If it
-    // can't be downloaded/loaded (e.g. offline first run with no spk zip yet),
-    // STT keeps working — we simply emit transcripts without an spk vector.
-    try {
-      val spkRoot = ensureSpkModel()
-      if (spkRoot != null) {
-        val sm = SpeakerModel(spkRoot.absolutePath)
-        spkModel = sm
-        rec.setSpeakerModel(sm)
-        Log.i("KillioVosk", "Speaker model loaded from ${spkRoot.absolutePath}")
-      } else {
-        Log.w("KillioVosk", "Speaker model unavailable — continuing without voice-ID")
-      }
+    // Silero VAD — gates decoding. Required for the streaming loop; if it can't
+    // be prepared we fail the session (the whole point is VAD-gated decode).
+    val v: Vad = try {
+      val vadFile = ensureVadModelWithProgress()
+        ?: throw java.io.IOException("Silero VAD model could not be prepared")
+      Vad(
+        null,
+        VadModelConfig(
+          sileroVadModelConfig = SileroVadModelConfig(
+            model = vadFile.absolutePath,
+            threshold = 0.5f,
+            minSilenceDuration = 0.25f,
+            minSpeechDuration = 0.25f,
+            windowSize = 512,
+            maxSpeechDuration = 8.0f,
+          ),
+          sampleRate = SAMPLE_RATE,
+          numThreads = 1,
+          provider = "cpu",
+        ),
+      )
     } catch (e: Exception) {
-      Log.w("KillioVosk", "Speaker model load failed (continuing without voice-ID): ${e.message}")
+      emitError("Silero VAD unavailable (offline first run?): ${e.message}")
+      stopSelf()
+      return
     }
+    vad = v
+
+    // Speaker-embedding model (best-effort voice-ID). STT keeps working without.
+    spk = loadSharedSpk(this)
+    if (spk == null) Log.w("KillioSTT", "Speaker model unavailable — continuing without voice-ID")
 
     val minBuf = AudioRecord.getMinBufferSize(
-      SAMPLE_RATE,
-      AudioFormat.CHANNEL_IN_MONO,
-      AudioFormat.ENCODING_PCM_16BIT,
+      SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
     )
-    // ~0.2s of 16kHz mono PCM16 per read, but never below the device minimum.
-    val frameSamples = maxOf(minBuf / 2, SAMPLE_RATE / 5)
+    // Silero VAD wants 512-sample (32ms @16k) windows. Read that many shorts per
+    // pull (but never below the device minimum buffer).
+    val frameSamples = maxOf(minBuf / 2, 512)
     val bufSize = maxOf(minBuf, frameSamples * 2)
     val buf = ShortArray(frameSamples)
 
-    // Opens + starts a fresh AudioRecord. Used on first entry and again every
-    // time the loop RESUMES after a one-shot released the mic.
     fun openRecorder(): AudioRecord? {
       val r = try {
         AudioRecord(
-          MediaRecorder.AudioSource.MIC,
-          SAMPLE_RATE,
-          AudioFormat.CHANNEL_IN_MONO,
-          AudioFormat.ENCODING_PCM_16BIT,
-          bufSize,
+          MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
+          AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize,
         )
       } catch (e: SecurityException) {
         emitError("Microphone permission denied")
@@ -555,20 +621,16 @@ class VaultSpeechService : Service() {
     }
 
     var recorder = openRecorder() ?: run { stopSelf(); return }
-    // Model present + recognizer created + mic streaming → tell the UI the
-    // download/prepare phase is over so it can hide any progress banner.
     emitModelStatus("ready")
-    Log.i("KillioVosk", "Recognizer ready, AudioRecord started (16kHz) — listening loop running")
+    Log.i("KillioSTT", "[$langCode] sherpa-onnx ready, AudioRecord started (16kHz) — VAD-gated loop running")
     try {
       while (running) {
-        // ── One-shot coordination ──────────────────────────────────────────
-        // A push-to-talk one-shot set `paused`: release OUR AudioRecord so it
-        // can own the mic, flag continuousIdle, then block on pauseLock until
-        // resumeContinuous() wakes us. The model/recognizer/FGS stay alive.
+        // ── One-shot coordination (UNCHANGED) ────────────────────────────────
         if (paused) {
           try { recorder.stop() } catch (_: Exception) {}
           try { recorder.release() } catch (_: Exception) {}
           audioRecord = null
+          v.reset()
           continuousIdle = true
           synchronized(pauseLock) {
             while (paused && running) {
@@ -580,20 +642,32 @@ class VaultSpeechService : Service() {
           val reopened = openRecorder()
           if (reopened == null) { stopSelf(); break }
           recorder = reopened
-          Log.i("KillioVosk", "Continuous capture resumed after one-shot")
+          Log.i("KillioSTT", "Continuous capture resumed after one-shot")
           continue
         }
+
         val read = recorder.read(buf, 0, frameSamples)
         if (read <= 0) continue
-        // acceptWaveForm returns true at an utterance boundary → final result.
-        if (rec.acceptWaveForm(buf, read)) {
-          emitFinal(rec.result)
+
+        // Feed normalized floats to Silero VAD. When a speech segment finishes,
+        // VAD.front() holds the full segment samples — decode + embed it.
+        v.acceptWaveform(toFloat(buf, read))
+        while (!v.empty()) {
+          val segment = v.front()
+          v.pop()
+          val samples = segment.samples
+          if (samples.isEmpty()) continue
+          val text = try {
+            decodeSegment(rec, samples)
+          } catch (e: Exception) {
+            Log.w("KillioSTT", "decode failed: ${e.message}")
+            ""
+          }
+          if (text.isEmpty()) continue
+          val embedding = spk?.let { embedSegment(it, samples) }
+          emitTranscript(text, embedding)
         }
-        // (Partial results are intentionally not emitted — the diary only needs
-        // finals, and finals keep the JS contract + wake-word scan simple.)
       }
-      // Flush any tail utterance still buffered when stop() is requested.
-      emitFinal(rec.finalResult)
     } catch (e: Exception) {
       if (running) emitError(e.message ?: "recognition error")
     } finally {
@@ -606,212 +680,84 @@ class VaultSpeechService : Service() {
   }
 
   /**
-   * Parse Vosk's result JSON and emit it (if non-empty) to JS. With a speaker
-   * model attached the JSON also carries `"spk": [..128 floats..]` — the
-   * utterance x-vector. We JSON-encode that array back into a string field
-   * `spk` on the Bundle (keeps the Bundle simple; JS parses it) so the capture
-   * layer can compare it to the enrolled owner voiceprint.
+   * Emit a finalized segment to JS (UNCHANGED contract). When a speaker
+   * embedding is present, forward it as the "spk" field — a JSON-array STRING,
+   * exactly the shape the Vosk x-vector used — so KillioSpeech.ts parses it and
+   * voiceprint.ts compares it (now dim-agnostic; CAM++ emits 192 dims).
    */
-  private fun emitFinal(json: String?) {
-    if (json.isNullOrBlank()) return
-    val obj = try {
-      JSONObject(json)
-    } catch (_: Exception) {
-      null
-    } ?: return
-    val text = obj.optString("text").trim()
-    if (text.isEmpty()) return
-
-    Log.i("KillioVosk", "TRANSCRIPT: $text")
+  private fun emitTranscript(text: String, embedding: FloatArray?) {
+    Log.i("KillioSTT", "TRANSCRIPT: $text")
     emitter?.invoke("onTranscript", Bundle().apply {
       putString("text", text)
       putDouble("ts", System.currentTimeMillis().toDouble())
-      // Forward the speaker x-vector as a JSON array string when present.
-      val spk: JSONArray? = obj.optJSONArray("spk")
-      if (spk != null && spk.length() > 0) {
-        putString("spk", spk.toString())
+      if (embedding != null && embedding.isNotEmpty()) {
+        val arr = JSONArray()
+        for (f in embedding) arr.put(f.toDouble())
+        putString("spk", arr.toString())
       }
     })
   }
 
-  /**
-   * Return the loadable model directory, downloading + unzipping it on first run.
-   * Idempotent: if a valid model already exists on disk we skip the network call
-   * entirely (the offline guarantee). Runs on the worker thread.
-   */
-  private fun ensureModel(): File? {
-    val lm = modelFor(langCode)
-    val base = File(filesDir, lm.dir)
-    modelRoot(base)?.let {
-      // Cached path: no download bar — the model is already on disk. The UI
-      // will get the definitive "ready" once the recognizer is up.
-      Log.i("KillioVosk", "[$langCode] Model already present (offline) at ${it.absolutePath}")
+  /** STT model download with onModelStatus progress (continuous path). */
+  private fun ensureSttModelWithProgress(): File? {
+    val sm = modelFor(langCode)
+    val dir = File(filesDir, sm.dir)
+    if (sttModelComplete(dir)) {
+      Log.i("KillioSTT", "[$langCode] STT model already present (offline) at ${dir.absolutePath}")
       emitModelStatus("ready")
-      return it
+      return dir
     }
 
-    // First run (or a previous partial download): (re)fetch the zip.
-    Log.i("KillioVosk", "[$langCode] Model not found — downloading ${lm.url} (first run only)")
-    base.deleteRecursively()
-    base.mkdirs()
-
-    val tmpZip = File(filesDir, "${lm.dir}.download.zip")
-    if (tmpZip.exists()) tmpZip.delete()
-
-    val conn = (URL(lm.url).openConnection() as HttpURLConnection).apply {
-      connectTimeout = 20_000
-      readTimeout = 60_000
-      requestMethod = "GET"
-    }
-    try {
-      conn.connect()
-      if (conn.responseCode != HttpURLConnection.HTTP_OK) {
-        throw java.io.IOException("HTTP ${conn.responseCode} fetching model")
-      }
-      val total = conn.contentLength.toLong() // -1 if the server omits Content-Length
-      // Manual read loop (replaces input.copyTo) so we can track bytesRead vs
-      // total and emit onModelStatus progress. Throttled to ~every 1% OR 500ms
-      // so we don't flood the JS bridge during the ~39MB fetch.
-      emitModelStatus("downloading", progress = 0, bytes = 0, total = if (total > 0) total else -1)
-      conn.inputStream.use { input ->
-        FileOutputStream(tmpZip).use { out ->
-          val buffer = ByteArray(64 * 1024)
-          var downloaded = 0L
-          var lastPct = -1
-          var lastEmit = 0L
-          while (true) {
-            val n = input.read(buffer)
-            if (n < 0) break
-            out.write(buffer, 0, n)
-            downloaded += n
-            val pct = if (total > 0) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
-            val now = System.currentTimeMillis()
-            if ((pct >= 0 && pct != lastPct) || now - lastEmit >= 500L) {
-              lastPct = pct
-              lastEmit = now
-              emitModelStatus("downloading", progress = pct, bytes = downloaded, total = if (total > 0) total else -1)
-            }
-          }
-          emitModelStatus("downloading", progress = 100, bytes = downloaded, total = if (total > 0) total else downloaded)
+    Log.i("KillioSTT", "[$langCode] STT model not found — downloading from ${sm.hfRepo} (first run only)")
+    dir.mkdirs()
+    // The encoder dominates (~70–155MB); weight progress by file index so the
+    // bar advances smoothly across the four files.
+    val n = STT_FILES.size
+    emitModelStatus("downloading", progress = 0, bytes = 0, total = -1)
+    STT_FILES.forEachIndexed { idx, name ->
+      val dest = File(dir, name)
+      if (dest.exists() && dest.length() > 0) return@forEachIndexed
+      val url = "$HF_BASE/${sm.hfRepo}/resolve/$HF_REVISION/$name"
+      var lastEmit = 0L
+      downloadTo(url, dest) { downloaded, total ->
+        val now = System.currentTimeMillis()
+        if (now - lastEmit >= 500L) {
+          lastEmit = now
+          val filePct = if (total > 0) (downloaded.toDouble() / total) else 0.0
+          val pct = (((idx + filePct) / n) * 100).toInt().coerceIn(0, 100)
+          emitModelStatus("downloading", progress = pct, bytes = downloaded, total = if (total > 0) total else -1)
         }
       }
-    } finally {
-      conn.disconnect()
     }
-
-    Log.i("KillioVosk", "Download done (${tmpZip.length()} bytes) — unzipping")
-    // Unzip is non-trivial for a ~39MB archive — flag it as an indeterminate
-    // "preparing" phase so the banner switches off the percentage bar.
-    emitModelStatus("preparing")
-    unzip(tmpZip, base)
-    tmpZip.delete()
-    Log.i("KillioVosk", "Model unzipped + ready")
-
-    return modelRoot(base)
+    emitModelStatus("preparing") // recognizer construction is the "prepare" step
+    return if (sttModelComplete(dir)) dir else null
   }
 
-  /**
-   * Speaker model counterpart to ensureModel(). Idempotent + offline after the
-   * one-time ~13MB fetch. Reuses the same download bar (onModelStatus) so the
-   * UI shows a single combined "preparing voice model" experience. Returns null
-   * (rather than throwing) on failure so the caller can degrade to STT-only.
-   */
-  private fun ensureSpkModel(): File? {
-    val base = File(filesDir, SPK_MODEL_DIR)
-    spkModelRoot(base)?.let {
-      Log.i("KillioVosk", "Speaker model already present (offline) at ${it.absolutePath}")
-      return it
-    }
-
-    Log.i("KillioVosk", "Speaker model not found — downloading $SPK_MODEL_URL (first run only)")
-    base.deleteRecursively()
-    base.mkdirs()
-
-    val tmpZip = File(filesDir, "$SPK_MODEL_DIR.download.zip")
-    if (tmpZip.exists()) tmpZip.delete()
-
-    val conn = (URL(SPK_MODEL_URL).openConnection() as HttpURLConnection).apply {
-      connectTimeout = 20_000
-      readTimeout = 60_000
-      requestMethod = "GET"
-    }
-    try {
-      conn.connect()
-      if (conn.responseCode != HttpURLConnection.HTTP_OK) {
-        throw java.io.IOException("HTTP ${conn.responseCode} fetching speaker model")
-      }
-      val total = conn.contentLength.toLong()
-      emitModelStatus("downloading", progress = 0, bytes = 0, total = if (total > 0) total else -1)
-      conn.inputStream.use { input ->
-        FileOutputStream(tmpZip).use { out ->
-          val buffer = ByteArray(64 * 1024)
-          var downloaded = 0L
-          var lastPct = -1
-          var lastEmit = 0L
-          while (true) {
-            val n = input.read(buffer)
-            if (n < 0) break
-            out.write(buffer, 0, n)
-            downloaded += n
-            val pct = if (total > 0) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
-            val now = System.currentTimeMillis()
-            if ((pct >= 0 && pct != lastPct) || now - lastEmit >= 500L) {
-              lastPct = pct
-              lastEmit = now
-              emitModelStatus("downloading", progress = pct, bytes = downloaded, total = if (total > 0) total else -1)
-            }
-          }
+  /** Silero VAD download with progress. */
+  private fun ensureVadModelWithProgress(): File? {
+    val dest = File(File(filesDir, VAD_DIR).apply { mkdirs() }, VAD_FILE)
+    if (dest.exists() && dest.length() > 0) return dest
+    Log.i("KillioSTT", "Silero VAD not found — downloading $VAD_URL (first run only)")
+    return try {
+      var lastEmit = 0L
+      downloadToPub(VAD_URL, dest) { downloaded, total ->
+        val now = System.currentTimeMillis()
+        if (now - lastEmit >= 500L) {
+          lastEmit = now
+          val pct = if (total > 0) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
+          emitModelStatus("downloading", progress = pct, bytes = downloaded, total = if (total > 0) total else -1)
         }
       }
+      if (dest.exists() && dest.length() > 0) dest else null
     } catch (e: Exception) {
-      // Voice-ID is opt-in/best-effort — don't fail the whole STT session.
-      Log.w("KillioVosk", "Speaker model download failed: ${e.message}")
-      return null
-    } finally {
-      conn.disconnect()
-    }
-
-    Log.i("KillioVosk", "Speaker model download done (${tmpZip.length()} bytes) — unzipping")
-    emitModelStatus("preparing")
-    try {
-      unzip(tmpZip, base)
-    } catch (e: Exception) {
-      Log.w("KillioVosk", "Speaker model unzip failed: ${e.message}")
-      return null
-    } finally {
-      tmpZip.delete()
-    }
-    Log.i("KillioVosk", "Speaker model unzipped + ready")
-    return spkModelRoot(base)
-  }
-
-  /** Plain java.util.zip unzip (no extra deps), guarded against path traversal. */
-  private fun unzip(zip: File, dest: File) {
-    ZipInputStream(zip.inputStream().buffered()).use { zis ->
-      var entry = zis.nextEntry
-      val destPath = dest.canonicalPath
-      while (entry != null) {
-        val outFile = File(dest, entry.name)
-        if (!outFile.canonicalPath.startsWith(destPath)) {
-          throw java.io.IOException("Zip entry escapes target dir: ${entry.name}")
-        }
-        if (entry.isDirectory) {
-          outFile.mkdirs()
-        } else {
-          outFile.parentFile?.mkdirs()
-          FileOutputStream(outFile).use { out -> zis.copyTo(out, 64 * 1024) }
-        }
-        zis.closeEntry()
-        entry = zis.nextEntry
-      }
+      Log.w("KillioSTT", "Silero VAD download failed: ${e.message}")
+      null
     }
   }
 
   private fun emitError(message: String) {
-    Log.e("KillioVosk", "ERROR: $message")
+    Log.e("KillioSTT", "ERROR: $message")
     emitter?.invoke("onError", Bundle().apply { putString("message", message) })
-    // Also surface as a model-status error so a progress banner watching
-    // onModelStatus can replace the bar with the failure message.
     emitModelStatus("error", message = message)
   }
 
@@ -837,23 +783,19 @@ class VaultSpeechService : Service() {
 
   override fun onDestroy() {
     running = false
-    // If the loop is parked in the paused-wait, wake it so it can observe
-    // running=false and exit instead of blocking the worker.join below.
     synchronized(pauseLock) { (pauseLock as Object).notifyAll() }
     releaseWakeLock()
-    // Stop the worker loop, then release native resources it owns.
     worker?.join(800)
     worker = null
     try { audioRecord?.let { if (it.state == AudioRecord.STATE_INITIALIZED) it.release() } } catch (_: Exception) {}
     audioRecord = null
-    try { recognizer?.close() } catch (_: Exception) {}
+    // Do NOT release the shared recognizer / speaker extractor — they're the
+    // process-lifetime shared instances reused by the one-shot path. The VAD is
+    // per-session, so release it.
+    try { vad?.release() } catch (_: Exception) {}
+    vad = null
     recognizer = null
-    // NOTE: do NOT close the model here — it's the shared static instance reused
-    // by the one-shot path (loadSharedModel). Just drop our reference. The
-    // process-lifetime model is intentionally kept resident.
-    model = null
-    try { spkModel?.close() } catch (_: Exception) {}
-    spkModel = null
+    spk = null
     if (instance === this) instance = null
     super.onDestroy()
   }

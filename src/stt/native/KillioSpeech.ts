@@ -18,10 +18,15 @@ export interface TranscriptEvent {
   /** UTC epoch ms (global time unit). */
   ts: number;
   /**
-   * Speaker x-vector (128-dim) for this utterance, present only when the Vosk
-   * speaker model is loaded. Used for owner voice-ID (see src/voiceid). The
-   * native side forwards it as a JSON-array string; onTranscript() parses it
-   * back into a number[] before handing it to JS consumers.
+   * Speaker embedding for this utterance, present only when the speaker model is
+   * loaded. Used for owner voice-ID (see src/voiceid). The native side forwards
+   * it as a JSON-array string; onTranscript() parses it back into a number[]
+   * before handing it to JS consumers.
+   *
+   * NOTE: with the sherpa-onnx migration this is now the 3D-Speaker CAM++
+   * embedding (192-dim), not the old Vosk 128-dim x-vector. voiceprint.ts is
+   * dim-agnostic (it stores/compares whatever dim arrives), so consumers don't
+   * care about the exact length.
    */
   spk?: number[];
 }
@@ -33,9 +38,10 @@ export interface SpeechStartOptions {
 }
 
 /**
- * Offline Vosk model lifecycle, emitted on first start while the ~39MB Spanish
- * model is fetched + unzipped. The UI shows a progress banner for
- * 'downloading'/'preparing' and hides it on 'ready'. 'error' carries a message.
+ * Offline sherpa-onnx model lifecycle, emitted on first start while the
+ * streaming Zipformer (per-language), Silero VAD, and speaker-embedding models
+ * are fetched. The UI shows a progress banner for 'downloading'/'preparing' and
+ * hides it on 'ready'. 'error' carries a message.
  */
 export interface ModelStatusEvent {
   state: 'downloading' | 'preparing' | 'ready' | 'error';

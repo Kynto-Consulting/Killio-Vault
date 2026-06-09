@@ -14,17 +14,19 @@ import expo.modules.kotlin.records.Record
 import kotlin.concurrent.thread
 
 /**
- * Free, credential-less, fully offline on-device STT powered by Vosk, run in a
- * foreground service so the diary keeps transcribing with the screen locked.
- * Both the 24/7 capture (start/stop) and the push-to-talk one-shot
- * (recognizeOnce) use the SAME Vosk engine (VaultSpeechService) — never Android's
- * SpeechRecognizer, whose offline Soda model returned empty/NO_SPEECH.
+ * Free, credential-less, fully offline on-device STT powered by Sherpa-ONNX
+ * (k2-fsa, Apache-2.0 — no API key, no usage limits), run in a foreground
+ * service so the diary keeps transcribing with the screen locked. Both the 24/7
+ * capture (start/stop) and the push-to-talk one-shot (recognizeOnce) use the
+ * SAME sherpa-onnx engine (VaultSpeechService) — never Android's SpeechRecognizer,
+ * whose offline Soda model returned empty/NO_SPEECH. (Migrated from Vosk; the JS
+ * event contract is unchanged.)
  *
  * JS API (src/stt/native/KillioSpeech.ts):
  *   isRecognitionAvailable() -> Boolean
  *   start({ language, notificationText, preferOffline }) -> Promise
  *   stop() -> Promise
- *   recognizeOnce(language) -> Promise<String>   // offline Vosk one-shot
+ *   recognizeOnce(language) -> Promise<String>   // offline sherpa-onnx one-shot
  *   events: onTranscript { text:String, ts:Double }, onError { message:String }
  */
 class SpeechStartOptions : Record {
@@ -47,9 +49,9 @@ class KillioSpeechModule : Module() {
       VaultSpeechService.emitter = null
     }
 
-    // Vosk runs fully on-device; recognition is "available" as long as we have a
-    // context (the model is fetched on first start()). We OR in an explicit
-    // model-present check for clarity, but Vosk needs no system recognizer.
+    // sherpa-onnx runs fully on-device; recognition is "available" as long as we
+    // have a context (the model is fetched on first start()). We OR in an explicit
+    // model-present check for clarity, but sherpa-onnx needs no system recognizer.
     Function("isRecognitionAvailable") {
       val ctx: Context? = appContext.reactContext
       ctx != null && (VaultSpeechService.isModelPresent(ctx) || true)
