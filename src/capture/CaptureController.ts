@@ -344,29 +344,38 @@ export class CaptureController {
     const text = e.text?.trim();
     if (!text) return;
 
-    // Offline speaker verification. When an owner voiceprint is enrolled AND
-    // this utterance carries an x-vector, decide whether it's the owner.
+    // Offline speaker verification — wrapped so a voiceprint/x-vector error can
+    // NEVER block the diary write below. Defaults to owner=true on any failure.
     //   - voiceprint enrolled + spk present → isOwner = cosine match
-    //   - voiceprint enrolled + spk missing → isOwner = false (can't verify →
-    //     don't let an unverifiable utterance wake the assistant)
+    //   - voiceprint enrolled + spk missing → isOwner = false (can't verify)
     //   - no voiceprint enrolled            → isOwner = true (open, opt-in)
     const enrolled = !!this.voiceprint;
     let isOwner = true;
-    if (enrolled) {
-      isOwner =
-        Array.isArray(e.spk) && e.spk.length > 0
-          ? matchesVoiceprint(e.spk, this.voiceprint!, DEFAULT_MATCH_THRESHOLD)
-          : false;
+    try {
+      if (enrolled) {
+        isOwner =
+          Array.isArray(e.spk) && e.spk.length > 0
+            ? matchesVoiceprint(e.spk, this.voiceprint!, DEFAULT_MATCH_THRESHOLD)
+            : false;
+      }
+    } catch (err) {
+      console.warn('[KillioVoiceId] verify failed, treating as owner:', String(err));
+      isOwner = true;
     }
 
-    // Diary captures ALL speech regardless of speaker. We tag non-owner
-    // segments via the source suffix so the diary can optionally distinguish
-    // them, without changing the outbox schema or upload path.
-    enqueueSegment({
-      text,
-      ts: e.ts,
-      source: enrolled && !isOwner ? 'android_speech:guest' : 'android_speech',
-    });
+    // Diary captures ALL speech regardless of speaker. This is the CRITICAL
+    // local persistence (later uploaded) — it must run even if SQLite or the
+    // wake/voice logic throws, so it's isolated in its own try/catch and runs
+    // BEFORE anything that could fail.
+    try {
+      enqueueSegment({
+        text,
+        ts: e.ts,
+        source: enrolled && !isOwner ? 'android_speech:guest' : 'android_speech',
+      });
+    } catch (err) {
+      console.warn('[KillioDiary] enqueueSegment failed:', String(err));
+    }
 
     // Wake detection (JS, over the free local transcripts).
     const names = listAgents()
