@@ -214,6 +214,19 @@ class VaultSpeechService : Service() {
     @Volatile private var sharedKws: KeywordSpotter? = null
     @Volatile private var sharedKwsTried = false
     private val kwsLock = Any()
+
+    // ── Wake-word detection tuning (easy to adjust, documented) ──────────────
+    // sherpa keywords line is "<tokens> :<score> #<threshold> @<label>".
+    //   score     — boost applied to the keyword's path in the beam. HIGHER =
+    //               easier to surface a near-match (we use 2.0; bumped from the
+    //               1.0 sherpa default so accented "hey killio" survives).
+    //   threshold — activation floor 0..1. LOWER = fires more readily (more
+    //               sensitive, slightly more false wakes). Bumped DOWN from the
+    //               0.25 sherpa default to 0.15 because clear "hey killio" was
+    //               not crossing 0.25 on-device. Raise toward 0.25–0.30 if you
+    //               see false wakes; lower toward 0.10 if real wakes are missed.
+    const val KWS_SCORE = 2.0f
+    const val KWS_THRESHOLD = 0.15f
     /** Cached tokens.txt vocab (token → id) for on-device BPE tokenization. */
     @Volatile private var kwsTokenVocab: Map<String, Int>? = null
 
@@ -503,6 +516,7 @@ class VaultSpeechService : Service() {
     private fun buildKeywordsFile(dir: File, phrases: List<String>): Pair<String, List<String>> {
       val sb = StringBuilder()
       val kept = ArrayList<String>()
+      val dropped = ArrayList<String>()
       val seen = HashSet<String>()
       for (raw in phrases) {
         val phrase = raw.trim()
@@ -513,19 +527,27 @@ class VaultSpeechService : Service() {
         val tokens = tokensForPhrase(dir, phrase)
         if (tokens == null) {
           Log.w("KillioKWS", "no in-vocab phonetic variant for '$phrase' — agent not wakeable")
+          dropped.add(phrase)
           continue
         }
-        // score 2.0 (easier to survive beam), threshold 0.25 (sherpa default).
+        // score/threshold are tunable constants (see KWS_SCORE / KWS_THRESHOLD).
         // @label preserves the original text as the reported keyword — BUT sherpa
         // splits the @-annotation on whitespace and tries to ENCODE any extra word
         // as a token (e.g. "@hey killio" → it reads "killio" as a stray token →
         // "Cannot find ID for token killio" → Encode keywords FAILED → native crash
         // loop). So the @-label MUST be single-token: replace spaces with '_'.
         // JS un-replaces '_'→' ' when routing onWake back to the agent.
-        sb.append(tokens).append(" :2.0 #0.25 @").append(phrase.replace(' ', '_')).append('\n')
+        sb.append(tokens).append(" :").append(KWS_SCORE).append(" #").append(KWS_THRESHOLD)
+          .append(" @").append(phrase.replace(' ', '_')).append('\n')
         kept.add(phrase)
       }
-      return sb.toString() to kept
+      val content = sb.toString()
+      Log.i("KillioKWS", "KWS keywords built: kept=$kept dropped=$dropped")
+      // The EXACT keywords-file content written, line by line (debug).
+      for (line in content.split('\n')) {
+        if (line.isNotBlank()) Log.d("KillioKWS", "KWS line: $line")
+      }
+      return content to kept
     }
 
     /**
@@ -536,10 +558,25 @@ class VaultSpeechService : Service() {
     fun loadSharedKws(ctx: android.content.Context): KeywordSpotter? {
       synchronized(kwsLock) {
         sharedKws?.let { return it }
-        if (sharedKwsTried && sharedKws == null) return null
+        // LATCH: don't permanently wedge KWS on a transient failure. Previously
+        // `if (sharedKwsTried && sharedKws == null) return null` meant the FIRST
+        // failed load (e.g. model still downloading on first run) blocked KWS for
+        // the whole process lifetime. We now allow a retry whenever the model is
+        // actually present on disk — so once the download completes a later
+        // start() can construct the spotter even though an earlier attempt failed.
+        val modelDir = File(ctx.filesDir, KWS_DIR)
+        val present = kwsModelComplete(modelDir)
+        Log.i("KillioKWS", "KWS load: model present=$present dir=${modelDir.absolutePath}")
+        if (sharedKwsTried && sharedKws == null && !present) {
+          Log.w("KillioKWS", "KWS previously failed and model still absent — skipping (will retry once present)")
+          return null
+        }
         sharedKwsTried = true
         return try {
-          val dir = ensureKwsModelStatic(ctx) ?: return null
+          val dir = ensureKwsModelStatic(ctx) ?: run {
+            Log.w("KillioKWS", "KWS skipped — model could not be prepared (download failed/offline)")
+            return null
+          }
           // CRASH GUARD: the KeywordSpotter constructor reads keywordsFile and
           // hands it to native EncodeKeywords, which ABORTS the whole process
           // (uncatchable) if any line has an OOV token or the file is empty/invalid.
@@ -550,15 +587,15 @@ class VaultSpeechService : Service() {
           if (defaultKept.isEmpty() || defaultContent.isBlank()) {
             Log.w(
               "KillioKWS",
-              "no default wake phrase tokenizes in-vocab — SKIPPING KeywordSpotter " +
-                "(wake-word off; ASR/diary unaffected). Falling back to JS transcript matcher.",
+              "KWS skipped — no valid keywords (no default wake phrase tokenizes in-vocab). " +
+                "Wake-word off; ASR/diary unaffected. Falling back to JS transcript matcher.",
             )
             return null
           }
           val keywordsFile = File(dir, "keywords.txt")
           try { keywordsFile.writeText(defaultContent) }
           catch (e: Exception) {
-            Log.w("KillioKWS", "default keywords write failed → skipping KWS: ${e.message}")
+            Log.w("KillioKWS", "KWS spotter create FAILED: default keywords write failed: ${e.message}")
             return null
           }
           val cfg = KeywordSpotterConfig(
@@ -579,15 +616,19 @@ class VaultSpeechService : Service() {
             // non-empty file written just above (never a hardcoded line that might
             // contain an OOV token like the old "▁KI", which crashed natively).
             keywordsFile = keywordsFile.absolutePath,
-            keywordsScore = 2.0f,
-            keywordsThreshold = 0.25f,
+            keywordsScore = KWS_SCORE,
+            keywordsThreshold = KWS_THRESHOLD,
           )
           val ks = KeywordSpotter(null, cfg)
           sharedKws = ks
-          Log.i("KillioKWS", "KeywordSpotter loaded (gigaspeech kws zipformer); default keywords=${defaultKept}")
+          Log.i(
+            "KillioKWS",
+            "KWS spotter created OK (gigaspeech kws zipformer); score=$KWS_SCORE threshold=$KWS_THRESHOLD " +
+              "default keywords=$defaultKept",
+          )
           ks
         } catch (e: Exception) {
-          Log.w("KillioKWS", "KeywordSpotter load failed (wake-word off, fuzzy fallback only): ${e.message}")
+          Log.w("KillioKWS", "KWS spotter create FAILED: ${e.message} (wake-word off, fuzzy fallback only)")
           null
         }
       }
