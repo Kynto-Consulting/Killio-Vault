@@ -364,29 +364,132 @@ class VaultSpeechService : Service() {
     )
 
     /**
-     * Validate-and-tokenize [phrase] for the keywords file, trying phonetic
-     * respellings of "killio" if the literal spelling is OOV. Returns the in-vocab
-     * token string (logging which alternate was used), or null if no spelling
-     * fully tokenizes → caller drops the phrase entirely. NEVER returns an OOV
-     * token string.
+     * Generate a small, ORDERED, bounded (≤ ~8) list of plausible English
+     * respellings of a single name/word that PRESERVE its pronunciation, so an
+     * agent whose literal spelling is out-of-vocabulary for the gigaspeech KWS
+     * BPE vocab can still get a working spotter entry. The literal lowercase word
+     * is ALWAYS first (so an in-vocab spelling is preferred unchanged); the rest
+     * are sound-alike substitutions applied to the word as a whole.
+     *
+     * The user's agents are short personal names (Nia, Mia, Mya, Leo, Zoe, …)
+     * whose exact spelling frequently won't BPE-tokenize in-vocab. These rules
+     * cover the common English grapheme↔grapheme swaps that keep the sound:
+     *   - vowel-cluster respellings:  ia↔iah↔ya↔ea↔eeya,  oe↔o↔oh↔ow,
+     *     ie↔ee↔y,  ee↔ea,  oo↔u
+     *   - y as a vowel:  y↔i↔ee  (terminal "y" → "ee"/"i")
+     *   - suffix shapes:  -io→"ee oh"/"ee o",  -ya→-ia,  -a→-ah
+     *   - consonant homophones:  ph→f,  c→k,  qu→kw,  x→ks,  ck→k
+     *   - doubled consonants collapsed (ll→l, nn→n, …) and a single-l expanded
+     *   - trailing silent "e" dropped, and a vowel-final word given a trailing "e"
+     * Each rule is applied independently to the literal word; results are
+     * de-duplicated, lowercased, and capped so the variant count never explodes.
+     * "killio" keeps its hand-curated [KILLIO_ALTERNATES] (richer than the generic
+     * rules) folded in as the leading variants.
+     */
+    private fun phoneticVariants(name: String): List<String> {
+      val w = name.trim().lowercase()
+      if (w.isEmpty()) return emptyList()
+      val out = LinkedHashSet<String>()
+      out.add(w) // literal first — prefer an in-vocab exact spelling unchanged.
+
+      // Special-case the brand: its curated alternates are better than the generic
+      // rules, so seed them first (still bounded; de-duped below).
+      if (w == "killio") out.addAll(KILLIO_ALTERNATES)
+
+      // Ordered (regex → replacement) sound-preserving swaps. Each is applied to
+      // the literal word independently; we keep any that changes it.
+      val rules: List<Pair<Regex, String>> = listOf(
+        // vowel clusters
+        Regex("ia\\b") to "iah",
+        Regex("ia\\b") to "ya",
+        Regex("ia\\b") to "ea",
+        Regex("ya\\b") to "ia",
+        Regex("ie\\b") to "ee",
+        Regex("ie\\b") to "y",
+        Regex("ee") to "ea",
+        Regex("ea") to "ee",
+        Regex("oo") to "u",
+        // o / oe endings
+        Regex("oe\\b") to "o",
+        Regex("oe\\b") to "oh",
+        Regex("o\\b") to "oh",
+        Regex("o\\b") to "ow",
+        // -io / -eo suffix → spaced "ee oh"/"ee o"
+        Regex("io\\b") to "ee oh",
+        Regex("io\\b") to "ee o",
+        Regex("eo\\b") to "ee oh",
+        // y-as-vowel
+        Regex("y\\b") to "ee",
+        Regex("y\\b") to "i",
+        Regex("y") to "i",
+        // trailing -a → -ah
+        Regex("a\\b") to "ah",
+        // consonant homophones
+        Regex("ph") to "f",
+        Regex("qu") to "kw",
+        Regex("x") to "ks",
+        Regex("ck") to "k",
+        Regex("c") to "k",
+        // doubled consonant collapse + single-l expand
+        Regex("([bcdfgklmnprstz])\\1") to "$1",
+        Regex("([^l])l([aeiou])") to "$1ll$2",
+        // trailing silent-e drop, and add trailing-e to a vowel-final word
+        Regex("e\\b") to "",
+        Regex("([aeiou])\\b") to "$1e",
+      )
+      for ((re, rep) in rules) {
+        val v = re.replace(w, rep).trim()
+        if (v.isNotEmpty() && v != w) out.add(v)
+      }
+      // Bound the list (literal + up to ~7 alternates).
+      return out.toList().take(8)
+    }
+
+    /**
+     * Validate-and-tokenize [phrase] for the keywords file. First tries the
+     * literal spelling; if that is OOV, generates phonetic respellings PER WORD via
+     * [phoneticVariants] and recombines — keeping the FIRST in-vocab variant of
+     * each word — so an agent name whose exact spelling is OOV (e.g. "Nia", "Zoe")
+     * still gets a working spotter entry. Returns the in-vocab token string
+     * (logging which respelling was used), or null if no combination of per-word
+     * variants fully tokenizes in-vocab → caller DROPS the phrase entirely (never
+     * returns an OOV token string, so native EncodeKeywords can never abort).
+     *
+     * The "@<original phrase>" label kept in the keywords file is ALWAYS the
+     * caller's original text (see [buildKeywordsFile]); only the emitted BPE tokens
+     * use the respelling, so getResult().keyword → JS still maps back to the real
+     * agent.
      */
     private fun tokensForPhrase(dir: File, phrase: String): String? {
-      // First try the phrase exactly as written.
+      // Fast path: the phrase exactly as written tokenizes in-vocab.
       tokenizeValidated(dir, phrase)?.let { return it }
-      // If it mentions "killio", try respelling that token with each alternate.
-      val lower = phrase.lowercase()
-      if (lower.contains("killio")) {
-        for (alt in KILLIO_ALTERNATES) {
-          if (alt == "killio") continue // already tried as-is above
-          val candidate = lower.replace("killio", alt)
-          val toks = tokenizeValidated(dir, candidate)
-          if (toks != null) {
-            Log.i("KillioKWS", "wake '$phrase' tokenized via phonetic alternate '$alt' → \"$toks\"")
-            return toks
+
+      // OOV literal → respell PER WORD and recombine. For each word, find the first
+      // phonetic variant that tokenizes in-vocab; if ANY word has no in-vocab
+      // variant, the whole phrase fails (null → dropped).
+      val words = phrase.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+      if (words.isEmpty()) return null
+      val chosen = ArrayList<String>()
+      var anyRespelled = false
+      for (word in words) {
+        var picked: String? = null
+        for (variant in phoneticVariants(word)) {
+          // A variant may itself be multi-word (e.g. "ee oh"); validate the whole.
+          if (tokenizeValidated(dir, variant) != null) {
+            picked = variant
+            if (variant != word.lowercase()) anyRespelled = true
+            break
           }
         }
+        if (picked == null) return null // this word is unwakeable → drop the phrase
+        chosen.add(picked)
       }
-      return null
+      val respelled = chosen.joinToString(" ")
+      val toks = tokenizeValidated(dir, respelled) ?: return null
+      if (anyRespelled) {
+        Log.i("KillioKWS", "wake '$phrase' tokenized via phonetic respelling '$respelled' → \"$toks\"")
+      }
+      return toks
     }
 
     /**
@@ -409,7 +512,7 @@ class VaultSpeechService : Service() {
         // anything is OOV, so an unsafe line can never reach native EncodeKeywords.
         val tokens = tokensForPhrase(dir, phrase)
         if (tokens == null) {
-          Log.w("KillioKWS", "dropping keyword '$phrase' — no in-vocab tokenization")
+          Log.w("KillioKWS", "no in-vocab phonetic variant for '$phrase' — agent not wakeable")
           continue
         }
         // score 2.0 (easier to survive beam), threshold 0.25 (sherpa default).
