@@ -15,6 +15,7 @@ import {
   type WakeMatch,
 } from '../wakeword/WakeWord';
 import { listAgents } from '../agents/local-agent.model';
+import { flog } from '../core/filelog';
 import {
   getVoiceprint,
   matchesVoiceprint,
@@ -358,15 +359,19 @@ export class CaptureController {
       if (this.wantsMic && micServable) {
         try {
           if (this.useSpeech) {
+            const kws = this.computeKeywords();
+            flog('KillioCapture', `START Speech engine lang=${this.language} keywords=${kws.length}`);
             await Speech.start({
               language: this.language,
-              keywords: this.computeKeywords(),
+              keywords: kws,
             });
           } else {
+            flog('KillioCapture', 'START AudioRecord engine (fallback path)');
             await Native.start({ notificationText: 'Killio Vault is listening' });
           }
         } catch (e) {
           console.warn(`[KillioCapture] engine start failed: ${String(e)}`);
+          flog('KillioCapture', `engine START FAILED: ${String(e)}`);
           this.setStatus('error');
           return;
         }
@@ -389,9 +394,11 @@ export class CaptureController {
       }
       if (this.status !== 'degraded') {
         console.log('[KillioCapture] listening (mic active)');
+        flog('KillioCapture', 'listening (mic active)');
         this.setStatus('listening');
       }
     } else if (!active && this.status === 'listening') {
+      flog('KillioCapture', 'STOP capture (outside schedule window)');
       if (this.wantsMic) {
         if (this.useSpeech) {
           await Speech.stop();
@@ -426,7 +433,9 @@ export class CaptureController {
     } catch {
       triggers = [];
     }
-    return buildKeywordsList(triggers);
+    const kws = buildKeywordsList(triggers);
+    flog('KillioWake', `computeKeywords agentTriggers=${JSON.stringify(triggers)} → keywords=${JSON.stringify(kws)}`);
+    return kws;
   }
 
   /**
@@ -436,7 +445,9 @@ export class CaptureController {
    */
   reloadKeywords(): void {
     if (!this.useSpeech) return;
-    void Speech.setKeywords(this.computeKeywords());
+    const kws = this.computeKeywords();
+    flog('KillioWake', `reloadKeywords → pushing ${kws.length} keywords to native spotter`);
+    void Speech.setKeywords(kws);
   }
 
   /**
@@ -447,6 +458,7 @@ export class CaptureController {
    * owner-gate + onWakeCb path the transcript matcher uses.
    */
   private handleNativeWake(e: Speech.WakeEvent): void {
+    flog('KillioWake', `handleNativeWake keyword="${e.keyword}" muted=${this.muted}`);
     if (this.muted) return;
     // Native @-labels are single-token (spaces → '_') so sherpa doesn't choke
     // on multi-word annotations; restore spaces here for agent routing.
@@ -471,6 +483,7 @@ export class CaptureController {
 
     const m: WakeMatch = { phrase: kw, agentName, command: '' };
     console.log(`[KillioWake] NATIVE keyword="${e.keyword}" → agent=${agentName ?? '(default)'}`);
+    flog('KillioWake', `NATIVE wake resolved phrase="${kw}" → agent=${agentName ?? '(default)'} — firing onWakeCb=${!!this.onWakeCb}`);
     // Native KWS can't do offline speaker verification (no embedding on the
     // wake frame), so the owner-gate is enforced on the FOLLOW-UP command
     // utterance via handleTranscript()'s voiceprint check. Fire the wake.

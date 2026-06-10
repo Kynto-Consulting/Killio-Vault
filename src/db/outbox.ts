@@ -4,6 +4,7 @@ import { getDb, rowsOf } from './sqlite';
 import { getDeviceId } from '../core/device';
 import { ingestDiary, type DiarySegment } from '../core/api/vault.client';
 import { getPersonalTeamId } from '../core/auth/token-store';
+import { flog } from '../core/filelog';
 
 export interface OutboxRow {
   id: string;
@@ -34,6 +35,7 @@ export function enqueueSegment(seg: {
   if (!text) return;
   const db = getDb();
   const date = localDate(seg.ts);
+  flog('KillioDiary', `enqueueSegment source=${seg.source ?? 'on_device_stt'} len=${text.length} date=${date}`);
   db.execute(
     `INSERT INTO diary_outbox (id, date, text, ts, source, status, created_at)
      VALUES (?, ?, ?, ?, ?, 'pending', ?)`,

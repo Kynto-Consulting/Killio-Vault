@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Check, Image as ImageIcon, X } from 'lucide-react-native';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+
+import { JS_LOG_DIR, JS_LOG_PATH, readJsLog } from '@/core/filelog';
 
 import { Screen, Card, H1, Body, Button } from '@/ui';
 import { colors } from '@/theme/theme';
@@ -51,6 +55,7 @@ export default function SettingsScreen() {
   const [testing, setTesting] = useState<boolean>(false);
   const [shotBusy, setShotBusy] = useState<boolean>(false);
   const [directShot, setDirectShot] = useState<boolean>(false);
+  const [logBusy, setLogBusy] = useState<boolean>(false);
 
   useEffect(() => {
     void hasConsent().then(setConsent);
@@ -99,6 +104,38 @@ export default function SettingsScreen() {
       await captureScreen();
     } finally {
       setShotBusy(false);
+    }
+  };
+
+  // Export / share the on-device diagnostic logs (no adb needed). The NATIVE
+  // KWS/capture log lives in the app's adb-pullable external dir
+  // (/sdcard/Android/data/dev.killio.vault/files/logs/killio.log) which JS can't
+  // read directly; the JS-side log (killio-js.log) is shared here, and the
+  // native log's pull path is shown so it can be `adb pull`ed without root.
+  const exportLogs = async () => {
+    setLogBusy(true);
+    try {
+      const body = await readJsLog();
+      // Write a snapshot file to share (so even an in-progress log exports cleanly).
+      const out = `${FileSystem.cacheDirectory ?? JS_LOG_DIR}killio-js-export.log`;
+      await FileSystem.writeAsStringAsync(
+        out,
+        body && body.length > 0 ? body : '(no JS log entries yet)\n',
+        { encoding: FileSystem.EncodingType.UTF8 },
+      );
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(out, {
+          mimeType: 'text/plain',
+          dialogTitle: 'Killio Vault logs',
+        });
+      } else {
+        Alert.alert('Logs', `JS log: ${JS_LOG_PATH}`);
+      }
+    } catch (e) {
+      Alert.alert('Logs', `No se pudieron exportar los logs: ${String(e)}`);
+    } finally {
+      setLogBusy(false);
     }
   };
 
@@ -155,6 +192,23 @@ export default function SettingsScreen() {
             onPress={() => choose({ kind: 'off' })}
           />
         </View>
+      </Card>
+
+      {/* Diagnostics / logs export ──────────────────────────────────────── */}
+      <Card>
+        <Body>Diagnóstico</Body>
+        <Body muted>
+          Exporta el registro de la captura y la palabra de activación (wake-word)
+          para depurar sin adb.
+        </Body>
+        <Button
+          title={logBusy ? 'Exportando…' : 'Exportar logs'}
+          variant="secondary"
+          onPress={() => void exportLogs()}
+          busy={logBusy}
+        />
+        <Body muted>{`Log nativo (adb pull): /sdcard/Android/data/dev.killio.vault/files/logs/killio.log`}</Body>
+        <Body muted>{`Log JS: ${JS_LOG_PATH}`}</Body>
       </Card>
 
       <Card>

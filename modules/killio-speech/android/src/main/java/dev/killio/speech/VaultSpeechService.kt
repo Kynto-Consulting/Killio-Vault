@@ -543,6 +543,7 @@ class VaultSpeechService : Service() {
       }
       val content = sb.toString()
       Log.i("KillioKWS", "KWS keywords built: kept=$kept dropped=$dropped")
+      FileLog.log("KillioKWS", "KWS keywords built: kept=$kept dropped=$dropped")
       // The EXACT keywords-file content written, line by line (debug).
       for (line in content.split('\n')) {
         if (line.isNotBlank()) Log.d("KillioKWS", "KWS line: $line")
@@ -567,14 +568,17 @@ class VaultSpeechService : Service() {
         val modelDir = File(ctx.filesDir, KWS_DIR)
         val present = kwsModelComplete(modelDir)
         Log.i("KillioKWS", "KWS load: model present=$present dir=${modelDir.absolutePath}")
+        FileLog.log("KillioKWS", "KWS load attempt: model present=$present dir=${modelDir.absolutePath}")
         if (sharedKwsTried && sharedKws == null && !present) {
           Log.w("KillioKWS", "KWS previously failed and model still absent — skipping (will retry once present)")
+          FileLog.log("KillioKWS", "KWS skipped — previously failed and model still absent (will retry once present)")
           return null
         }
         sharedKwsTried = true
         return try {
           val dir = ensureKwsModelStatic(ctx) ?: run {
             Log.w("KillioKWS", "KWS skipped — model could not be prepared (download failed/offline)")
+            FileLog.log("KillioKWS", "KWS skipped — model could not be prepared (download failed/offline)")
             return null
           }
           // CRASH GUARD: the KeywordSpotter constructor reads keywordsFile and
@@ -590,12 +594,14 @@ class VaultSpeechService : Service() {
               "KWS skipped — no valid keywords (no default wake phrase tokenizes in-vocab). " +
                 "Wake-word off; ASR/diary unaffected. Falling back to JS transcript matcher.",
             )
+            FileLog.log("KillioKWS", "KWS skipped — no default wake phrase tokenizes in-vocab (wake-word off; JS fallback)")
             return null
           }
           val keywordsFile = File(dir, "keywords.txt")
           try { keywordsFile.writeText(defaultContent) }
           catch (e: Exception) {
             Log.w("KillioKWS", "KWS spotter create FAILED: default keywords write failed: ${e.message}")
+            FileLog.log("KillioKWS", "KWS spotter create FAILED: default keywords write failed: ${e.message}")
             return null
           }
           val cfg = KeywordSpotterConfig(
@@ -626,9 +632,14 @@ class VaultSpeechService : Service() {
             "KWS spotter created OK (gigaspeech kws zipformer); score=$KWS_SCORE threshold=$KWS_THRESHOLD " +
               "default keywords=$defaultKept",
           )
+          FileLog.log(
+            "KillioKWS",
+            "KWS spotter created OK; score=$KWS_SCORE threshold=$KWS_THRESHOLD default keywords=$defaultKept",
+          )
           ks
         } catch (e: Exception) {
           Log.w("KillioKWS", "KWS spotter create FAILED: ${e.message} (wake-word off, fuzzy fallback only)")
+          FileLog.log("KillioKWS", "KWS spotter create FAILED: ${e.message} (wake-word off, JS fuzzy fallback only)")
           null
         }
       }
@@ -639,6 +650,7 @@ class VaultSpeechService : Service() {
       val dir = File(ctx.filesDir, KWS_DIR)
       if (kwsModelComplete(dir)) return dir
       Log.i("KillioKWS", "KWS model incomplete — downloading from $KWS_BASE_URL (first run only)")
+      FileLog.log("KillioKWS", "KWS model incomplete — downloading from $KWS_BASE_URL (first run only)")
       dir.mkdirs()
       return try {
         for ((remote, local) in KWS_FILES) {
@@ -647,9 +659,16 @@ class VaultSpeechService : Service() {
           val url = "$KWS_BASE_URL/$remote"
           downloadTo(url, dest, null)
         }
-        if (kwsModelComplete(dir)) dir else null
+        if (kwsModelComplete(dir)) {
+          FileLog.log("KillioKWS", "KWS model download complete at ${dir.absolutePath}")
+          dir
+        } else {
+          FileLog.log("KillioKWS", "KWS model still incomplete after download attempt")
+          null
+        }
       } catch (e: Exception) {
         Log.w("KillioKWS", "KWS model download failed: ${e.message}")
+        FileLog.log("KillioKWS", "KWS model download failed: ${e.message}")
         null
       }
     }
@@ -1014,6 +1033,10 @@ class VaultSpeechService : Service() {
   override fun onCreate() {
     super.onCreate()
     instance = this
+    // Resolve the persistent external log file ONCE so the wake/KWS/capture
+    // pipeline below can be debugged by reading the file (no adb/logcat needed).
+    FileLog.init(this)
+    FileLog.log("KillioSTT", "VaultSpeechService onCreate — logs dir=${FileLog.currentDir()}")
   }
 
   fun awaitContinuousIdle(timeoutMs: Long) {
@@ -1028,8 +1051,13 @@ class VaultSpeechService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // Best-effort: ensure the persistent log file is resolved even if the process
+    // entered via onStartCommand (e.g. BootReceiver restart) without onCreate
+    // having run our init yet.
+    FileLog.init(this)
     val notifText = intent?.getStringExtra("notificationText") ?: "Killio Vault is listening"
     langCode = Companion.langCode(intent?.getStringExtra("language"))
+    FileLog.log("KillioSTT", "onStartCommand lang=$langCode reloadOnly=${intent?.getBooleanExtra("keywordsReloadOnly", false) ?: false}")
 
     // Wake keywords passed from JS (agent names + wake phrases). Built-ins are
     // always merged in below. A re-delivered start intent (e.g. after agents
@@ -1113,6 +1141,7 @@ class VaultSpeechService : Service() {
     }
     recognizer = rec
     Log.i("KillioSTT", "[$langCode] Recognizer loaded (sherpa-onnx, shared)")
+    FileLog.log("KillioSTT", "[$langCode] Recognizer loaded (sherpa-onnx, shared)")
 
     // Silero VAD — gates decoding. Required for the streaming loop; if it can't
     // be prepared we fail the session (the whole point is VAD-gated decode).
@@ -1154,8 +1183,10 @@ class VaultSpeechService : Service() {
     if (kws != null) {
       openKwsStream(kwsKeywords)
       Log.i("KillioKWS", "wake-word spotter active with ${kwsKeywords.size} keywords")
+      FileLog.log("KillioKWS", "wake-word spotter ACTIVE with ${kwsKeywords.size} keywords=$kwsKeywords")
     } else {
       Log.w("KillioKWS", "KWS unavailable — wake-word falls back to JS transcript matcher")
+      FileLog.log("KillioKWS", "KWS UNAVAILABLE — wake-word falls back to JS transcript matcher")
     }
 
     val minBuf = AudioRecord.getMinBufferSize(
@@ -1190,6 +1221,13 @@ class VaultSpeechService : Service() {
     var recorder = openRecorder() ?: run { stopSelf(); return }
     emitModelStatus("ready")
     Log.i("KillioSTT", "[$langCode] sherpa-onnx ready, AudioRecord started (16kHz) — VAD-gated loop running")
+    FileLog.log("KillioSTT", "[$langCode] AudioRecord started (16kHz) — capture loop running; kws=${if (kws != null) "on" else "off"}")
+    // Per-frame "feeding" heartbeat: emit a periodic line so the log shows the
+    // KWS/capture loop is alive and actually receiving audio frames (vs. wedged).
+    // We log every ~5s of audio (frames * frameSamples / SAMPLE_RATE) rather than
+    // every frame to keep the file small.
+    var frameCount = 0L
+    val heartbeatEveryFrames = maxOf(1L, (5L * SAMPLE_RATE) / frameSamples)
     try {
       while (running) {
         // ── One-shot coordination (UNCHANGED) ────────────────────────────────
@@ -1221,6 +1259,16 @@ class VaultSpeechService : Service() {
 
         val floats = toFloat(buf, read)
 
+        // Heartbeat: prove the capture/KWS loop is alive + fed (every ~5s).
+        frameCount++
+        if (frameCount % heartbeatEveryFrames == 0L) {
+          val kwsState = if (kws != null && kwsStream != null) "fed" else "off"
+          FileLog.log(
+            "KillioKWS",
+            "feeding heartbeat: frames=$frameCount (~${frameCount * frameSamples / SAMPLE_RATE}s) kws=$kwsState keywords=${kwsKeywords.size}",
+          )
+        }
+
         // ── Wake-word (KWS) — parallel, NOT VAD-gated ─────────────────────────
         // Feed the SAME raw frames into the keyword spotter continuously so the
         // wake phrase fires any time. Cheap (small model, single thread). A
@@ -1243,6 +1291,7 @@ class VaultSpeechService : Service() {
             val kw = ks.getResult(kstream).keyword
             if (kw.isNotEmpty()) {
               Log.i("KillioKWS", "WAKE keyword=\"$kw\"")
+              FileLog.log("KillioKWS", "DETECT WAKE keyword=\"$kw\" — emitting onWake")
               emitWake(kw)
               // Reset so the same keyword can fire again on the next utterance.
               ks.reset(kstream)
@@ -1250,6 +1299,7 @@ class VaultSpeechService : Service() {
           }
         } catch (e: Exception) {
           Log.w("KillioKWS", "KWS feed failed: ${e.message}")
+          FileLog.log("KillioKWS", "KWS feed failed: ${e.message}")
         }
 
         // Feed normalized floats to Silero VAD. When a speech segment finishes,
@@ -1339,15 +1389,18 @@ class VaultSpeechService : Service() {
       if (kept.isEmpty() || content.isBlank()) {
         kwsStream = null
         Log.w("KillioKWS", "no valid wake keywords after validation — KWS stream not opened (ASR unaffected)")
+        FileLog.log("KillioKWS", "no valid wake keywords after validation — KWS stream NOT opened (ASR unaffected)")
         return
       }
       kwsStream = try {
         ks.createStream(content)
       } catch (e: Exception) {
         Log.w("KillioKWS", "createStream(keywords) failed: ${e.message}")
+        FileLog.log("KillioKWS", "createStream(keywords) FAILED: ${e.message}")
         null
       }
       Log.i("KillioKWS", "KWS stream open with ${kept.size}/${phrases.size} keywords")
+      FileLog.log("KillioKWS", "KWS stream open with ${kept.size}/${phrases.size} keywords kept=$kept")
     }
   }
 
@@ -1383,11 +1436,13 @@ class VaultSpeechService : Service() {
     val dir = File(filesDir, sm.dir)
     if (sttModelComplete(dir)) {
       Log.i("KillioSTT", "[$langCode] STT model already present (offline) at ${dir.absolutePath}")
+      FileLog.log("KillioSTT", "[$langCode] STT model already present (offline) at ${dir.absolutePath}")
       emitModelStatus("ready")
       return dir
     }
 
     Log.i("KillioSTT", "[$langCode] STT model not found — downloading from ${sm.hfRepo} (first run only)")
+    FileLog.log("KillioSTT", "[$langCode] STT model not found — downloading from ${sm.hfRepo} (first run only)")
     dir.mkdirs()
     // The encoder dominates (~70–155MB); weight progress by file index so the
     // bar advances smoothly across the four files.
@@ -1436,6 +1491,7 @@ class VaultSpeechService : Service() {
 
   private fun emitError(message: String) {
     Log.e("KillioSTT", "ERROR: $message")
+    FileLog.log("KillioSTT", "ERROR: $message")
     emitter?.invoke("onError", Bundle().apply { putString("message", message) })
     emitModelStatus("error", message = message)
   }
