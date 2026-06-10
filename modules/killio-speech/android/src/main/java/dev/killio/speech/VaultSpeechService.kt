@@ -516,8 +516,13 @@ class VaultSpeechService : Service() {
           continue
         }
         // score 2.0 (easier to survive beam), threshold 0.25 (sherpa default).
-        // @phrase preserves the ORIGINAL text as the reported keyword.
-        sb.append(tokens).append(" :2.0 #0.25 @").append(phrase).append('\n')
+        // @label preserves the original text as the reported keyword — BUT sherpa
+        // splits the @-annotation on whitespace and tries to ENCODE any extra word
+        // as a token (e.g. "@hey killio" → it reads "killio" as a stray token →
+        // "Cannot find ID for token killio" → Encode keywords FAILED → native crash
+        // loop). So the @-label MUST be single-token: replace spaces with '_'.
+        // JS un-replaces '_'→' ' when routing onWake back to the agent.
+        sb.append(tokens).append(" :2.0 #0.25 @").append(phrase.replace(' ', '_')).append('\n')
         kept.add(phrase)
       }
       return sb.toString() to kept

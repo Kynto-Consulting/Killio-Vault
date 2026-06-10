@@ -448,7 +448,9 @@ export class CaptureController {
    */
   private handleNativeWake(e: Speech.WakeEvent): void {
     if (this.muted) return;
-    const kw = e.keyword?.trim().toLowerCase();
+    // Native @-labels are single-token (spaces → '_') so sherpa doesn't choke
+    // on multi-word annotations; restore spaces here for agent routing.
+    const kw = e.keyword?.replace(/_/g, ' ').trim().toLowerCase();
     if (!kw) return;
 
     // Resolve which agent (if any) this keyword belongs to.
