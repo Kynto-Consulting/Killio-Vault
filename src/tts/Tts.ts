@@ -63,10 +63,19 @@ export async function speak(text: string, opts: SpeakOptions = {}): Promise<void
     if (!clean) return;
 
     // Custom voice (Cartesia) — synthesized server-side, played via expo-av.
+    // If it FAILS (no plan/creds/network), fall back to native TTS so the reply
+    // is never silent (the chime plays but the agent reply used to go mute).
     if (opts.language === 'cartesia') {
-      await speakCartesia(clean, { onStart: opts.onStart, onFinish: opts.onFinish });
-      return;
+      try {
+        await speakCartesia(clean, { onStart: opts.onStart, onFinish: opts.onFinish });
+        return;
+      } catch (e) {
+        console.warn('[Tts] Cartesia failed → native fallback:', (e as Error)?.message);
+        // fall through to native TTS below.
+      }
     }
+    // Never hand 'cartesia' to the native engine as a language code.
+    const nativeLang = opts.language === 'cartesia' ? undefined : opts.language;
 
     const tts = getTts();
     if (!tts) {
@@ -80,7 +89,7 @@ export async function speak(text: string, opts: SpeakOptions = {}): Promise<void
     // Guard each setter: an unsupported language/rate/pitch can throw
     // synchronously (not just reject) on some engines — swallow it.
     try {
-      if (opts.language) await Promise.resolve(tts.setDefaultLanguage(opts.language)).catch(() => {});
+      if (nativeLang) await Promise.resolve(tts.setDefaultLanguage(nativeLang)).catch(() => {});
       if (typeof opts.rate === 'number') await Promise.resolve(tts.setDefaultRate(opts.rate)).catch(() => {});
       if (typeof opts.pitch === 'number') await Promise.resolve(tts.setDefaultPitch(opts.pitch)).catch(() => {});
     } catch {

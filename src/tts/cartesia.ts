@@ -40,7 +40,8 @@ export async function speakCartesia(
   if (!clean) return;
   const teamId = await getPersonalTeamId();
   const token = await getAccessToken();
-  if (!teamId || !token) return;
+  // No auth → let speak() fall back to native TTS instead of going silent.
+  if (!teamId || !token) throw new Error('Cartesia TTS unavailable (no auth)');
 
   // Fetch MP3 bytes (POST with auth) → base64 → cache file.
   const res = await fetch(`${API_BASE_URL}/vault/tts`, {
@@ -49,10 +50,9 @@ export async function speakCartesia(
     body: JSON.stringify({ teamId, text: clean }),
   });
   if (!res.ok) {
-    // Surface the server error instead of feeding an error body to the player.
+    // Throw so speak() FALLS BACK to native TTS. Don't fire onStart/onFinish —
+    // the native fallback owns them (else the reply would go silent).
     const detail = await res.text().catch(() => '');
-    opts.onStart?.();
-    opts.onFinish?.();
     throw new Error(`Cartesia TTS failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
   }
 
@@ -69,8 +69,6 @@ export async function speakCartesia(
     const body = contentType.includes('json') || contentType.includes('text')
       ? new TextDecoder().decode(buf).slice(0, 200)
       : '';
-    opts.onStart?.();
-    opts.onFinish?.();
     throw new Error(`Cartesia TTS returned non-audio response${body ? `: ${body}` : ''}`);
   }
 
