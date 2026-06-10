@@ -188,14 +188,16 @@ class VaultSpeechService : Service() {
     // HuggingFace (loose files we actually download):
     //   https://huggingface.co/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
     private const val KWS_DIR = "sherpa-kws"
-    private const val KWS_HF_REPO =
-      "pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
-    // Remote HF filename → local filename. The encoder/decoder/joiner are epoch-
-    // tagged upstream; we save them under stable names the spotter loads. We use
-    // the int8 variants (smaller; KWS accuracy is unaffected for short phrases).
+    // The upstream HF kws repos (pkufool/csukuangfj) are now GATED (HTTP 401), so
+    // we mirror the loose model files in OUR public GitHub release and download
+    // from there. Base = a Killio-Vault release; files keep their epoch names.
+    private const val KWS_BASE_URL =
+      "https://github.com/Kynto-Consulting/Killio-Vault/releases/download/kws-gigaspeech-v1"
+    // Remote filename → local filename. int8 variants (small; KWS accuracy is
+    // unaffected for short phrases).
     private val KWS_FILES = listOf(
       "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" to "encoder.onnx",
-      "decoder-epoch-12-avg-2-chunk-16-left-64.onnx" to "decoder.onnx",
+      "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" to "decoder.onnx",
       "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx" to "joiner.onnx",
       "tokens.txt" to "tokens.txt",
       "bpe.model" to "bpe.model",
@@ -381,13 +383,13 @@ class VaultSpeechService : Service() {
     private fun ensureKwsModelStatic(ctx: android.content.Context): File? {
       val dir = File(ctx.filesDir, KWS_DIR)
       if (kwsModelComplete(dir)) return dir
-      Log.i("KillioKWS", "KWS model incomplete — downloading from $KWS_HF_REPO (first run only)")
+      Log.i("KillioKWS", "KWS model incomplete — downloading from $KWS_BASE_URL (first run only)")
       dir.mkdirs()
       return try {
         for ((remote, local) in KWS_FILES) {
           val dest = File(dir, local)
           if (dest.exists() && dest.length() > 0) continue
-          val url = "$HF_BASE/$KWS_HF_REPO/resolve/$HF_REVISION/$remote"
+          val url = "$KWS_BASE_URL/$remote"
           downloadTo(url, dest, null)
         }
         if (kwsModelComplete(dir)) dir else null
