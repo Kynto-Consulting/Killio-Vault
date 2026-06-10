@@ -1,5 +1,8 @@
-import { speakCartesia } from './cartesia';
+import { speakCartesia, stopCartesia } from './cartesia';
 import { sanitizeForSpeech, speechLang } from './sanitize';
+
+// Re-export so callers can sanitize text for speech from the TTS module too.
+export { sanitizeForSpeech, speechLang } from './sanitize';
 
 /**
  * Native TTS wrapper (react-native-tts → Android system engine). Per plan F we
@@ -145,6 +148,18 @@ export async function speak(text: string, opts: SpeakOptions = {}): Promise<void
   }
 }
 
+/**
+ * Immediately silences the assistant: stops the native TTS engine AND any
+ * in-flight Cartesia (expo-av) playback. Safe to call when nothing is speaking.
+ * Used by the composer Stop button + barge-in (mic/new turn).
+ */
 export function stopSpeaking(): void {
-  getTts()?.stop?.();
+  try {
+    getTts()?.stop?.();
+  } catch {
+    /* engine may throw if not initialized — ignore */
+  }
+  // Cartesia custom voice plays through expo-av, not the native engine, so it
+  // must be stopped separately or it keeps talking after Stop.
+  void stopCartesia();
 }

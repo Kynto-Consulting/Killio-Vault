@@ -58,6 +58,7 @@ import {
   Check,
   Plus,
   Send,
+  Square,
   Image as ImageIcon,
   Camera as CameraIcon,
   File as FileIcon,
@@ -76,6 +77,7 @@ import {
   truncateConversation,
   type ClientActionEvent,
   type AgentChatBody,
+  type AgentStreamHandle,
 } from '@/core/api/agent.client';
 import { logConversation } from '@/core/api/vault.client';
 import { runClientAction, NEEDS_CONFIRM } from '@/actions/ClientActions';
@@ -118,7 +120,12 @@ export default function AssistantScreen() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // True while the assistant is speaking (TTS playback) — drives the Stop
+  // affordance so the user can silence it mid-utterance.
+  const [speaking, setSpeaking] = useState(false);
   const [listening, setListening] = useState(false);
+  // Handle to the in-flight SSE stream so a Stop / barge-in can abort it.
+  const streamHandle = useRef<AgentStreamHandle | null>(null);
   const [attachments, setAttachments] = useState<{ url: string; name: string; kind: 'img' | 'document' }[]>([]);
   const [uploading, setUploading] = useState(false);
   // Gemini-style "+" attach sheet (Fotos / Cámara / Archivos).
@@ -316,7 +323,7 @@ export default function AssistantScreen() {
       finalText += markup;
       appendAssistantDelta(markup);
     };
-    await streamAgentChat(
+    streamHandle.current = await streamAgentChat(
       {
         teamId: activeTeam.id,
         message,
@@ -386,6 +393,7 @@ export default function AssistantScreen() {
         },
         onClientAction: (e) => void handleClientAction(e),
         onDone: ({ conversationId: cid, messageId }) => {
+          streamHandle.current = null;
           convId.current = cid;
           // Remember the message this turn saved. If the turn paused on a
           // client-action, the resume passes this back so the backend UPDATES
@@ -410,19 +418,53 @@ export default function AssistantScreen() {
             // typed messages.
             if (opts.speakReply) {
               setMuted(true);
+              setSpeaking(true);
               void speak(finalText, {
                 language: agent?.voice ?? 'es-ES',
-                onFinish: () => setMuted(false),
+                onStart: () => setSpeaking(true),
+                onFinish: () => {
+                  setMuted(false);
+                  setSpeaking(false);
+                },
+                onError: () => {
+                  setMuted(false);
+                  setSpeaking(false);
+                },
               });
             }
           }
         },
         onError: (m) => {
+          streamHandle.current = null;
           setBusy(false);
           appendAssistantDelta(`\n[error: ${m}]`);
         },
       },
     );
+  };
+
+  /**
+   * Barge-in / Stop: immediately silence the assistant and abort any in-flight
+   * stream. Wired to the composer Stop button AND called before starting a new
+   * turn or the mic, so the user can interrupt the AI mid-speech.
+   */
+  const stopAll = () => {
+    try {
+      stopSpeaking();
+    } catch {
+      /* ignore */
+    }
+    setSpeaking(false);
+    setMuted(false);
+    if (streamHandle.current) {
+      try {
+        streamHandle.current.close();
+      } catch {
+        /* ignore */
+      }
+      streamHandle.current = null;
+      setBusy(false);
+    }
   };
 
   const handleClientAction = async (e: ClientActionEvent) => {
@@ -598,6 +640,8 @@ export default function AssistantScreen() {
   const send = async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || busy) return;
+    // Barge-in: a new turn silences any speech still playing from the last one.
+    if (speaking) stopAll();
     const assetTags = buildAssetTags();
     const displayText = text + (assetTags ? `\n${assetTags}` : '');
     // If this send is an edited-message regenerate, truncate the persisted
@@ -698,6 +742,8 @@ export default function AssistantScreen() {
   // Push-to-talk: one-shot native recognition â†’ fills the input.
   const micPress = async () => {
     if (busy || listening) return;
+    // Barge-in: starting a new voice turn silences any current assistant speech.
+    if (speaking) stopAll();
     if (!sttAvailable()) {
       setInput((v) => v); // no-op in Expo Go; PTT needs the dev-build
       return;
@@ -839,13 +885,22 @@ export default function AssistantScreen() {
               style={{ fontFamily: fonts.regular, color: colors.foreground, maxHeight: 120 }}
               className="flex-1 px-2 text-base"
             />
-            {input.trim().length > 0 ? (
+            {busy || speaking ? (
+              // While the agent is streaming or the assistant is speaking, the
+              // right button becomes a STOP control: it silences TTS + aborts
+              // the in-flight stream (barge-in).
+              <Pressable
+                onPress={stopAll}
+                className="h-9 w-9 items-center justify-center rounded-full bg-destructive active:opacity-80"
+                accessibilityRole="button"
+                accessibilityLabel={t('stop')}
+              >
+                <Square size={16} color={colors.foreground} fill={colors.foreground} />
+              </Pressable>
+            ) : input.trim().length > 0 ? (
               <Pressable
                 onPress={send}
-                disabled={busy}
-                className={`h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80 ${
-                  busy ? 'opacity-50' : ''
-                }`}
+                className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80"
                 accessibilityRole="button"
                 accessibilityLabel={tc('send')}
               >

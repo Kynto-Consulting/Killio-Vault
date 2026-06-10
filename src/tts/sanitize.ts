@@ -53,6 +53,18 @@ export function sanitizeForSpeech(text: string, lang: Lang = 'es'): string {
     .replace(/@\[[^:\]]+:[^\]]+\]/g, '') // @[type:id]
     .replace(/[$#]\[[^\]]+\]/g, ''); // #[..] / $[..]
 
+  // 4b. Raw ids the model sometimes leaks into prose — the voice must NOT read
+  // them out. Strip UUIDs, tool-call ids (tc-…/tool_use ids/toolu_…), and long
+  // bare hex/base-id blobs. Done AFTER reference/markup handling so we only hit
+  // ids that survived into plain text.
+  s = s
+    // canonical UUID v1-5 (8-4-4-4-12 hex)
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, ' ')
+    // prefixed tool/call ids: tc-…, tool_…, toolu_…, msg_…, call_… (alnum/_/-)
+    .replace(/\b(?:tc|toolu|tool_use|tool|msg|call|run|asst)[-_][A-Za-z0-9_-]{6,}\b/gi, ' ')
+    // long bare hex blobs (>=24 hex chars, e.g. mongo-ish / sha ids)
+    .replace(/\b[0-9a-f]{24,}\b/gi, ' ');
+
   // 5. Markdown links / images → spoken words / link text.
   s = s
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ` ${r.image} `) // ![alt](url)
