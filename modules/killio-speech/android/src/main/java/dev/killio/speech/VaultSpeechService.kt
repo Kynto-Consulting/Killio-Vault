@@ -262,6 +262,19 @@ class VaultSpeechService : Service() {
      * any character can't be covered by the vocab (caller logs + skips → that
      * phrase falls back to the JS transcript matcher).
      *
+     * IMPORTANT (crash fix): the gigaspeech KWS vocab is tiny (~500 BPE pieces,
+     * uppercase, '▁' word-boundary, NO <0xNN> byte-fallback and NO <unk> usable
+     * for keywords). sherpa-onnx's native EncodeKeywords ABORTS THE PROCESS
+     * (uncatchable from Kotlin) the instant a keywords line contains a token that
+     * isn't in tokens.txt — e.g. the previous hardcoded "▁KI" (absent) or any
+     * dead-end fragment. So this tokenizer MUST only ever emit in-vocab pieces:
+     *  - greedy longest-match,
+     *  - on a dead-end, BACK OFF (reduce the previous match) and retry,
+     *  - if a position still can't be covered by ANY vocab piece (including the
+     *    single character), the whole word fails → null → caller DROPS the phrase.
+     * The result is additionally re-validated token-by-token by [tokenizeValidated]
+     * before it can reach native, so an OOV token can never reach EncodeKeywords.
+     *
      * This is a pragmatic on-device substitute for sherpa's offline
      * `text2token --tokens-type bpe --bpe-model bpe.model` step (we don't ship a
      * SentencePiece runtime). It won't always reproduce the exact BPE merge the
@@ -275,26 +288,105 @@ class VaultSpeechService : Service() {
       val out = ArrayList<String>()
       for (word in words) {
         // sherpa BPE prefixes the WORD with '▁'; we tokenize "▁WORD" as a unit.
-        val s = "▁$word"
-        var i = 0
-        while (i < s.length) {
-          var matched: String? = null
-          // longest-match: try the longest substring starting at i.
-          var end = s.length
-          while (end > i) {
-            val cand = s.substring(i, end)
-            if (vocab.containsKey(cand)) { matched = cand; break }
-            end--
-          }
-          if (matched == null) {
-            // Char not coverable (e.g. accented letter not in the en vocab).
-            return null
-          }
-          out.add(matched)
-          i += matched.length
-        }
+        val pieces = coverWord("▁$word", vocab) ?: return null
+        out.addAll(pieces)
       }
       return out.joinToString(" ")
+    }
+
+    /**
+     * Cover [s] (a "▁WORD") with vocab pieces using greedy longest-match WITH
+     * BACKTRACKING: if a greedy pick leaves the remainder uncoverable, we shrink
+     * that pick by one char and retry, so we never get stuck at a dead-end while a
+     * shorter split would have worked. Returns the ordered pieces, or null if no
+     * split fully covers [s] in-vocab. Every returned piece is guaranteed present
+     * in [vocab].
+     */
+    private fun coverWord(s: String, vocab: Map<String, Int>): List<String>? {
+      // memoize positions known to be uncoverable to keep this O(n^2)-ish.
+      val dead = HashSet<Int>()
+      fun rec(i: Int, acc: ArrayList<String>): Boolean {
+        if (i >= s.length) return true
+        if (i in dead) return false
+        var end = s.length
+        while (end > i) {
+          val cand = s.substring(i, end)
+          if (vocab.containsKey(cand)) {
+            acc.add(cand)
+            if (rec(i + cand.length, acc)) return true
+            acc.removeAt(acc.size - 1)
+          }
+          end--
+        }
+        dead.add(i)
+        return false
+      }
+      val acc = ArrayList<String>()
+      return if (rec(0, acc)) acc else null
+    }
+
+    /**
+     * Tokenize [phrase] AND validate every produced token is in tokens.txt. This
+     * is the ONLY tokenizer output allowed to reach the keywords file → native
+     * EncodeKeywords. Returns the token string, or null with the offending token
+     * logged if ANY token is out-of-vocabulary (so the caller drops the phrase).
+     * Belt-and-suspenders over [tokenizeForKws] (which already only emits in-vocab
+     * pieces) so a future tokenizer bug still can't crash the capture process.
+     */
+    private fun tokenizeValidated(dir: File, phrase: String): String? {
+      val vocab = loadKwsTokenVocab(dir) ?: return null
+      val tokens = tokenizeForKws(dir, phrase) ?: return null
+      for (tok in tokens.split(' ')) {
+        if (tok.isEmpty()) continue
+        if (!vocab.containsKey(tok)) {
+          Log.w("KillioKWS", "dropping keyword '$phrase' — OOV token '$tok'")
+          return null
+        }
+      }
+      return tokens
+    }
+
+    /**
+     * Phonetic spelling alternates for the made-up brand wake word. The
+     * gigaspeech BPE has no '▁K' multi-char piece that yields a clean "killio"
+     * split in every case, and accented/odd spellings may not cover. For wake
+     * phrases that contain "killio" we additionally try these respellings and
+     * keep whichever fully tokenizes in-vocab, so "Hey Killio" keeps a working
+     * spotter entry even if the literal spelling is OOV. Documented alternates:
+     *   killio → kilio, kill e o, kill io, kee lee oh, kee li o, kil ee oh
+     * (all decompose into common in-vocab pieces like ▁K IL LI O / ▁KILL / ▁E /
+     *  ▁O / ▁KEE-style fragments). The FIRST alternate that fully validates wins;
+     * its tokens are emitted but the ORIGINAL phrase text is preserved as the
+     * reported keyword label so JS still maps the detection back correctly.
+     */
+    private val KILLIO_ALTERNATES = listOf(
+      "killio", "kilio", "kill io", "kill e o", "kil ee oh", "kee lee oh", "kee li o",
+    )
+
+    /**
+     * Validate-and-tokenize [phrase] for the keywords file, trying phonetic
+     * respellings of "killio" if the literal spelling is OOV. Returns the in-vocab
+     * token string (logging which alternate was used), or null if no spelling
+     * fully tokenizes → caller drops the phrase entirely. NEVER returns an OOV
+     * token string.
+     */
+    private fun tokensForPhrase(dir: File, phrase: String): String? {
+      // First try the phrase exactly as written.
+      tokenizeValidated(dir, phrase)?.let { return it }
+      // If it mentions "killio", try respelling that token with each alternate.
+      val lower = phrase.lowercase()
+      if (lower.contains("killio")) {
+        for (alt in KILLIO_ALTERNATES) {
+          if (alt == "killio") continue // already tried as-is above
+          val candidate = lower.replace("killio", alt)
+          val toks = tokenizeValidated(dir, candidate)
+          if (toks != null) {
+            Log.i("KillioKWS", "wake '$phrase' tokenized via phonetic alternate '$alt' → \"$toks\"")
+            return toks
+          }
+        }
+      }
+      return null
     }
 
     /**
@@ -312,9 +404,12 @@ class VaultSpeechService : Service() {
       for (raw in phrases) {
         val phrase = raw.trim()
         if (phrase.isEmpty() || !seen.add(phrase.lowercase())) continue
-        val tokens = tokenizeForKws(dir, phrase)
+        // tokensForPhrase validates EVERY produced token against tokens.txt and
+        // tries phonetic alternates for "killio"; returns null (phrase dropped) if
+        // anything is OOV, so an unsafe line can never reach native EncodeKeywords.
+        val tokens = tokensForPhrase(dir, phrase)
         if (tokens == null) {
-          Log.w("KillioKWS", "skip keyword (untokenizable): \"$phrase\"")
+          Log.w("KillioKWS", "dropping keyword '$phrase' — no in-vocab tokenization")
           continue
         }
         // score 2.0 (easier to survive beam), threshold 0.25 (sherpa default).
@@ -337,6 +432,27 @@ class VaultSpeechService : Service() {
         sharedKwsTried = true
         return try {
           val dir = ensureKwsModelStatic(ctx) ?: return null
+          // CRASH GUARD: the KeywordSpotter constructor reads keywordsFile and
+          // hands it to native EncodeKeywords, which ABORTS the whole process
+          // (uncatchable) if any line has an OOV token or the file is empty/invalid.
+          // So we must write a VALIDATED, NON-EMPTY default keywords file FIRST,
+          // and if NO default phrase survives validation we DO NOT construct the
+          // spotter at all (KWS skipped this session; ASR/VAD/diary run normally).
+          val (defaultContent, defaultKept) = buildKeywordsFile(dir, DEFAULT_WAKE_PHRASES)
+          if (defaultKept.isEmpty() || defaultContent.isBlank()) {
+            Log.w(
+              "KillioKWS",
+              "no default wake phrase tokenizes in-vocab — SKIPPING KeywordSpotter " +
+                "(wake-word off; ASR/diary unaffected). Falling back to JS transcript matcher.",
+            )
+            return null
+          }
+          val keywordsFile = File(dir, "keywords.txt")
+          try { keywordsFile.writeText(defaultContent) }
+          catch (e: Exception) {
+            Log.w("KillioKWS", "default keywords write failed → skipping KWS: ${e.message}")
+            return null
+          }
           val cfg = KeywordSpotterConfig(
             featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
             modelConfig = OnlineModelConfig(
@@ -351,32 +467,22 @@ class VaultSpeechService : Service() {
               modelType = "zipformer2",
             ),
             // keywordsFile is required by the data class but we pass keywords
-            // PER-STREAM via createStream(keywords), so point it at our generated
-            // file (written by setKeywordsStatic) to satisfy construction.
-            keywordsFile = File(dir, "keywords.txt").absolutePath,
+            // PER-STREAM via createStream(keywords). It MUST be the validated,
+            // non-empty file written just above (never a hardcoded line that might
+            // contain an OOV token like the old "▁KI", which crashed natively).
+            keywordsFile = keywordsFile.absolutePath,
             keywordsScore = 2.0f,
             keywordsThreshold = 0.25f,
           )
-          // Construction reads keywordsFile, so ensure a non-empty default exists.
-          ensureDefaultKeywordsFile(ctx, dir)
           val ks = KeywordSpotter(null, cfg)
           sharedKws = ks
-          Log.i("KillioKWS", "KeywordSpotter loaded (gigaspeech kws zipformer)")
+          Log.i("KillioKWS", "KeywordSpotter loaded (gigaspeech kws zipformer); default keywords=${defaultKept}")
           ks
         } catch (e: Exception) {
           Log.w("KillioKWS", "KeywordSpotter load failed (wake-word off, fuzzy fallback only): ${e.message}")
           null
         }
       }
-    }
-
-    /** Write a default keywords.txt (built-ins only) if none exists yet. */
-    private fun ensureDefaultKeywordsFile(ctx: android.content.Context, dir: File) {
-      val f = File(dir, "keywords.txt")
-      if (f.exists() && f.length() > 0) return
-      val (content, _) = buildKeywordsFile(dir, DEFAULT_WAKE_PHRASES)
-      try { f.writeText(if (content.isEmpty()) "▁HE Y ▁KI LL I O :2.0 #0.25 @hey killio\n" else content) }
-      catch (e: Exception) { Log.w("KillioKWS", "default keywords write failed: ${e.message}") }
     }
 
     /** Static KWS download (loose HF files). Returns null on failure. */
@@ -1071,12 +1177,22 @@ class VaultSpeechService : Service() {
     val ks = kws ?: return
     val dir = File(filesDir, KWS_DIR)
     synchronized(kwsStreamLock) {
+      // buildKeywordsFile validates every token and drops OOV/untokenizable
+      // phrases, so `content` only ever contains in-vocab lines (safe for native).
       val (content, kept) = buildKeywordsFile(dir, phrases)
       try {
         kwsStream?.release()
       } catch (_: Exception) {}
+      // If NOTHING survived validation, do NOT open a stream with an empty inline
+      // string (which would make sherpa re-read the configured keywordsFile and is
+      // an unnecessary native round-trip). Leave kwsStream null → wake-word simply
+      // off this cycle; ASR/VAD/diary keep running. Never hand native an empty set.
+      if (kept.isEmpty() || content.isBlank()) {
+        kwsStream = null
+        Log.w("KillioKWS", "no valid wake keywords after validation — KWS stream not opened (ASR unaffected)")
+        return
+      }
       kwsStream = try {
-        // Inline keywords string; empty → spotter uses its configured default file.
         ks.createStream(content)
       } catch (e: Exception) {
         Log.w("KillioKWS", "createStream(keywords) failed: ${e.message}")
