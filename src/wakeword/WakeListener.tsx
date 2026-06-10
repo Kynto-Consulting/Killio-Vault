@@ -9,6 +9,7 @@ import { listAgents } from '../agents/local-agent.model';
 import { LocalAgentRuntime } from '../agents/LocalAgentRuntime';
 import { recentTranscriptText } from '../db/outbox';
 import { isWakeWordEnabled } from '../settings/settings-store';
+import { flog } from '../core/filelog';
 import type { WakeMatch } from './WakeWord';
 
 /*
@@ -111,7 +112,9 @@ export function WakeListener() {
     const sendCommand = async (command: string) => {
       const teamId = activeTeamId.current;
       const text = command.trim();
+      flog('WakeFlow', `sendCommand text="${text.slice(0, 50)}" team=${!!teamId} agent=${matchedAgentName.current ?? '-'}`);
       if (!text || !teamId) {
+        flog('WakeFlow', 'sendCommand BAIL (empty text or no team)');
         endSession();
         return;
       }
@@ -150,6 +153,7 @@ export function WakeListener() {
             },
             onDone: ({ conversationId }) => {
               convId.current = conversationId;
+              flog('WakeFlow', `stream done replyLen=${finalText.trim().length} → ${finalText.trim() ? 'speak reply' : 'empty, end'}`);
               if (finalText.trim()) {
                 setMuted(true);
                 void speak(finalText, {
@@ -167,12 +171,14 @@ export function WakeListener() {
                 endSession();
               }
             },
-            onError: () => {
+            onError: (e: unknown) => {
+              flog('WakeFlow', `stream onError: ${String((e as Error)?.message ?? e).slice(0, 80)}`);
               endSession();
             },
           },
         );
-      } catch {
+      } catch (e) {
+        flog('WakeFlow', `sendCommand threw: ${String((e as Error)?.message ?? e).slice(0, 80)}`);
         endSession();
       }
     };
@@ -181,6 +187,7 @@ export function WakeListener() {
     const onCommandUtterance = (text: string) => {
       const piece = text.trim();
       if (!piece) return;
+      flog('WakeFlow', `command piece: "${piece.slice(0, 40)}" (silence timer ${SILENCE_MS}ms)`);
       commandParts.current.push(piece);
       // Restart the "user stopped talking" timer on every new piece.
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
@@ -190,9 +197,11 @@ export function WakeListener() {
     };
 
     const onWake = async (m: WakeMatch) => {
-      if (busy.current) return;
-      if (!(await isWakeWordEnabled())) return;
-      if (!activeTeamId.current) return;
+      flog('WakeFlow', `onWake agent=${m.agentName ?? '(killio)'} cmd="${m.command}" busy=${busy.current}`);
+      if (busy.current) { flog('WakeFlow', 'BAIL busy'); return; }
+      const enabled = await isWakeWordEnabled();
+      if (!enabled) { flog('WakeFlow', 'BAIL wake toggle OFF (settings)'); return; }
+      if (!activeTeamId.current) { flog('WakeFlow', 'BAIL no activeTeam'); return; }
       busy.current = true;
 
       // Fresh state for this wake session.
@@ -209,8 +218,11 @@ export function WakeListener() {
 
       // Chime "Te escucho" first (mute capture so we don't record/match it).
       setMuted(true);
+      flog('WakeFlow', `chime speak("${t('heard')}") start (TTS)`);
       await speak(t('heard'), {
+        onStart: () => flog('WakeFlow', 'chime TTS onStart (audio playing)'),
         onFinish: () => {
+          flog('WakeFlow', `chime done → ${inlineCommand ? 'inline cmd' : 'arm command capture'}`);
           setMuted(false);
           if (inlineCommand) {
             // One-shot: "Hey Killio, ¿qué hora es?" → answer immediately.
@@ -221,7 +233,7 @@ export function WakeListener() {
           }
         },
         onError: () => {
-          // Chime failed — still proceed with the flow.
+          flog('WakeFlow', 'chime TTS onError — proceeding anyway');
           setMuted(false);
           if (inlineCommand) void sendCommand(inlineCommand);
           else setOnCommandUtterance(onCommandUtterance);
