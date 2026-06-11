@@ -27,6 +27,7 @@ import {
   List,
   Loader,
   MapPin,
+  MessageCircle,
   MessageSquare,
   MessageSquarePlus,
   Paperclip,
@@ -54,6 +55,7 @@ import { RichText } from './RichText';
 import { BrickRenderer } from './BrickRenderer';
 import { parseAgentMarkup, type ToolState } from './ai-markup';
 import { resolveTool } from './tool-catalog';
+import { InputKV, OutputSummary } from './tool-detail';
 import { useTranslations } from '../i18n';
 import { colors } from '../theme/theme';
 import { fonts } from '../theme/fonts';
@@ -66,6 +68,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'calendar-plus': CalendarPlus,
   contact: Contact,
   'map-pin': MapPin,
+  'message-circle': MessageCircle,
   'message-square': MessageSquare,
   'message-square-plus': MessageSquarePlus,
   phone: Phone,
@@ -212,25 +215,40 @@ function ToolChip({ tool }: { tool: ToolState }) {
         ) : null}
       </Pressable>
       {open && hasDetail ? (
-        <View className="ml-3 mt-1 rounded-lg border border-border bg-background p-2">
-          {tool.input ? (
-            <Text
-              style={{ fontFamily: fonts.mono }}
-              className="text-[11px] text-muted-foreground"
-            >
-              {JSON.stringify(tool.input, null, 1).slice(0, 600)}
-            </Text>
+        <View className="ml-3 mt-1 overflow-hidden rounded-lg border border-border">
+          {tool.input && Object.keys(tool.input).length > 0 ? (
+            <View className="border-b border-border bg-secondary/40 px-2.5 py-2">
+              <View className="mb-1 flex-row items-center gap-1">
+                <Wrench size={10} color={colors.mutedForeground} />
+                <Text
+                  style={{ fontFamily: fonts.semibold }}
+                  className="text-[9px] uppercase tracking-wider text-muted-foreground"
+                >
+                  {t('inputLabel')}
+                </Text>
+              </View>
+              <InputKV input={tool.input} />
+            </View>
           ) : null}
-          {tool.output !== undefined ? (
-            <Text
-              style={{ fontFamily: fonts.mono }}
-              className="mt-1 text-[11px] text-foreground/80"
+          {tool.output !== undefined && tool.output !== null ? (
+            <View
+              className="px-2.5 py-2"
+              style={{ backgroundColor: tool.status === 'error' ? colors.destructive + '14' : colors.background }}
             >
-              {(typeof tool.output === 'string'
-                ? tool.output
-                : JSON.stringify(tool.output, null, 1)
-              ).slice(0, 800)}
-            </Text>
+              <View className="mb-1 flex-row items-center gap-1">
+                <Terminal size={10} color={tool.status === 'error' ? colors.destructive : colors.mutedForeground} />
+                <Text
+                  style={{
+                    fontFamily: fonts.semibold,
+                    color: tool.status === 'error' ? colors.destructive : colors.mutedForeground,
+                  }}
+                  className="text-[9px] uppercase tracking-wider"
+                >
+                  {t('outputLabel')}
+                </Text>
+              </View>
+              <OutputSummary output={tool.output} isError={tool.status === 'error'} />
+            </View>
           ) : null}
         </View>
       ) : null}
@@ -249,7 +267,12 @@ function normalizeParams(input: unknown): Record<string, string | number> {
   // reference (call_number → "Llamar a {target}").
   if (!out.target) {
     out.target =
+      (out.to as string) ??
+      (out.recipient as string) ??
+      (out.contact as string) ??
+      (out.phone as string) ??
       (out.number as string) ??
+      (out.name as string) ??
       (out.query as string) ??
       (out.title as string) ??
       (out.url as string) ??

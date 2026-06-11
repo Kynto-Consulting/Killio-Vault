@@ -42,8 +42,12 @@ export const TOOL_CATALOG: Record<string, ToolMeta> = {
   spotify_previous: { icon: 'arrow-left', i18nKey: 'spotifyPrevious' },
   spotify_search: { icon: 'search', i18nKey: 'spotifySearch' },
   spotify_current: { icon: 'music', i18nKey: 'spotifyCurrent' },
-  whatsapp_message: { icon: 'message-circle', i18nKey: 'whatsappMessage' },
+  whatsapp_message: { icon: 'message-circle', i18nKey: 'whatsappSend' },
   whatsapp_call: { icon: 'phone', i18nKey: 'whatsappCall' },
+  whatsapp_personal_send_message: { icon: 'message-circle', i18nKey: 'whatsappSend' },
+  whatsapp_personal_send: { icon: 'message-circle', i18nKey: 'whatsappSend' },
+  whatsapp_business_send_message: { icon: 'message-circle', i18nKey: 'whatsappSend' },
+  whatsapp_send_message: { icon: 'message-circle', i18nKey: 'whatsappSend' },
   clipboard_read: { icon: 'clipboard', i18nKey: 'clipboardRead' },
   clipboard_write: { icon: 'clipboard', i18nKey: 'clipboardWrite' },
   share_text: { icon: 'share-2', i18nKey: 'shareText' },
@@ -149,6 +153,8 @@ const PREFIX_TABLE: { prefix: string; icon: string; i18nKey: string }[] = [
   { prefix: 'tag_', icon: 'tag', i18nKey: 'tag' },
   { prefix: 'calendar_', icon: 'calendar', i18nKey: 'calendarList' },
   { prefix: 'os_', icon: 'terminal', i18nKey: 'systemCommand' },
+  { prefix: 'whatsapp_', icon: 'message-circle', i18nKey: 'whatsappSend' },
+  { prefix: 'contacts_', icon: 'contact', i18nKey: 'contactsSearch' },
 ];
 
 export function resolveTool(name: string): ToolMeta {

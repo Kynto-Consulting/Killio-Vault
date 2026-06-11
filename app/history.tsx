@@ -4,6 +4,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { ChevronRight, MessageSquare } from 'lucide-react-native';
 
 import { Screen, H1, Body } from '@/ui';
+import { stripMarkup } from '@/ui/ai-markup';
 import { useAuth } from '@/core/auth/AuthContext';
 import { listConversations, type ConversationSummary } from '@/core/api/agent.client';
 import { useTranslations } from '@/i18n';
@@ -61,11 +62,11 @@ export default function HistoryScreen() {
             </View>
             <View className="flex-1">
               <Text style={{ fontFamily: fonts.medium }} className="text-base text-foreground" numberOfLines={1}>
-                {String(item.title || item.preview || t('conversation'))}
+                {stripMarkup(String(item.title || item.preview || '')) || t('conversation')}
               </Text>
               {item.preview ? (
                 <Text className="text-sm text-muted-foreground" numberOfLines={1}>
-                  {String(item.preview)}
+                  {stripMarkup(String(item.preview))}
                 </Text>
               ) : null}
             </View>

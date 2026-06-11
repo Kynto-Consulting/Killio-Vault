@@ -223,6 +223,30 @@ function collectToolStates(content: string): Map<string, ToolState> {
   return byId;
 }
 
+/**
+ * Strips ALL agent markup / XML-ish tags from a string so it can be shown as a
+ * plain one-liner — used for conversation/room TITLES in the history list, which
+ * sometimes carry raw markup (`<tool_status…>`, `<contact>…`, `<invoke>…`) when
+ * the title was auto-derived from a message. Drops tag-wrapped blocks (think,
+ * tool_output, contact, invoke) along with their inner content, then removes any
+ * remaining bare tags and collapses whitespace.
+ */
+export function stripMarkup(s: string): string {
+  if (!s) return '';
+  return s
+    .replace(/<(pre_)?think>[\s\S]*?<\/(pre_)?think>/gi, ' ')
+    .replace(/<tool_output\b[^>]*>[\s\S]*?<\/tool_output>/gi, ' ')
+    .replace(/<(?:async_)?invoke\b[\s\S]*?<\/(?:async_)?invoke>/gi, ' ')
+    .replace(/<tool_call\b[\s\S]*?<\/tool_call>/gi, ' ')
+    .replace(/<contact>[\s\S]*?<\/contact>/gi, ' ')
+    .replace(/<asset\b[^>]*\/?>/gi, ' ')
+    // any remaining bare/self-closing tag → space
+    .replace(/<\/?[a-zA-Z][\w:-]*(?:\s[^>]*)?\/?>/g, ' ')
+    // leftover orphan '<' or stray markdown bullets/markers at edges
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 export function parseAgentMarkup(content: string): MarkupBlock[] {
   if (!content) return [];
   const states = collectToolStates(content);

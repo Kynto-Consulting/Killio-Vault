@@ -14,6 +14,8 @@ export const MESSAGES: Record<Locale, Messages> = {
     agentTool: {
       // Mirrors Killio-Frontend common.agent.toolAction.* keys 1:1.
       generic: 'Herramienta',
+      inputLabel: 'Entrada',
+      outputLabel: 'Resultado',
       cardCreated: 'Creó tarjeta {{title}}',
       cardMoved: 'Movió tarjeta → {{list}}',
       cardUpdated: 'Actualizó tarjeta {{title}}',
@@ -106,6 +108,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       spotifySearch: 'Buscar en Spotify',
       spotifyCurrent: 'Reproduciendo ahora',
       whatsappMessage: 'Mensaje de WhatsApp',
+      whatsappSend: 'Enviar WhatsApp a {{target}}',
       whatsappCall: 'Llamada de WhatsApp',
       youtubeSearch: 'Buscar en YouTube',
       youtubeOpen: 'Abrir en YouTube',
@@ -1250,6 +1253,8 @@ export const MESSAGES: Record<Locale, Messages> = {
   en: {
     agentTool: {
       generic: 'Tool',
+      inputLabel: 'Input',
+      outputLabel: 'Output',
       cardCreated: 'Created card {{title}}',
       cardMoved: 'Moved card → {{list}}',
       cardUpdated: 'Updated card {{title}}',
@@ -1341,6 +1346,7 @@ export const MESSAGES: Record<Locale, Messages> = {
       spotifySearch: 'Search Spotify',
       spotifyCurrent: 'Now playing',
       whatsappMessage: 'WhatsApp message',
+      whatsappSend: 'Send WhatsApp to {{target}}',
       whatsappCall: 'WhatsApp call',
       youtubeSearch: 'Search YouTube',
       youtubeOpen: 'Open in YouTube',

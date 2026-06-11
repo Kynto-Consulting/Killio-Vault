@@ -13,6 +13,7 @@ import {
 import { FileText } from 'lucide-react-native';
 
 import { RefPill, type RefType } from './RefPill';
+import { ContactChips, hasContactBlocks, parseContacts } from './contact-block';
 import { ReferencePicker, type ReferencePickerProps } from './ReferencePicker';
 import { resolveLucide } from './lucide-registry';
 import { MathRenderer } from './MathRenderer';
@@ -103,6 +104,7 @@ const HEADING_LINE_HEIGHTS = [30, 26, 22, 20, 18, 18];
 
 const FENCED_CODE_RE = /```[\w[\]-]*\n[\s\S]*?```/;
 const ASSET_RE = /<asset\b[^>]*\/?>/g;
+const CONTACT_BLOCK_RE = /<contact>[\s\S]*?<\/contact>/g;
 
 // When true, every leaf <Text> RichText renders is OS-selectable (long-press →
 // select/copy), mirroring Gemini's selectable chat bubbles. Threaded via context
@@ -380,6 +382,38 @@ function renderRichBody({
     return <View>{blocks}</View>;
   }
 
+  // `<contact>…</contact>` blocks (contacts_search tool output that leaks into
+  // assistant prose) → render as clean contact chips instead of raw tags.
+  if (hasContactBlocks(content)) {
+    CONTACT_BLOCK_RE.lastIndex = 0;
+    const segments = content.split(CONTACT_BLOCK_RE);
+    const contactTags = content.match(CONTACT_BLOCK_RE) ?? [];
+    const blocks: React.ReactNode[] = [];
+    segments.forEach((seg, i) => {
+      if (seg.trim()) {
+        blocks.push(
+          <TextLines
+            key={`t${i}`}
+            content={seg}
+            color={color}
+            size={size}
+            noHeading={noHeading}
+            noSize={noSize}
+            onReferencePress={onReferencePress}
+          />,
+        );
+      }
+      if (contactTags[i]) {
+        blocks.push(
+          <View key={`c${i}`} style={{ marginVertical: 2 }}>
+            <ContactChips contacts={parseContacts(contactTags[i])} />
+          </View>,
+        );
+      }
+    });
+    return <View>{blocks}</View>;
+  }
+
   return (
     <TextLines
       content={content}
@@ -447,6 +481,64 @@ function TextLines({
             />
           );
         }
+        // Markdown lists (web parity: remark-gfm renders these as <ul>/<ol>).
+        //   - `- item` / `* item` / `+ item`  → bullet list (• marker)
+        //   - `1. item` / `2) item`           → ordered list (n. marker)
+        // Leading spaces set a nesting indent. The marker is dropped from the
+        // text and replaced by a fixed-width gutter so wrapped lines align.
+        const bulletM = raw.match(/^(\s*)([-*+])\s+(.*)$/);
+        const orderedM = raw.match(/^(\s*)(\d+)[.)]\s+(.*)$/);
+        const listM = bulletM ?? orderedM;
+        if (listM) {
+          const indentSpaces = listM[1].replace(/\t/g, '  ').length;
+          const depth = Math.floor(indentSpaces / 2);
+          const marker = bulletM ? '•' : `${orderedM![2]}.`;
+          const itemText = listM[3];
+          const tokens = tokenizeRefs(itemText);
+          const listFontSize = size;
+          const lineHeight = Math.round(size * 1.5);
+          return (
+            <View
+              key={li}
+              style={{ flexDirection: 'row', alignItems: 'flex-start', marginLeft: 4 + depth * 16 }}
+            >
+              <Text
+                selectable={selectable}
+                style={{
+                  color: colors.mutedForeground,
+                  fontSize: listFontSize,
+                  lineHeight,
+                  fontFamily: fonts.regular,
+                  width: bulletM ? 16 : 22,
+                }}
+              >
+                {marker}
+              </Text>
+              <View
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  rowGap: 2,
+                }}
+              >
+                {tokens.map((tok, ti) =>
+                  renderLineToken(tok, ti, {
+                    color,
+                    fontSize: listFontSize,
+                    fontFamily: fonts.regular,
+                    lineHeight,
+                    noSize,
+                    selectable,
+                    onReferencePress,
+                  }),
+                )}
+              </View>
+            </View>
+          );
+        }
+
         const hm = !noHeading ? raw.match(/^(#{1,6})\s+(.*)$/) : null;
         const level = hm ? hm[1].length : 0;
         const line = hm ? hm[2] : raw;
@@ -461,34 +553,63 @@ function TextLines({
             key={li}
             style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', rowGap: 2 }}
           >
-            {tokens.map((tok, ti) => {
-              if (tok.kind === 'ref') {
-                return (
-                  <View key={ti} style={{ marginHorizontal: 1 }}>
-                    <RefPill
-                      type={tok.type}
-                      name={tok.name}
-                      onPress={
-                        onReferencePress ? () => onReferencePress(tok.type, tok.id) : undefined
-                      }
-                    />
-                  </View>
-                );
-              }
-              return (
-                <Text
-                  key={ti}
-                  selectable={selectable}
-                  style={{ color, fontSize, fontFamily, lineHeight }}
-                >
-                  {renderWithWrappers(tok.value, color, fontSize, noSize)}
-                </Text>
-              );
-            })}
+            {tokens.map((tok, ti) =>
+              renderLineToken(tok, ti, {
+                color,
+                fontSize,
+                fontFamily,
+                lineHeight,
+                noSize,
+                selectable,
+                onReferencePress,
+              }),
+            )}
           </View>
         );
       })}
     </View>
+  );
+}
+
+/** Renders one tokenized line token (ref pill or styled text run). Shared by the
+ *  plain-line and list-item paths so both decorate identically. */
+function renderLineToken(
+  tok: RefToken,
+  ti: number,
+  opts: {
+    color: string;
+    fontSize: number;
+    fontFamily: string;
+    lineHeight: number;
+    noSize: boolean;
+    selectable: boolean;
+    onReferencePress?(type: string, id: string): void;
+  },
+): React.ReactNode {
+  if (tok.kind === 'ref') {
+    return (
+      <View key={ti} style={{ marginHorizontal: 1 }}>
+        <RefPill
+          type={tok.type}
+          name={tok.name}
+          onPress={opts.onReferencePress ? () => opts.onReferencePress!(tok.type, tok.id) : undefined}
+        />
+      </View>
+    );
+  }
+  return (
+    <Text
+      key={ti}
+      selectable={opts.selectable}
+      style={{
+        color: opts.color,
+        fontSize: opts.fontSize,
+        fontFamily: opts.fontFamily,
+        lineHeight: opts.lineHeight,
+      }}
+    >
+      {renderWithWrappers(tok.value, opts.color, opts.fontSize, opts.noSize)}
+    </Text>
   );
 }
 
