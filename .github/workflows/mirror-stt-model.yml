@@ -1,0 +1,51 @@
+name: Mirror STT model to release
+
+# Downloads a sherpa-onnx ASR model tarball on GitHub's fast runners, extracts
+# the loose files, and uploads them to a public Killio-Vault release so the Vault
+# app can fetch them at first run (the upstream HuggingFace repos are gated 401).
+on:
+  workflow_dispatch:
+    inputs:
+      tarball:
+        description: sherpa-onnx asr-models tarball file name
+        required: true
+        default: sherpa-onnx-whisper-small.tar.bz2
+      release_tag:
+        description: target release tag in this repo
+        required: true
+        default: stt-whisper-small-v1
+      files:
+        description: space-separated loose file names inside the tar dir to upload
+        required: true
+        default: small-encoder.int8.onnx small-decoder.int8.onnx small-tokens.txt
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download + extract
+        run: |
+          set -e
+          url="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${{ inputs.tarball }}"
+          echo "downloading $url"
+          curl -fL --retry 5 "$url" -o model.tar.bz2
+          ls -la model.tar.bz2
+          tar xjf model.tar.bz2
+          dir="${{ inputs.tarball }}"; dir="${dir%.tar.bz2}"
+          echo "extracted dir: $dir"
+          ls -la "$dir"
+          mkdir -p out
+          for f in ${{ inputs.files }}; do cp "$dir/$f" out/; done
+          ls -la out
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          tag="${{ inputs.release_tag }}"
+          gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1 \
+            || gh release create "$tag" --repo "${{ github.repository }}" --title "$tag" --notes "Mirrored sherpa-onnx STT model"
+          gh release upload "$tag" out/* --repo "${{ github.repository }}" --clobber
+          echo "uploaded to $tag"
