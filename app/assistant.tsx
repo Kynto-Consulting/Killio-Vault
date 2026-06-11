@@ -257,23 +257,13 @@ export default function AssistantScreen() {
     navigation.setOptions({
       headerTitle: agent?.name ?? tFallback('agent'),
       headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 4 }}>
-          {activeTeam?.id ? (
-            <ModelSelector
-              teamId={activeTeam.id}
-              conversationId={convId.current}
-              value={selectedModel}
-              onChange={setSelectedModel}
-            />
-          ) : null}
-          <Pressable onPressIn={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
-            <SquarePen size={20} color={colors.foreground} />
-          </Pressable>
-        </View>
+        <Pressable onPressIn={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
+          <SquarePen size={20} color={colors.foreground} />
+        </Pressable>
       ),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigation, agent?.name, activeTeam?.id, selectedModel]);
+  }, [navigation, agent?.name]);
 
   // Resume an existing conversation from history.
   useEffect(() => {
@@ -811,6 +801,19 @@ export default function AssistantScreen() {
   return (
     <Screen padded={false}>
       <ModelStatusBanner />
+      {activeTeam?.id ? (
+        // In a top bar (NOT the native-stack header — a JS <Modal> mounted inside
+        // the native header never opens). Here in the screen body the bottom-sheet
+        // works, while still sitting right at the top next to the new-chat button.
+        <View className="flex-row justify-end border-b border-border/40 bg-background px-4 py-1.5">
+          <ModelSelector
+            teamId={activeTeam.id}
+            conversationId={convId.current}
+            value={selectedModel}
+            onChange={setSelectedModel}
+          />
+        </View>
+      ) : null}
       <FlatList
         data={messages}
         keyExtractor={(m) => m.id}
