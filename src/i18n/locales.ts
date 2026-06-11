@@ -127,6 +127,14 @@ export const MESSAGES: Record<Locale, Messages> = {
       whatsappBusiness: 'WhatsApp Business',
       killioImport: 'Importar a Killio',
     },
+    agentModel: {
+      select: 'Modelo',
+      upgrade: 'Mejorar plan',
+      locked: 'El modelo solo se puede cambiar una vez',
+      defaultTitle: 'Modelo de IA predeterminado',
+      defaultHint: 'Se usa como modelo inicial para las nuevas conversaciones.',
+      saved: 'Guardado',
+    },
     common: {
       enter: 'Entrar',
       cancel: 'Cancelar',
@@ -1353,6 +1361,14 @@ export const MESSAGES: Record<Locale, Messages> = {
       whatsappPersonal: 'WhatsApp (personal)',
       whatsappBusiness: 'WhatsApp Business',
       killioImport: 'Import to Killio',
+    },
+    agentModel: {
+      select: 'Model',
+      upgrade: 'Upgrade',
+      locked: 'The model can only be changed once per conversation',
+      defaultTitle: 'Default AI model',
+      defaultHint: 'Used as the starting model for new conversations.',
+      saved: 'Saved',
     },
     common: {
       enter: 'Sign in',

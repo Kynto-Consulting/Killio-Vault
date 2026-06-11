@@ -88,6 +88,7 @@ import { speak, stopSpeaking } from '@/tts/Tts';
 import { getAgent, type LocalAgent } from '@/agents/local-agent.model';
 import { LocalAgentRuntime } from '@/agents/LocalAgentRuntime';
 import { useTranslations } from '@/i18n';
+import { ModelSelector } from '@/ui/ModelSelector';
 import { colors, radius, spacing, typography } from '@/theme/theme';
 
 interface Msg {
@@ -130,6 +131,9 @@ export default function AssistantScreen() {
   const [uploading, setUploading] = useState(false);
   // Gemini-style "+" attach sheet (Fotos / Cámara / Archivos).
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  // Preferred model for the next message. Threaded into streamAgentChat as
+  // `model`; backend clamps to plan + enforces the once-only change.
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   // Per-message "Copiado" feedback: the id of the message whose Copy button was
   // just tapped (checkmark shown for ~1.4s).
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -330,6 +334,7 @@ export default function AssistantScreen() {
         conversationId: convId.current,
         entityType: 'vault',
         clientActionResult: opts.clientActionResult,
+        model: selectedModel ?? undefined,
       },
       {
         onDelta: (t) => {
@@ -864,6 +869,16 @@ export default function AssistantScreen() {
             left, the text field in the middle, and a right button that toggles
             between Mic (empty input → push-to-talk) and Send (has text). */}
         <View className="border-t border-border bg-background px-4 py-3">
+          {activeTeam?.id ? (
+            <View className="mb-2">
+              <ModelSelector
+                teamId={activeTeam.id}
+                conversationId={convId.current}
+                value={selectedModel}
+                onChange={setSelectedModel}
+              />
+            </View>
+          ) : null}
           <View className="flex-row items-center gap-1.5 rounded-full border border-border bg-card pl-1.5 pr-1.5 py-1">
             <Pressable
               onPress={() => setAttachMenuOpen(true)}

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import {
+  ScrollView,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { Screen, Card, Body } from '@/ui';
@@ -37,6 +42,12 @@ import type { KillioFile } from '@/local-workspace/killio-file';
  * flips an individual brick into its inline editor when tapped (web parity),
  * so there is no separate edit overlay component.
  */
+// Progressive-render window. The voice diary doc grows to 700+ bricks/day;
+// mounting all of them at once janks the screen. We render the first N and grow
+// the window as the user scrolls near the bottom (onEndReached-style). All
+// bricks stay in `doc.bricks`, so editing/realtime/reorder are unaffected.
+const BRICK_PAGE_SIZE = 50;
+
 export default function DocumentDetailScreen() {
   const router = useRouter();
   const tDocs = useTranslations('docs');
@@ -53,6 +64,12 @@ export default function DocumentDetailScreen() {
 
   const [doc, setDoc] = useState<DocFull | null>(null);
   const [loading, setLoading] = useState(true);
+  // Progressive-render window (see BRICK_PAGE_SIZE above). Reset whenever we
+  // open a different document.
+  const [visibleCount, setVisibleCount] = useState(BRICK_PAGE_SIZE);
+  useEffect(() => {
+    setVisibleCount(BRICK_PAGE_SIZE);
+  }, [rawId]);
   // Tap-to-edit is always on — web parity: every brick enters its inline
   // editor on tap, there is no separate Edit/View mode.
   const canEdit = true;
@@ -445,6 +462,29 @@ export default function DocumentDetailScreen() {
     }
   };
 
+  // The bricks actually mounted right now (first `visibleCount`, in doc order).
+  const allBricks = doc?.bricks ?? [];
+  const visibleBricks = useMemo(
+    () => allBricks.slice(0, visibleCount),
+    [allBricks, visibleCount],
+  );
+  const hasMoreBricks = visibleCount < allBricks.length;
+
+  // Grow the window when the user scrolls within ~600px of the bottom. Cheap
+  // onEndReached emulation for the ScrollView (BrickList isn't a FlatList).
+  const handleScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (!hasMoreBricks) return;
+      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+      const distanceToBottom =
+        contentSize.height - (contentOffset.y + layoutMeasurement.height);
+      if (distanceToBottom < 600) {
+        setVisibleCount((c) => Math.min(c + BRICK_PAGE_SIZE, allBricks.length));
+      }
+    },
+    [hasMoreBricks, allBricks.length],
+  );
+
   return (
     <Screen padded={false}>
       <DocumentHeader
@@ -477,6 +517,8 @@ export default function DocumentDetailScreen() {
         className="flex-1 mt-2"
         contentContainerClassName="px-4 pb-10 gap-3"
         keyboardShouldPersistTaps="handled"
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
       >
         {loading ? (
           <Card>
@@ -488,7 +530,7 @@ export default function DocumentDetailScreen() {
           </Card>
         ) : (
           <BrickList
-            bricks={(doc.bricks ?? []).map((b) => ({
+            bricks={visibleBricks.map((b) => ({
               id: b.id,
               kind: b.kind,
               content: b.content,

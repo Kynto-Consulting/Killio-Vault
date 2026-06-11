@@ -19,6 +19,7 @@ import { MathRenderer } from './MathRenderer';
 import { API_BASE_URL } from '../core/api/config';
 import { colors, typography } from '../theme/theme';
 import { fonts } from '../theme/fonts';
+import { useI18n } from '../i18n';
 import type { MentionType } from '../types/picker';
 
 /**
@@ -112,6 +113,58 @@ function useSelectable(): boolean {
   return useContext(SelectableContext);
 }
 
+// Active BCP-47 locale, threaded down so the module-level leaf renderers can
+// localize `[t:UNIX:fmt]` date tokens without each one calling a hook. Mirrors
+// the SelectableContext pattern above. Defaults to Spanish (the app default).
+const LocaleContext = createContext('es');
+function useLocaleTag(): string {
+  return useContext(LocaleContext);
+}
+
+// The three token formats a date can render as (1:1 port of the frontend's
+// inline-pickers.ts formatDateToken). Kept as a `[t:UNIX:fmt]` token so it
+// re-localizes on every render. `unix` is SECONDS (new Date(unix*1000)):
+//   - date:    day month year       (24 de mayo de 2026)
+//   - time:    day month + hour      (24 de mayo, 18:00)
+//   - time-to: relative from now     (en 3 días / hace 2 horas)
+type DateTokenFormat = 'date' | 'time' | 'time-to';
+
+function formatDateToken(unix: number, fmt: DateTokenFormat, locale: string): string {
+  const dt = new Date(unix * 1000);
+  if (Number.isNaN(dt.getTime())) return '';
+  if (fmt === 'time') {
+    return dt.toLocaleString(locale, {
+      day: 'numeric',
+      month: 'long',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+  if (fmt === 'time-to') {
+    const diffSec = unix - Math.floor(Date.now() / 1000);
+    const abs = Math.abs(diffSec);
+    try {
+      const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+      const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+        ['year', 31536000],
+        ['month', 2592000],
+        ['day', 86400],
+        ['hour', 3600],
+        ['minute', 60],
+      ];
+      for (const [unit, secs] of units) {
+        if (abs >= secs) return rtf.format(Math.round(diffSec / secs), unit);
+      }
+      return rtf.format(diffSec, 'second');
+    } catch {
+      // Intl.RelativeTimeFormat may be missing on very old engines — fall back
+      // to the absolute date so the pill still shows something meaningful.
+      return dt.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
+    }
+  }
+  return dt.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
 // ─── Public component ────────────────────────────────────────────────────────
 
 export function RichText({
@@ -133,6 +186,11 @@ export function RichText({
   activeBricks,
   teamId,
 }: RichTextProps) {
+  // Active locale (es/en/…) → drives `[t:UNIX:fmt]` date-token localization in
+  // the display path. Read once here and provided via context so leaf renderers
+  // don't each call the hook.
+  const { locale } = useI18n();
+
   // Edit mode short-circuits the whole render tree — we hand control to
   // RichTextEditor which owns the TextInput + ReferencePicker overlay.
   if (editable && onChange) {
@@ -155,14 +213,16 @@ export function RichText({
     );
   }
   return (
-    <RichTextInner
-      content={content}
-      color={color}
-      size={size}
-      onReferencePress={onReferencePress}
-      disabledStyles={disabledStyles}
-      selectable={selectable}
-    />
+    <LocaleContext.Provider value={locale}>
+      <RichTextInner
+        content={content}
+        color={color}
+        size={size}
+        onReferencePress={onReferencePress}
+        disabledStyles={disabledStyles}
+        selectable={selectable}
+      />
+    </LocaleContext.Provider>
   );
 }
 
@@ -646,12 +706,13 @@ function renderLeafMarkdown(
   // link is listed BEFORE the bare-URL autolink so a label containing a URL
   // isn't double-linked.
   const SPLIT_RE =
-    /(`[^`]+`|\$[^$\n]+\$|\[lu:[\w-]+(?::[\d.]+)?\]|\[[^\]]+\]\((?:https?:|mailto:)[^)\s]+\)|(?<![("=])\bhttps?:\/\/[^\s<>)]+)/g;
+    /(`[^`]+`|\$[^$\n]+\$|\[lu:[\w-]+(?::[\d.]+)?\]|\[t:\d+:(?:date|time|time-to)\]|\[[^\]]+\]\((?:https?:|mailto:)[^)\s]+\)|(?<![("=])\bhttps?:\/\/[^\s<>)]+)/g;
   const segments = text.split(SPLIT_RE);
 
   const out: React.ReactNode[] = [];
   const LABELED_LINK_RE = /^\[([^\]]+)\]\(((?:https?:|mailto:)[^)\s]+)\)$/;
   const BARE_URL_RE = /^https?:\/\/[^\s<>)]+$/;
+  const DATE_TOKEN_RE = /^\[t:(\d+):(date|time|time-to)\]$/;
   const pushLink = (label: string, url: string, key: string) => {
     out.push(
       <Text
@@ -674,6 +735,19 @@ function renderLeafMarkdown(
     }
     if (BARE_URL_RE.test(seg)) {
       pushLink(seg, seg, key);
+      return;
+    }
+    const dateTok = seg.match(DATE_TOKEN_RE);
+    if (dateTok) {
+      out.push(
+        <DateTokenPill
+          key={key}
+          unix={Number(dateTok[1])}
+          fmt={dateTok[2] as DateTokenFormat}
+          raw={seg}
+          size={inheritedSize}
+        />,
+      );
       return;
     }
     if (seg.startsWith('[lu:') && seg.endsWith(']')) {
@@ -1069,6 +1143,44 @@ function AssetBlock({ tag }: { tag: string }) {
         {title}
       </Text>
     </Pressable>
+  );
+}
+
+/**
+ * Inline date/time pill for a `[t:UNIX:fmt]` token. Mirrors the web's
+ * accent-tinted pill (`bg-accent/10 text-accent`). Reads the active locale from
+ * context so it localizes + (for `time-to`) recomputes on each render. Falls
+ * back to the raw token if the date is unparseable so content never disappears.
+ */
+function DateTokenPill({
+  unix,
+  fmt,
+  raw,
+  size,
+}: {
+  unix: number;
+  fmt: DateTokenFormat;
+  raw: string;
+  size: number;
+}) {
+  const selectable = useSelectable();
+  const locale = useLocaleTag();
+  const label = formatDateToken(unix, fmt, locale) || raw;
+  return (
+    <Text
+      selectable={selectable}
+      style={{
+        fontFamily: fonts.medium,
+        fontSize: Math.max(11, size - 1),
+        color: colors.cyan,
+        backgroundColor: colors.muted,
+        paddingHorizontal: 5,
+        paddingVertical: 1,
+        borderRadius: 4,
+      }}
+    >
+      {label}
+    </Text>
   );
 }
 

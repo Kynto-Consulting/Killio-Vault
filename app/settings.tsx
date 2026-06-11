@@ -31,6 +31,9 @@ import {
 } from '@/screen/ScreenCapture';
 import { useTranslations } from '@/i18n';
 import { STT_LANGUAGES, type SttLanguage } from '@/settings/settings-store';
+import { useAuth } from '@/core/auth/AuthContext';
+import { ModelSelector } from '@/ui/ModelSelector';
+import { setDefaultModel } from '@/core/api/agent.client';
 
 /** Default work-hours window: 09:00–18:00. */
 const WORK_HOURS: CaptureMode = {
@@ -48,6 +51,12 @@ export default function SettingsScreen() {
   const tVid = useTranslations('voiceId');
   const { mode, setMode, status, sttLanguage, setSttLang } = useCapture();
   const { entitlements } = useEntitlements();
+  const { activeTeam } = useAuth();
+  const tModel = useTranslations('agentModel');
+  // Preferred default model. The selector seeds from the backend's defaultModel
+  // when this is null; on change we persist via POST /auth/profile.
+  const [defaultModel, setDefaultModelState] = useState<string | null>(null);
+  const [modelSaved, setModelSaved] = useState(false);
   const [consent, setConsent] = useState<boolean | null>(null);
   const [voice, setVoice] = useState<string>('es-ES');
   const [wakeOn, setWakeOn] = useState<boolean>(true);
@@ -193,6 +202,35 @@ export default function SettingsScreen() {
           />
         </View>
       </Card>
+
+      {/* Default AI model ───────────────────────────────────────────────── */}
+      {activeTeam?.id ? (
+        <Card>
+          <Body>{tModel('defaultTitle')}</Body>
+          <Body muted>{tModel('defaultHint')}</Body>
+          <View style={{ marginTop: 8 }}>
+            <ModelSelector
+              teamId={activeTeam.id}
+              value={defaultModel}
+              onChange={(modelId) => {
+                setDefaultModelState(modelId);
+                setModelSaved(false);
+                void setDefaultModel(modelId)
+                  .then(() => setModelSaved(true))
+                  .catch(() => undefined);
+              }}
+            />
+          </View>
+          {modelSaved ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 }}>
+              <Check size={13} color={colors.success} />
+              <Text style={{ fontFamily: fonts.medium, color: colors.success, fontSize: 12 }}>
+                {tModel('saved')}
+              </Text>
+            </View>
+          ) : null}
+        </Card>
+      ) : null}
 
       {/* Diagnostics / logs export ──────────────────────────────────────── */}
       <Card>

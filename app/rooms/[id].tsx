@@ -61,6 +61,7 @@ import { Screen } from '@/ui';
 import { RichText } from '@/ui/RichText';
 import { ReferencePicker } from '@/ui/ReferencePicker';
 import { useTranslations } from '@/i18n';
+import { ModelSelector } from '@/ui/ModelSelector';
 import { useAuth } from '@/core/auth/AuthContext';
 import { useWorkspaceCatalog } from '@/workspace/WorkspaceCatalogContext';
 import {
@@ -181,6 +182,8 @@ export default function RoomChatScreen() {
   const [activeCall, setActiveCall] = useState<RoomCall | null>(null);
   const [callBusy, setCallBusy] = useState(false);
   const [replyTo, setReplyTo] = useState<RoomMessage | null>(null);
+  // Preferred model for AI replies in this room (carried in message metadata).
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [actionTarget, setActionTarget] = useState<RoomMessage | null>(null);
   const [reactionTarget, setReactionTarget] = useState<RoomMessage | null>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
@@ -295,23 +298,32 @@ export default function RoomChatScreen() {
     if (!text || sending) return;
     setSending(true);
     try {
-      const metadata = replyTo
-        ? {
-            replyTo: {
-              id: replyTo.id,
-              authorName: replyTo.authorName,
-              preview: shortPreview(replyTo.content),
-            },
-          }
-        : undefined;
-      const m = await sendRoomMessage(roomId, text, metadata);
+      const metadata = {
+        ...(replyTo
+          ? {
+              replyTo: {
+                id: replyTo.id,
+                authorName: replyTo.authorName,
+                preview: shortPreview(replyTo.content),
+              },
+            }
+          : {}),
+        // Preferred model for the AI reply in an AI room. The backend reads it
+        // when selecting the model; ignored for human-only rooms.
+        ...(selectedModel ? { model: selectedModel } : {}),
+      };
+      const m = await sendRoomMessage(
+        roomId,
+        text,
+        Object.keys(metadata).length > 0 ? (metadata as RoomMessage['metadata']) : undefined,
+      );
       setMessages((cur) => (cur.some((x) => x.id === m.id) ? cur : [...cur, m]));
       setInput('');
       setReplyTo(null);
     } finally {
       setSending(false);
     }
-  }, [input, sending, replyTo, roomId]);
+  }, [input, sending, replyTo, roomId, selectedModel]);
 
   // ─── Composer: mention autocomplete ──────────────────────────────────────
   const onInputChange = useCallback((next: string) => {
@@ -867,6 +879,17 @@ export default function RoomChatScreen() {
               <Text className="text-[10px] text-muted-foreground">
                 {tRooms('releaseToSend')}
               </Text>
+            </View>
+          ) : null}
+
+          {/* Model selector — carried in metadata for AI replies. */}
+          {activeTeam?.id ? (
+            <View className="border-t border-border/40 px-2 pt-2">
+              <ModelSelector
+                teamId={activeTeam.id}
+                value={selectedModel}
+                onChange={setSelectedModel}
+              />
             </View>
           ) : null}
 

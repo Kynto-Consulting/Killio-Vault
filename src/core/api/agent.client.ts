@@ -19,6 +19,46 @@ export interface ConversationMessage {
   createdAt?: string;
 }
 
+/** One model in the catalog returned by GET /agent/models. */
+export interface AgentModelOption {
+  id: string;
+  label: string;
+  description: string;
+  minPlanTier: string;
+  /** False when the current plan tier doesn't include this model. */
+  allowed: boolean;
+}
+
+/** Response of GET /agent/models?teamId&conversationId. */
+export interface AgentModelOptions {
+  planTier: string;
+  models: AgentModelOption[];
+  defaultModel: string | null;
+  conversation: {
+    id: string;
+    model: string | null;
+    changeCount: number;
+    /** Once-only change already spent — the selector must lock. */
+    locked: boolean;
+  } | null;
+}
+
+/** GET /agent/models — model entitlements for the selector UIs. */
+export async function getAgentModels(params: {
+  teamId: string;
+  conversationId?: string;
+}): Promise<AgentModelOptions> {
+  const { data } = await api.get<AgentModelOptions>('/agent/models', {
+    params: { teamId: params.teamId, conversationId: params.conversationId },
+  });
+  return data;
+}
+
+/** POST /auth/profile — persists the user's preferred default model. */
+export async function setDefaultModel(model: string): Promise<void> {
+  await api.post('/auth/profile', { defaultModel: model });
+}
+
 /** ChatGPT-style history list (reuses the agent conversation store). */
 export async function listConversations(
   teamId: string,
@@ -73,6 +113,9 @@ export interface AgentChatBody {
   entityType?: 'vault' | 'document' | 'board' | 'mesh' | 'card' | 'script' | 'team';
   entityId?: string;
   enabledToolIds?: string[];
+  /** Preferred model id for this message. Validated + clamped to plan
+   *  server-side; once-only change per conversation is enforced there. */
+  model?: string;
   clientActionResult?: {
     id?: string;
     tool: string;

@@ -31,8 +31,20 @@ export interface ClientActionResult {
 }
 
 export async function callNumber(number: string): Promise<ClientActionResult> {
-  const tel = `tel:${String(number).replace(/[^+\d#*]/g, '')}`;
-  return open(tel, { opened: true, number });
+  const digits = String(number).replace(/[^+\d#*]/g, '');
+  if (!digits) return { success: false, error: 'No phone number given.' };
+  const tel = `tel:${digits}`;
+  // Do NOT gate tel: on Linking.canOpenURL — on Android 11+ package visibility
+  // makes canOpenURL('tel:') return FALSE unless `tel` is whitelisted in the
+  // manifest <queries>, so the dialer-always-present case wrongly reported
+  // "Cannot open" (the AI said "calling" but nothing dialed). The system dialer
+  // ALWAYS handles tel:, so openURL directly and only surface a real throw.
+  try {
+    await Linking.openURL(tel);
+    return { success: true, output: { opened: true, number: digits } };
+  } catch (e) {
+    return { success: false, error: (e as Error)?.message ?? 'Could not open the dialer.' };
+  }
 }
 
 export async function openBrowser(url: string): Promise<ClientActionResult> {

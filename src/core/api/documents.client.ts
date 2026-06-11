@@ -58,6 +58,32 @@ export async function getDocument(documentId: string): Promise<DocFull> {
   return data;
 }
 
+export interface DocBricksPage {
+  bricks: DocBrick[];
+  total: number;
+  hasMore: boolean;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Paginated bricks fetch for large cloud docs (e.g. the voice diary, 700+/day).
+ * Backed by `GET /documents/:id/bricks?limit&offset` → `{ bricks, total, hasMore,
+ * limit, offset }` ordered by position ASC. The document screen pages these in
+ * with a FlatList onEndReached instead of loading every brick up front.
+ */
+export async function getDocumentBricksPage(
+  documentId: string,
+  limit = 50,
+  offset = 0,
+): Promise<DocBricksPage> {
+  const { data } = await api.get<DocBricksPage>(
+    `/documents/${documentId}/bricks`,
+    { params: { limit, offset } },
+  );
+  return data;
+}
+
 export async function updateBrickContent(
   documentId: string,
   brickId: string,
