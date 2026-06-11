@@ -970,49 +970,77 @@ class VaultSpeechService : Service() {
      * Writes to a .part file then renames so a partial download is never seen as
      * complete. Throws on hard failure.
      */
+    // RESUMABLE download: a big model (whisper-small ~375MB) over flaky wifi used
+    // to restart from 0 on every drop (the old code deleted the .part each call)
+    // → it never finished. Now we KEEP the .part, resume with an HTTP Range
+    // header (bytes=<have>-), append, and retry with backoff on a network drop.
     private fun downloadTo(url: String, dest: File, onProgress: ((downloaded: Long, total: Long) -> Unit)?) {
       val part = File(dest.parentFile, "${dest.name}.part")
-      if (part.exists()) part.delete()
-      var current = url
-      var redirects = 0
+      val maxRetries = 8
+      var attempt = 0
       while (true) {
-        val conn = (URL(current).openConnection() as HttpURLConnection).apply {
-          connectTimeout = 20_000
-          readTimeout = 60_000
-          requestMethod = "GET"
-          instanceFollowRedirects = false
-          setRequestProperty("User-Agent", "KillioVault")
-        }
+        val startByte = if (part.exists()) part.length() else 0L
+        var current = url
+        var redirects = 0
         try {
-          conn.connect()
-          val rc = conn.responseCode
-          if (rc in 300..399) {
-            val loc = conn.getHeaderField("Location")
-              ?: throw java.io.IOException("Redirect with no Location ($rc) for $current")
-            if (++redirects > 5) throw java.io.IOException("Too many redirects for $url")
-            current = if (loc.startsWith("http")) loc else URL(URL(current), loc).toString()
-            continue
-          }
-          if (rc != HttpURLConnection.HTTP_OK) {
-            throw java.io.IOException("HTTP $rc fetching $current")
-          }
-          val total = conn.contentLength.toLong()
-          conn.inputStream.use { input ->
-            FileOutputStream(part).use { out ->
-              val buffer = ByteArray(64 * 1024)
-              var downloaded = 0L
-              while (true) {
-                val n = input.read(buffer)
-                if (n < 0) break
-                out.write(buffer, 0, n)
-                downloaded += n
-                onProgress?.invoke(downloaded, total)
+          var done = false
+          while (!done) {
+            val conn = (URL(current).openConnection() as HttpURLConnection).apply {
+              connectTimeout = 20_000
+              readTimeout = 60_000
+              requestMethod = "GET"
+              instanceFollowRedirects = false
+              setRequestProperty("User-Agent", "KillioVault")
+              if (startByte > 0) setRequestProperty("Range", "bytes=$startByte-")
+            }
+            try {
+              conn.connect()
+              val rc = conn.responseCode
+              if (rc in 300..399) {
+                val loc = conn.getHeaderField("Location")
+                  ?: throw java.io.IOException("Redirect with no Location ($rc) for $current")
+                if (++redirects > 6) throw java.io.IOException("Too many redirects for $url")
+                current = if (loc.startsWith("http")) loc else URL(URL(current), loc).toString()
+                continue
               }
+              if (rc != HttpURLConnection.HTTP_OK && rc != HttpURLConnection.HTTP_PARTIAL) {
+                throw java.io.IOException("HTTP $rc fetching $current")
+              }
+              // 206 → server honored our Range → APPEND from where we left off.
+              // 200 → full body (server ignored Range) → start the .part over.
+              val append = rc == HttpURLConnection.HTTP_PARTIAL && startByte > 0
+              val total = if (rc == HttpURLConnection.HTTP_PARTIAL) {
+                val cr = conn.getHeaderField("Content-Range") // bytes s-e/TOTAL
+                cr?.substringAfterLast('/')?.toLongOrNull() ?: (startByte + conn.contentLengthLong)
+              } else {
+                conn.contentLengthLong
+              }
+              if (!append && part.exists()) part.delete()
+              conn.inputStream.use { input ->
+                FileOutputStream(part, append).use { out ->
+                  val buffer = ByteArray(64 * 1024)
+                  var downloaded = if (append) startByte else 0L
+                  while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    out.write(buffer, 0, n)
+                    downloaded += n
+                    onProgress?.invoke(downloaded, total)
+                  }
+                  out.flush()
+                }
+              }
+              done = true
+            } finally {
+              conn.disconnect()
             }
           }
-          break
-        } finally {
-          conn.disconnect()
+          break // fully downloaded
+        } catch (e: java.io.IOException) {
+          if (++attempt > maxRetries) throw e
+          FileLog.log("KillioSTT", "download retry $attempt (resume from ${part.length()}B): ${e.message}")
+          try { Thread.sleep(2000L * attempt) } catch (_: InterruptedException) {}
+          // keep .part → next attempt resumes via Range
         }
       }
       if (dest.exists()) dest.delete()
