@@ -166,14 +166,18 @@ class VaultSpeechService : Service() {
     // release `stt-whisper-base-v1` in Kynto-Consulting/Killio-Vault, keeping the
     // filenames below. Whisper is one shared multilingual model for ALL languages
     // (we pass the language code into OfflineWhisperModelConfig.language).
-    private const val WHISPER_DIR = "sherpa-stt-whisper-base"
+    // whisper-SMALL int8 — much higher accuracy than whisper-base, especially for
+    // Spanish (user found base "muy pésimo"). ~480MB one-time download, ~1-2s per
+    // VAD segment on a flagship. Same OfflineWhisperModelConfig (encoder/decoder/
+    // tokens) — a pure model swap. Mirrored to a public Killio-Vault release.
+    private const val WHISPER_DIR = "sherpa-stt-whisper-small"
     private const val WHISPER_BASE_URL =
-      "https://github.com/Kynto-Consulting/Killio-Vault/releases/download/stt-whisper-base-v1"
+      "https://github.com/Kynto-Consulting/Killio-Vault/releases/download/stt-whisper-small-v1"
     // remote filename → local filename. Local names are constant for the loader.
     private val WHISPER_FILES = listOf(
-      "base-encoder.int8.onnx" to "encoder.int8.onnx",
-      "base-decoder.int8.onnx" to "decoder.int8.onnx",
-      "base-tokens.txt" to "tokens.txt",
+      "small-encoder.int8.onnx" to "encoder.int8.onnx",
+      "small-decoder.int8.onnx" to "decoder.int8.onnx",
+      "small-tokens.txt" to "tokens.txt",
     )
     private val WHISPER_LOCAL_REQUIRED = listOf("encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt")
 
