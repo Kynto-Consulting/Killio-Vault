@@ -56,6 +56,19 @@ export interface WakeEvent {
 }
 
 /**
+ * VAD speech-activity transition from the native capture loop. Fires only on a
+ * state CHANGE: active=true when the user starts speaking, active=false when the
+ * mic goes silent (a real pause). The post-wake command capture uses this so its
+ * "user stopped talking" silence timer only runs while the mic is actually
+ * silent — never cutting the command mid-sentence between VAD segments.
+ */
+export interface SpeechActivityEvent {
+  active: boolean;
+  /** UTC epoch ms. */
+  ts: number;
+}
+
+/**
  * Offline sherpa-onnx model lifecycle, emitted on first start while the
  * streaming Zipformer (per-language), Silero VAD, and speaker-embedding models
  * are fetched. The UI shows a progress banner for 'downloading'/'preparing' and
@@ -121,6 +134,24 @@ export function onWake(cb: (e: WakeEvent) => void): { remove(): void } {
     const keyword = typeof raw?.keyword === 'string' ? raw.keyword : '';
     const ts = typeof raw?.ts === 'number' ? raw.ts : Date.now();
     if (keyword) cb({ keyword, ts });
+  });
+  return { remove: () => sub.remove() };
+}
+
+/**
+ * Subscribe to native VAD speech-activity transitions. Fires { active, ts } each
+ * time the mic crosses the speech/silence boundary. Used by the wake-command
+ * capture to gate its silence timer (see WakeListener). No-op if the native
+ * module is absent.
+ */
+export function onSpeechActivity(
+  cb: (e: SpeechActivityEvent) => void,
+): { remove(): void } {
+  if (!emitter) return { remove() {} };
+  const sub = emitter.addListener('onSpeechActivity', (raw: any) => {
+    const active = !!raw?.active;
+    const ts = typeof raw?.ts === 'number' ? raw.ts : Date.now();
+    cb({ active, ts });
   });
   return { remove: () => sub.remove() };
 }

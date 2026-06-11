@@ -41,6 +41,8 @@ interface CaptureState {
   setOnWake(cb: ((m: import('../wakeword/WakeWord').WakeMatch) => void) | null): void;
   /** Arm capture of the next utterance as a wake command (post-wake). */
   setOnCommandUtterance(cb: ((text: string) => void) | null): void;
+  /** Subscribe to native VAD speech-activity (gates the post-wake silence timer). */
+  setOnSpeechActivity(cb: ((active: boolean) => void) | null): void;
   /** Reload the owner voiceprint into the running controller (after enroll/clear). */
   refreshVoiceprint(): void;
   /** Re-push wake keywords to the native spotter after the agent list changes. */
@@ -53,6 +55,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const controllerRef = useRef<CaptureController | null>(null);
   const wakeCbRef = useRef<((m: any) => void) | null>(null);
   const cmdCbRef = useRef<((text: string) => void) | null>(null);
+  const speechActivityCbRef = useRef<((active: boolean) => void) | null>(null);
   const [status, setStatus] = useState<CaptureStatus>('idle');
   const [modelStatus, setModelStatus] = useState<ModelStatus>(null);
   const [mode, setModeState] = useState<CaptureMode>({ kind: 'off' });
@@ -79,6 +82,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       controllerRef.current = controller;
       controller.setOnWake(wakeCbRef.current); // apply handler registered before creation
       controller.setOnCommandUtterance(cmdCbRef.current);
+      controller.setOnSpeechActivity(speechActivityCbRef.current);
       // Per user directive: always try to start capture regardless of build
       // flavor. The controller itself drops into a 'degraded' status when no
       // native module is present, so the timer + outbox flush keep running.
@@ -159,6 +163,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     controllerRef.current = controller;
     controller.setOnWake(wakeCbRef.current);
     controller.setOnCommandUtterance(cmdCbRef.current);
+    controller.setOnSpeechActivity(speechActivityCbRef.current);
     if (mode.kind !== 'off' && wasRunning) {
       const hasMic = await hasMicrophone();
       const granted = hasMic ? true : (await requestCapturePermissions()).microphone;
@@ -199,6 +204,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       setOnCommandUtterance: (cb) => {
         cmdCbRef.current = cb;
         controllerRef.current?.setOnCommandUtterance(cb);
+      },
+      setOnSpeechActivity: (cb) => {
+        speechActivityCbRef.current = cb;
+        controllerRef.current?.setOnSpeechActivity(cb);
       },
       refreshVoiceprint: () => {
         void controllerRef.current?.refreshVoiceprint();

@@ -83,6 +83,8 @@ export class CaptureController {
   private modelStatusSub: { remove(): void } | null = null;
   /** Native KeywordSpotter wake subscription (primary wake path). */
   private wakeSub: { remove(): void } | null = null;
+  /** Native VAD speech-activity subscription (gates post-wake silence timer). */
+  private speechActivitySub: { remove(): void } | null = null;
   /** System-audio (playback) frame/error subscriptions, used when source
    *  includes 'system'. Separate from the mic subs above. */
   private sysFrameSub: { remove(): void } | null = null;
@@ -119,6 +121,13 @@ export class CaptureController {
    * turn is sent (or it times out).
    */
   private onCommandUtteranceCb: ((text: string) => void) | null = null;
+  /**
+   * Fired on every native VAD speech-activity transition (active=true when the
+   * user is speaking, false on a real pause). WakeListener uses this to gate its
+   * post-wake silence timer so the command is only finalized after a genuine
+   * pause — never cut between VAD segments while the user is still talking.
+   */
+  private onSpeechActivityCb: ((active: boolean) => void) | null = null;
   /**
    * Cached owner voiceprint (128-dim x-vector) for offline speaker
    * verification. null = none enrolled → open behavior (anyone can wake).
@@ -256,6 +265,13 @@ export class CaptureController {
       // transcript matcher uses. The transcript-fuzzy matchWake() in
       // handleTranscript() stays as a fallback for un-tokenizable phrases.
       this.wakeSub = Speech.onWake((e) => this.handleNativeWake(e));
+      // VAD speech-activity → gate the post-wake silence timer (see WakeListener).
+      // Muting (during chime/TTS) suppresses forwarding so a chime can't look like
+      // user speech.
+      this.speechActivitySub = Speech.onSpeechActivity((e) => {
+        if (this.muted) return;
+        this.onSpeechActivityCb?.(e.active);
+      });
     } else if (this.wantsMic && nativeOk) {
       console.log('[KillioCapture] mic path = AudioRecord+VAD (KillioCapture) fallback');
       this.frameSub = Native.onAudioFrame((e) => this.handleFrame(e));
@@ -316,11 +332,13 @@ export class CaptureController {
     this.transcriptSub?.remove();
     this.modelStatusSub?.remove();
     this.wakeSub?.remove();
+    this.speechActivitySub?.remove();
     this.sysFrameSub?.remove();
     this.sysErrSub?.remove();
     this.frameSub = this.errSub = this.transcriptSub = null;
     this.modelStatusSub = null;
     this.wakeSub = null;
+    this.speechActivitySub = null;
     this.sysFrameSub = this.sysErrSub = null;
     this.setModelStatus(null);
     if (this.wantsMic) {
@@ -509,6 +527,16 @@ export class CaptureController {
    */
   setOnCommandUtterance(cb: ((text: string) => void) | null): void {
     this.onCommandUtteranceCb = cb;
+  }
+
+  /**
+   * Register a handler for native VAD speech-activity transitions. While a
+   * post-wake command capture is armed, WakeListener uses this to keep the
+   * silence timer paused while the user is still speaking (active=true) and only
+   * start it on a real pause (active=false). Pass null to unregister.
+   */
+  setOnSpeechActivity(cb: ((active: boolean) => void) | null): void {
+    this.onSpeechActivityCb = cb;
   }
 
   /** Native SpeechRecognizer transcript → diary outbox + wake-phrase scan. */

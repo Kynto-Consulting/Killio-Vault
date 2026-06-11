@@ -41,6 +41,74 @@ const PRETHINK_RE = /<(pre_think|think)>([\s\S]*?)<\/\1>/gi;
 const MASTER_RE =
   /<(?:pre_)?think>[\s\S]*?<\/(?:pre_)?think>|<(?:async_)?invoke\s+[^>]*?>[\s\S]*?<\/(?:async_)?invoke>|<tool_call\b[^>]*?(?:\/>|>[\s\S]*?<\/tool_call>)|<tool_status\s+[^>]*?\/?>|<tool_output\s+[^>]*?>[\s\S]*?<\/tool_output>|<\/?batch_(?:tool|invoke)>|<plan>[\s\S]*?<\/plan>|<complete_step\b[^>]*?\/?>|<end_agent\b[^>]*?>[\s\S]*?<\/end_agent>|<asset\b[^>]*?(?:\/>|>[\s\S]*?<\/asset>)/gi;
 
+// ─── Streaming guard: incomplete tool-ish markup ────────────────────────────
+// While the assistant message is still streaming, a tool block can be cut off
+// mid-tag (`<invoke id="tc`), mid-body (`<invoke …><parameters><query>…` with
+// no `</invoke>` yet), or arrive in a foreign/unknown wrapper (`<function_calls>`,
+// `<output>`, `<invoke>`). Complete blocks are consumed by MASTER_RE and
+// rendered as pills; anything tool-ish that is NOT complete must be hidden
+// until it closes — never shown as raw text. Plain prose containing `<`
+// ("a < b", "x<y") must survive untouched.
+const TOOLISH_NAME_RE =
+  /^(?:async_invoke|invoke|function|function_call|function_calls|tool|tool_call|tool_status|tool_output|output|result|batch_tool|batch_invoke|parameters)$|^antml[:\w-]*$/i;
+const TOOLISH_WORDS = [
+  'async_invoke',
+  'invoke',
+  'function_calls',
+  'function_call',
+  'function',
+  'tool_output',
+  'tool_status',
+  'tool_call',
+  'tool',
+  'output',
+  'result',
+  'batch_invoke',
+  'batch_tool',
+  'parameters',
+  'antml',
+];
+
+/**
+ * Pure helper (exported for tests): strips an INCOMPLETE/unterminated tool-ish
+ * block from the end of a streamed text segment. Two cases:
+ *  (a) a tool-ish tag was OPENED (`<invoke …>`, `<output>`, `<function_calls>`)
+ *      but its closing tag hasn't streamed in yet → cut from the opener to the
+ *      end of the buffer.
+ *  (b) the tag itself is still being typed (`<invok`, `</tool_ou`,
+ *      `<invoke id="tc` — no `>` yet) → cut the partial token, but ONLY when it
+ *      is a prefix of a known tool-ish word so prose like "a < b" is kept.
+ */
+export function stripIncompleteToolMarkup(text: string): string {
+  let t = text;
+
+  // (a) opened-but-unclosed tool-ish block → cut from the first such opener.
+  const openRe = /<(\/?)([A-Za-z_][\w:-]*)((?:\s[^>]*)?)(\/?)>/g;
+  let m: RegExpExecArray | null;
+  while ((m = openRe.exec(t))) {
+    const [, closing, name, , selfClose] = m;
+    if (closing || selfClose) continue;
+    if (!TOOLISH_NAME_RE.test(name)) continue;
+    const closeIdx = t.toLowerCase().indexOf(`</${name.toLowerCase()}`, openRe.lastIndex);
+    if (closeIdx === -1) {
+      t = t.slice(0, m.index);
+      break;
+    }
+  }
+
+  // (b) partial tag still streaming at the very end (no '>' yet).
+  const tail = t.match(/<(\/?)([A-Za-z_][\w:-]*)?([^<>]*)$/);
+  if (tail) {
+    const word = (tail[2] || '').toLowerCase();
+    const isToolish = word
+      ? TOOLISH_WORDS.some((w) => w.startsWith(word) || word.startsWith(w))
+      : tail[1] === '/'; // a bare trailing '</'
+    if (isToolish && tail.index !== undefined) t = t.slice(0, tail.index);
+  }
+
+  return t;
+}
+
 function unescapeHtml(s: string): string {
   return s
     .replace(/&quot;/g, '"')
@@ -178,6 +246,10 @@ export function parseAgentMarkup(content: string): MarkupBlock[] {
     t = t.replace(/<think(?:ing)?\b[^>]*>[\s\S]*$/i, '');
     //  - leading: a stray closing </think> / </thinking> with no matching open.
     t = t.replace(/^[\s\S]*?<\/think(?:ing)?>/i, '');
+    // Streaming guard: hide any INCOMPLETE tool-ish block (<invoke, <function*,
+    // <tool*, <output, <result, <batch_*, <parameters) at the buffer end until
+    // it is complete. Complete blocks were already consumed by MASTER_RE.
+    t = stripIncompleteToolMarkup(t);
     t = t.trim();
     if (t) blocks.push({ type: 'text', text: t });
   };

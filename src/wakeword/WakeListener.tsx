@@ -61,8 +61,14 @@ import type { WakeMatch } from './WakeWord';
  *    even if a transcript/stream callback is dropped.
  */
 
-/** How long the human can pause before we treat the command as finished. */
-const SILENCE_MS = 1_800;
+/**
+ * How long the human can pause (mic actually silent) before we treat the command
+ * as finished. Raised from 1.8s → 2.5s so a natural mid-sentence breath doesn't
+ * cut the command. Crucially, this timer now only runs while the native VAD
+ * reports the mic is SILENT (see setOnSpeechActivity below) — so slow decoding or
+ * VAD segment boundaries between words can no longer end the command early.
+ */
+const SILENCE_MS = 2_500;
 /** Absolute cap on a single wake session (chime + listen + reply). */
 const SESSION_TIMEOUT_MS = 60_000;
 
@@ -72,7 +78,8 @@ const SESSION_TIMEOUT_MS = 60_000;
  */
 export function WakeListener() {
   const t = useTranslations('wakeListener');
-  const { setOnWake, setOnCommandUtterance, setMuted, flushNow } = useCapture();
+  const { setOnWake, setOnCommandUtterance, setOnSpeechActivity, setMuted, flushNow } =
+    useCapture();
   const { activeTeam } = useAuth();
 
   // Mutable session state kept in refs so the long-lived controller callbacks
@@ -81,6 +88,10 @@ export function WakeListener() {
   const convId = useRef<string | undefined>(undefined);
   const matchedAgentName = useRef<string | undefined>(undefined);
   const commandParts = useRef<string[]>([]);
+  /** True while we're capturing the post-wake command (armed). */
+  const capturing = useRef(false);
+  /** Latest native VAD speech-active state (true = user is speaking now). */
+  const speaking = useRef(false);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeTeamId = useRef<string | undefined>(undefined);
@@ -97,9 +108,28 @@ export function WakeListener() {
     const endSession = () => {
       setOnCommandUtterance(null);
       clearTimers();
+      capturing.current = false;
       commandParts.current = [];
       matchedAgentName.current = undefined;
       busy.current = false;
+    };
+
+    /**
+     * (Re)arm the "user stopped talking" silence timer — but ONLY when the mic is
+     * actually silent. If the native VAD currently reports speech (speaking=true),
+     * we do NOT start the timer; the onSpeechActivity(false) transition will start
+     * it once the user truly pauses. This is what makes the command capture wait
+     * "hasta que acabe de hablar o pause" instead of cutting between VAD segments.
+     */
+    const armSilenceTimer = () => {
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      silenceTimer.current = null;
+      if (!capturing.current) return;
+      if (speaking.current) return; // still talking — wait for the real pause
+      if (commandParts.current.length === 0) return; // nothing captured yet
+      silenceTimer.current = setTimeout(() => {
+        void sendCommand(commandParts.current.join(' '));
+      }, SILENCE_MS);
     };
 
     const resolveAgent = (name?: string) =>
@@ -187,13 +217,26 @@ export function WakeListener() {
     const onCommandUtterance = (text: string) => {
       const piece = text.trim();
       if (!piece) return;
-      flog('WakeFlow', `command piece: "${piece.slice(0, 40)}" (silence timer ${SILENCE_MS}ms)`);
+      flog('WakeFlow', `command piece: "${piece.slice(0, 40)}" (silence timer ${SILENCE_MS}ms, speaking=${speaking.current})`);
       commandParts.current.push(piece);
-      // Restart the "user stopped talking" timer on every new piece.
-      if (silenceTimer.current) clearTimeout(silenceTimer.current);
-      silenceTimer.current = setTimeout(() => {
-        void sendCommand(commandParts.current.join(' '));
-      }, SILENCE_MS);
+      // (Re)arm the silence timer — armSilenceTimer holds it open while the VAD
+      // still reports speech, so a piece arriving mid-utterance won't end early.
+      armSilenceTimer();
+    };
+
+    // Native VAD speech-activity transitions: keep the silence timer paused while
+    // the user is speaking, and (re)start it the instant the mic goes silent.
+    const onSpeechActivity = (active: boolean) => {
+      speaking.current = active;
+      if (!capturing.current) return;
+      if (active) {
+        // User (re)started talking — cancel any pending end-of-command timer.
+        if (silenceTimer.current) clearTimeout(silenceTimer.current);
+        silenceTimer.current = null;
+      } else {
+        // Real pause — start counting down to finalize the command.
+        armSilenceTimer();
+      }
     };
 
     const onWake = async (m: WakeMatch) => {
@@ -228,7 +271,13 @@ export function WakeListener() {
             // One-shot: "Hey Killio, ¿qué hora es?" → answer immediately.
             void sendCommand(inlineCommand);
           } else {
-            // Listen for what the human says next; send when they stop.
+            // Listen for what the human says next; send when they stop. Arm
+            // BEFORE unmuting timing settles so the first words aren't lost: the
+            // native side already started forwarding transcripts/activity the
+            // instant we unmuted above. capturing=true lets the speech-activity
+            // gate run the silence timer.
+            capturing.current = true;
+            speaking.current = false;
             setOnCommandUtterance(onCommandUtterance);
           }
         },
@@ -242,13 +291,16 @@ export function WakeListener() {
     };
 
     setOnWake(onWake);
+    setOnSpeechActivity(onSpeechActivity);
     return () => {
       setOnWake(null);
       setOnCommandUtterance(null);
+      setOnSpeechActivity(null);
       clearTimers();
+      capturing.current = false;
       busy.current = false;
     };
-  }, [setOnWake, setOnCommandUtterance, setMuted, flushNow, t]);
+  }, [setOnWake, setOnCommandUtterance, setOnSpeechActivity, setMuted, flushNow, t]);
 
   return null;
 }

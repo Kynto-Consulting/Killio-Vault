@@ -3,6 +3,7 @@ import {
   Image,
   Linking,
   Pressable,
+  ScrollView,
   Text,
   TextInput,
   View,
@@ -262,6 +263,35 @@ function renderRichBody({
         })}
       </View>
     );
+  }
+
+  // GitHub-style markdown tables: contiguous `| a | b |` lines whose second
+  // line is a `|---|---|` separator → native table block. Runs after the
+  // fenced-code pass so tables inside ``` blocks stay literal.
+  if (content.includes('|')) {
+    const segs = splitMarkdownTables(content);
+    if (segs.some((s) => s.type === 'table')) {
+      return (
+        <View>
+          {segs.map((seg, i) => {
+            if (seg.type === 'table') {
+              return <MarkdownTable key={i} header={seg.header} rows={seg.rows} size={size} />;
+            }
+            if (!seg.value.trim()) return null;
+            return (
+              <RichText
+                key={i}
+                content={seg.value}
+                color={color}
+                size={size}
+                onReferencePress={onReferencePress}
+                disabledStyles={disabledStyles}
+              />
+            );
+          })}
+        </View>
+      );
+    }
   }
 
   // Strip out <asset .../> tags as block nodes; render remaining content as
@@ -774,6 +804,159 @@ function renderDecorations(
       );
     })
     .filter(Boolean) as React.ReactNode[];
+}
+
+// ─── Markdown tables (GitHub style) ──────────────────────────────────────────
+
+type TableSeg =
+  | { type: 'text'; value: string }
+  | { type: 'table'; header: string[]; rows: string[][] };
+
+// Separator row: `|---|:---:|--|` — each cell is dashes with optional leading/
+// trailing colons. Must contain at least one run of 3+ dashes so prose with a
+// stray `-|` never triggers it.
+const TABLE_SEP_RE = /^\s*\|?(\s*:?-{3,}:?\s*\|)*\s*:?-{3,}:?\s*\|?\s*$/;
+
+/** Splits one table line into trimmed cells (handles optional outer pipes and `\|` escapes). */
+function splitTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+  return s.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+}
+
+/**
+ * Hand-rolled GitHub-table detector: a header line containing `|`, immediately
+ * followed by a separator row with the SAME cell count, then any number of
+ * contiguous `|` body rows. Everything else passes through as text.
+ */
+function splitMarkdownTables(content: string): TableSeg[] {
+  const lines = content.split(/\r?\n/);
+  const segs: TableSeg[] = [];
+  let textBuf: string[] = [];
+  const flushText = () => {
+    if (textBuf.length) {
+      segs.push({ type: 'text', value: textBuf.join('\n') });
+      textBuf = [];
+    }
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const next = lines[i + 1];
+    if (
+      line.includes('|') &&
+      next !== undefined &&
+      next.includes('-') &&
+      TABLE_SEP_RE.test(next)
+    ) {
+      const header = splitTableRow(line);
+      const sepCells = splitTableRow(next);
+      if (header.length > 1 && header.length === sepCells.length) {
+        const rows: string[][] = [];
+        let j = i + 2;
+        while (j < lines.length && lines[j].includes('|') && lines[j].trim() !== '') {
+          rows.push(splitTableRow(lines[j]));
+          j += 1;
+        }
+        flushText();
+        segs.push({ type: 'table', header, rows });
+        i = j;
+        continue;
+      }
+    }
+    textBuf.push(line);
+    i += 1;
+  }
+  flushText();
+  return segs;
+}
+
+/**
+ * RN table renderer: horizontal ScrollView wrapper so wide tables pan instead
+ * of wrapping, fixed per-column widths derived from content length, bold
+ * bordered header row, padded cells with inline-markdown support.
+ */
+function MarkdownTable({
+  header,
+  rows,
+  size,
+}: {
+  header: string[];
+  rows: string[][];
+  size: number;
+}) {
+  const selectable = useSelectable();
+  const cols = Math.max(header.length, ...rows.map((r) => r.length), 1);
+  const widths: number[] = [];
+  for (let c = 0; c < cols; c += 1) {
+    let max = (header[c] ?? '').length;
+    for (const r of rows) max = Math.max(max, (r[c] ?? '').length);
+    widths.push(Math.min(240, Math.max(64, max * 7 + 22)));
+  }
+  const cellFont = Math.max(11, size - 2);
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={{ marginVertical: 8 }}
+    >
+      <View
+        style={{
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: 8,
+          overflow: 'hidden',
+        }}
+      >
+        <View
+          style={{
+            flexDirection: 'row',
+            backgroundColor: colors.muted,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.border,
+          }}
+        >
+          {Array.from({ length: cols }).map((_, c) => (
+            <View key={c} style={{ width: widths[c], paddingVertical: 7, paddingHorizontal: 10 }}>
+              <Text
+                selectable={selectable}
+                style={{ fontFamily: fonts.semibold, fontSize: cellFont, color: colors.foreground }}
+              >
+                {renderLeafMarkdown(header[c] ?? '', colors.foreground, cellFont, `th-${c}`)}
+              </Text>
+            </View>
+          ))}
+        </View>
+        {rows.map((r, ri) => (
+          <View
+            key={ri}
+            style={{
+              flexDirection: 'row',
+              borderTopWidth: ri > 0 ? 1 : 0,
+              borderTopColor: colors.border,
+            }}
+          >
+            {Array.from({ length: cols }).map((_, c) => (
+              <View
+                key={c}
+                style={{ width: widths[c], paddingVertical: 6, paddingHorizontal: 10 }}
+              >
+                <Text
+                  selectable={selectable}
+                  style={{ fontFamily: fonts.regular, fontSize: cellFont, color: colors.foreground }}
+                >
+                  {renderLeafMarkdown(r[c] ?? '', colors.foreground, cellFont, `td-${ri}-${c}`)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
 }
 
 // ─── Auxiliary blocks ────────────────────────────────────────────────────────

@@ -26,6 +26,11 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineStream
+import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
@@ -134,6 +139,58 @@ class VaultSpeechService : Service() {
       ),
     )
     private const val DEFAULT_LANG = "es"
+
+    // ── OFFLINE (non-streaming) Whisper recognizer — PRIMARY STT path ─────────
+    // QUALITY UPGRADE (Task 1): the kroko streaming Zipformer es model is "meh".
+    // Whisper-base int8 is MULTILINGUAL (strong Spanish), and since our pipeline
+    // is already VAD-SEGMENTED (we decode whole VAD segments, not true streaming),
+    // an OFFLINE recognizer is a DROP-IN fit: feed each finished VAD segment to an
+    // OfflineRecognizer.createStream() → decode() → getResult().text. The vendored
+    // sherpa-onnx kotlin API ships OfflineRecognizer + OfflineWhisperModelConfig,
+    // so no new gradle deps.
+    //
+    // Model: openai whisper-base, int8-quantized for sherpa-onnx. encoder int8
+    // ~29MB + decoder int8 ~130MB + tokens ~0.8MB ≈ 160MB total — within the
+    // ≤250MB mobile budget and FASTER THAN REALTIME on a flagship for the ≤8s VAD
+    // segments. whisper-small int8 (~480MB) was rejected as too large; whisper-base
+    // already far exceeds the kroko zipformer on Spanish orthographic accuracy.
+    //
+    // DOWNLOAD: the upstream sherpa-onnx whisper files live in the PUBLIC GitHub
+    // `asr-models` release as a .tar.bz2 (verified 302→CDN public); HuggingFace is
+    // gated (401). To avoid bundling a bzip2/tar extractor we download LOOSE files
+    // from OUR public Killio-Vault release, exactly like the KWS model. The caller
+    // must extract these three files from
+    //   https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2
+    // (internal paths: sherpa-onnx-whisper-base/base-encoder.int8.onnx,
+    //  base-decoder.int8.onnx, base-tokens.txt) and upload them to a NEW public
+    // release `stt-whisper-base-v1` in Kynto-Consulting/Killio-Vault, keeping the
+    // filenames below. Whisper is one shared multilingual model for ALL languages
+    // (we pass the language code into OfflineWhisperModelConfig.language).
+    private const val WHISPER_DIR = "sherpa-stt-whisper-base"
+    private const val WHISPER_BASE_URL =
+      "https://github.com/Kynto-Consulting/Killio-Vault/releases/download/stt-whisper-base-v1"
+    // remote filename → local filename. Local names are constant for the loader.
+    private val WHISPER_FILES = listOf(
+      "base-encoder.int8.onnx" to "encoder.int8.onnx",
+      "base-decoder.int8.onnx" to "decoder.int8.onnx",
+      "base-tokens.txt" to "tokens.txt",
+    )
+    private val WHISPER_LOCAL_REQUIRED = listOf("encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt")
+
+    /** Process-wide shared offline whisper recognizer (lazy, best-effort). */
+    @Volatile private var sharedOffline: OfflineRecognizer? = null
+    @Volatile private var sharedOfflineTried = false
+    private val offlineLock = Any()
+
+    /** All whisper files present in [dir]? */
+    private fun whisperModelComplete(dir: File): Boolean =
+      dir.isDirectory && WHISPER_LOCAL_REQUIRED.all { File(dir, it).let { f -> f.exists() && f.length() > 0 } }
+
+    /**
+     * Map our es/en language code → whisper's expected language token. Whisper is
+     * a single multilingual model; [language] biases decoding to the right tongue.
+     */
+    private fun whisperLang(code: String): String = if (code == "en") "en" else "es"
 
     /** Normalize "es"/"es-ES"/"en-US"/… → supported model code; unknown→default. */
     private fun langCode(language: String?): String {
@@ -738,6 +795,103 @@ class VaultSpeechService : Service() {
     }
 
     /**
+     * Ensure + load the shared OFFLINE whisper recognizer (PRIMARY STT path).
+     * Best-effort: returns null (never throws) if the model can't be downloaded or
+     * constructed, so the caller transparently FALLS BACK to the old kroko
+     * streaming OnlineRecognizer. Cached after the first success. [language] biases
+     * whisper decoding (es/en); one shared multilingual recognizer serves both.
+     */
+    fun loadSharedOffline(ctx: android.content.Context, language: String? = null): OfflineRecognizer? {
+      synchronized(offlineLock) {
+        sharedOffline?.let { return it }
+        val dir = File(ctx.filesDir, WHISPER_DIR)
+        val present = whisperModelComplete(dir)
+        // Retry whenever the model is actually present (mirrors the KWS latch): a
+        // first-run download-in-progress failure must not wedge whisper forever.
+        if (sharedOfflineTried && sharedOffline == null && !present) {
+          Log.w("KillioSTT", "Whisper previously failed and model still absent — using kroko fallback (retry once present)")
+          return null
+        }
+        sharedOfflineTried = true
+        return try {
+          val ready = ensureWhisperModelStatic(ctx) ?: run {
+            Log.w("KillioSTT", "Whisper model unavailable (download failed/offline) — kroko fallback")
+            FileLog.log("KillioSTT", "Whisper model unavailable — falling back to kroko streaming zipformer")
+            return null
+          }
+          val code = langCode(language)
+          val config = OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+            modelConfig = OfflineModelConfig(
+              whisper = OfflineWhisperModelConfig(
+                encoder = File(ready, "encoder.int8.onnx").absolutePath,
+                decoder = File(ready, "decoder.int8.onnx").absolutePath,
+                language = whisperLang(code),
+                task = "transcribe",
+              ),
+              tokens = File(ready, "tokens.txt").absolutePath,
+              numThreads = 2,
+              provider = "cpu",
+              modelType = "whisper",
+            ),
+            decodingMethod = "greedy_search",
+          )
+          val r = OfflineRecognizer(null, config)
+          sharedOffline = r
+          Log.i("KillioSTT", "Whisper OFFLINE recognizer loaded (base int8, lang=${whisperLang(code)}) — PRIMARY STT")
+          FileLog.log("KillioSTT", "Whisper OFFLINE recognizer loaded (base int8, lang=${whisperLang(code)}) — PRIMARY STT path")
+          r
+        } catch (e: Exception) {
+          Log.w("KillioSTT", "Whisper recognizer construct FAILED: ${e.message} — kroko fallback")
+          FileLog.log("KillioSTT", "Whisper recognizer construct FAILED: ${e.message} — kroko fallback")
+          null
+        }
+      }
+    }
+
+    /** Static whisper download (loose files from our public release). Null on fail. */
+    private fun ensureWhisperModelStatic(ctx: android.content.Context): File? {
+      val dir = File(ctx.filesDir, WHISPER_DIR)
+      if (whisperModelComplete(dir)) return dir
+      Log.i("KillioSTT", "Whisper model incomplete — downloading from $WHISPER_BASE_URL (first run only)")
+      FileLog.log("KillioSTT", "Whisper model incomplete — downloading from $WHISPER_BASE_URL (first run only)")
+      dir.mkdirs()
+      return try {
+        for ((remote, local) in WHISPER_FILES) {
+          val dest = File(dir, local)
+          if (dest.exists() && dest.length() > 0) continue
+          downloadTo("$WHISPER_BASE_URL/$remote", dest, null)
+        }
+        if (whisperModelComplete(dir)) dir else null
+      } catch (e: Exception) {
+        Log.w("KillioSTT", "Whisper model download failed: ${e.message}")
+        FileLog.log("KillioSTT", "Whisper model download failed: ${e.message}")
+        null
+      }
+    }
+
+    /**
+     * Decode one VAD segment with the OFFLINE whisper recognizer. Stateless per
+     * call (createStream → acceptWaveform → decode → getResult). Returns trimmed
+     * text ("" if none). Throws are caught by the caller.
+     */
+    private fun decodeSegmentOffline(rec: OfflineRecognizer, samples: FloatArray): String {
+      val stream: OfflineStream = rec.createStream()
+      return try {
+        stream.acceptWaveform(samples, SAMPLE_RATE)
+        rec.decode(stream)
+        val text = rec.getResult(stream).text.trim()
+        Log.i(
+          "KillioSTT",
+          "DECODE(whisper) segment samples=${samples.size} (~${samples.size * 1000L / SAMPLE_RATE}ms) raw=\"$text\"",
+        )
+        text
+      } finally {
+        stream.release()
+      }
+    }
+
+    /**
      * Process-wide shared speaker-embedding extractor. Best-effort: returns null
      * (never throws) if the model can't be downloaded/loaded so STT keeps working
      * without voice-ID. Cached after the first successful load.
@@ -1009,7 +1163,12 @@ class VaultSpeechService : Service() {
   @Volatile private var langCode: String = DEFAULT_LANG
 
   @Volatile private var recognizer: OnlineRecognizer? = null
+  /** PRIMARY offline whisper recognizer for this session; null → kroko fallback. */
+  @Volatile private var offline: OfflineRecognizer? = null
   @Volatile private var vad: Vad? = null
+
+  /** Last emitted VAD speech-active state (de-dupe onSpeechActivity emissions). */
+  @Volatile private var speechActive = false
   @Volatile private var spk: SpeakerEmbeddingExtractor? = null
   @Volatile private var audioRecord: AudioRecord? = null
 
@@ -1140,8 +1299,20 @@ class VaultSpeechService : Service() {
       return
     }
     recognizer = rec
-    Log.i("KillioSTT", "[$langCode] Recognizer loaded (sherpa-onnx, shared)")
-    FileLog.log("KillioSTT", "[$langCode] Recognizer loaded (sherpa-onnx, shared)")
+    Log.i("KillioSTT", "[$langCode] kroko streaming recognizer loaded (fallback path)")
+    FileLog.log("KillioSTT", "[$langCode] kroko streaming recognizer loaded (fallback path)")
+
+    // PRIMARY STT: offline whisper-base int8 (better Spanish). Best-effort —
+    // downloads on first run; if it can't be prepared we transparently keep using
+    // the kroko streaming recognizer above. Drives the same onModelStatus banner.
+    offline = loadSharedOfflineWithProgress(langCode)
+    if (offline != null) {
+      Log.i("KillioSTT", "[$langCode] STT engine = WHISPER offline (primary)")
+      FileLog.log("KillioSTT", "[$langCode] STT engine = WHISPER offline (primary)")
+    } else {
+      Log.w("KillioSTT", "[$langCode] STT engine = kroko streaming (whisper unavailable, fallback)")
+      FileLog.log("KillioSTT", "[$langCode] STT engine = kroko streaming (whisper unavailable, fallback)")
+    }
 
     // Silero VAD — gates decoding. Required for the streaming loop; if it can't
     // be prepared we fail the session (the whole point is VAD-gated decode).
@@ -1236,6 +1407,9 @@ class VaultSpeechService : Service() {
           try { recorder.release() } catch (_: Exception) {}
           audioRecord = null
           v.reset()
+          // Clear any lingering "speaking" state so JS doesn't hold a silence
+          // timer open across the one-shot pause.
+          if (speechActive) { speechActive = false; emitSpeechActivity(false) }
           continuousIdle = true
           synchronized(pauseLock) {
             while (paused && running) {
@@ -1305,16 +1479,31 @@ class VaultSpeechService : Service() {
         // Feed normalized floats to Silero VAD. When a speech segment finishes,
         // VAD.front() holds the full segment samples — decode + embed it.
         v.acceptWaveform(floats)
+
+        // ── Speech-activity signal (Task 2) ──────────────────────────────────
+        // Emit a lightweight onSpeechActivity {active, ts} on VAD state
+        // transitions so JS (WakeListener) only runs its post-wake silence timer
+        // while the mic is ACTUALLY silent. This prevents the command from being
+        // cut mid-sentence when VAD splits a segment or decode is slow: while the
+        // user is still talking we keep active=true → JS holds the timer.
+        val nowActive = try { v.isSpeechDetected() } catch (_: Exception) { speechActive }
+        if (nowActive != speechActive) {
+          speechActive = nowActive
+          emitSpeechActivity(nowActive)
+        }
+
         while (!v.empty()) {
           val segment = v.front()
           v.pop()
           val samples = segment.samples
           if (samples.isEmpty()) continue
           val text = try {
-            decodeSegment(rec, samples)
+            val off = offline
+            if (off != null) decodeSegmentOffline(off, samples) else decodeSegment(rec, samples)
           } catch (e: Exception) {
             Log.w("KillioSTT", "decode failed: ${e.message}")
-            ""
+            // If whisper threw, drop to kroko for this segment (best-effort).
+            try { decodeSegment(rec, samples) } catch (_: Exception) { "" }
           }
           if (text.isEmpty()) continue
           val embedding = spk?.let { embedSegment(it, samples) }
@@ -1362,6 +1551,32 @@ class VaultSpeechService : Service() {
       putString("keyword", keyword)
       putDouble("ts", System.currentTimeMillis().toDouble())
     })
+  }
+
+  /**
+   * Emit a VAD speech-activity transition to JS (Task 2). NEW event contract:
+   *   onSpeechActivity { active: Boolean, ts: Double (UTC ms) }
+   * active=true  → the user is speaking (mic is NOT silent)
+   * active=false → mic went silent (a real pause)
+   * WakeListener uses this to gate the post-wake silence timer so the command is
+   * only finalized after a genuine pause, never mid-sentence.
+   */
+  private fun emitSpeechActivity(active: Boolean) {
+    Log.i("KillioSTT", "VAD speech-activity → active=$active")
+    emitter?.invoke("onSpeechActivity", Bundle().apply {
+      putBoolean("active", active)
+      putDouble("ts", System.currentTimeMillis().toDouble())
+    })
+  }
+
+  /** Whisper offline load with onModelStatus progress (first-run download). */
+  private fun loadSharedOfflineWithProgress(language: String): OfflineRecognizer? {
+    val dir = File(filesDir, WHISPER_DIR)
+    if (!File(dir, "decoder.int8.onnx").let { it.exists() && it.length() > 0 }) {
+      // Surface the (large) whisper download on the same banner as ASR/VAD/KWS.
+      emitModelStatus("downloading", progress = 0, bytes = 0, total = -1)
+    }
+    return loadSharedOffline(this, language)
   }
 
   /**
