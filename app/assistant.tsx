@@ -282,7 +282,16 @@ export default function AssistantScreen() {
     void getConversationMessages(conversationId)
       .then((rows) => {
         setMessages(
-          rows.map((m) => ({ id: m.id, role: m.role, text: stripTags(m.content) })),
+          // Assistant messages persist the FULL activity markup (tool chips +
+          // <tool_status>/<tool_output>/<invoke>…). Keep it RAW so the renderer
+          // re-draws the tool pills/activity on history load — stripTags here
+          // (the old behavior) flattened a past chat to plain text, dropping
+          // every function/tool the turn used. User messages have no markup.
+          rows.map((m) => ({
+            id: m.id,
+            role: m.role,
+            text: m.role === 'assistant' ? m.content : stripTags(m.content),
+          })),
         );
         const firstUser = rows.find((m) => m.role === 'user');
         if (firstUser) firstMsg.current = stripTags(firstUser.content).slice(0, 60);
