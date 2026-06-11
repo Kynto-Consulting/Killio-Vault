@@ -20,6 +20,17 @@ interface ModelSelectorProps {
   value?: string | null;
   /** Fired when the user picks an allowed model. */
   onChange: (modelId: string) => void;
+  /**
+   * 'full' (default): chip + bottom-sheet in one place (rooms/settings).
+   * 'chip': only the chip — opens via onOpenChange. Use in a NATIVE header.
+   * 'sheet': only the bottom-sheet Modal — controlled by `open`. Render this in
+   *   the SCREEN BODY (a Modal mounted inside a native-stack header never opens).
+   * Pair a header 'chip' with a body 'sheet' sharing `open`/`onOpenChange`.
+   */
+  variant?: 'full' | 'chip' | 'sheet';
+  /** Controlled open state (for the chip+sheet split). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 /** Route shown by the "Upgrade" action — the plan/entitlements screen. */
@@ -31,12 +42,22 @@ const UPGRADE_ROUTE = '/usage';
  * When the conversation already spent its once-only change the chip is disabled.
  * Shared by the rooms composer, the assistant composer, and settings.
  */
-export function ModelSelector({ teamId, conversationId, value, onChange }: ModelSelectorProps) {
+export function ModelSelector({
+  teamId,
+  conversationId,
+  value,
+  onChange,
+  variant = 'full',
+  open: openProp,
+  onOpenChange,
+}: ModelSelectorProps) {
   const t = useTranslations('agentModel');
   const router = useRouter();
 
   const [data, setData] = useState<AgentModelOptions | null>(null);
-  const [open, setOpen] = useState(false);
+  const [openInternal, setOpenInternal] = useState(false);
+  const open = openProp ?? openInternal;
+  const setOpen = (v: boolean) => (onOpenChange ? onOpenChange(v) : setOpenInternal(v));
 
   useEffect(() => {
     if (!teamId) return;
@@ -75,6 +96,7 @@ export function ModelSelector({ teamId, conversationId, value, onChange }: Model
 
   return (
     <>
+      {variant !== 'sheet' ? (
       <Pressable
         onPress={() => !locked && setOpen(true)}
         disabled={locked}
@@ -94,7 +116,9 @@ export function ModelSelector({ teamId, conversationId, value, onChange }: Model
         </Text>
         <ChevronDown size={12} color={colors.mutedForeground} />
       </Pressable>
+      ) : null}
 
+      {variant !== 'chip' ? (
       <Modal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
         <Pressable className="flex-1 justify-end bg-background/70" onPress={() => setOpen(false)}>
           <Pressable
@@ -173,6 +197,7 @@ export function ModelSelector({ teamId, conversationId, value, onChange }: Model
           </Pressable>
         </Pressable>
       </Modal>
+      ) : null}
     </>
   );
 }

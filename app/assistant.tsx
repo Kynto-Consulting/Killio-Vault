@@ -134,6 +134,10 @@ export default function AssistantScreen() {
   // Preferred model for the next message. Threaded into streamAgentChat as
   // `model`; backend clamps to plan + enforces the once-only change.
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  // Shared open-state so the header CHIP (in the native header) opens the SHEET
+  // (a Modal rendered in the screen body — a Modal inside the native header
+  // never displays). Lets the selector sit next to the new-chat button.
+  const [modelOpen, setModelOpen] = useState(false);
   // Per-message "Copiado" feedback: the id of the message whose Copy button was
   // just tapped (checkmark shown for ~1.4s).
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -257,13 +261,26 @@ export default function AssistantScreen() {
     navigation.setOptions({
       headerTitle: agent?.name ?? tFallback('agent'),
       headerRight: () => (
-        <Pressable onPressIn={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
-          <SquarePen size={20} color={colors.foreground} />
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingRight: 4 }}>
+          {activeTeam?.id ? (
+            <ModelSelector
+              variant="chip"
+              open={modelOpen}
+              onOpenChange={setModelOpen}
+              teamId={activeTeam.id}
+              conversationId={convId.current}
+              value={selectedModel}
+              onChange={setSelectedModel}
+            />
+          ) : null}
+          <Pressable onPressIn={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
+            <SquarePen size={20} color={colors.foreground} />
+          </Pressable>
+        </View>
       ),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigation, agent?.name]);
+  }, [navigation, agent?.name, activeTeam?.id, selectedModel, modelOpen]);
 
   // Resume an existing conversation from history.
   useEffect(() => {
@@ -802,17 +819,18 @@ export default function AssistantScreen() {
     <Screen padded={false}>
       <ModelStatusBanner />
       {activeTeam?.id ? (
-        // In a top bar (NOT the native-stack header — a JS <Modal> mounted inside
-        // the native header never opens). Here in the screen body the bottom-sheet
-        // works, while still sitting right at the top next to the new-chat button.
-        <View className="flex-row justify-end border-b border-border/40 bg-background px-4 py-1.5">
-          <ModelSelector
-            teamId={activeTeam.id}
-            conversationId={convId.current}
-            value={selectedModel}
-            onChange={setSelectedModel}
-          />
-        </View>
+        // Sheet-only: the CHIP lives in the native header (next to new-chat); its
+        // bottom-sheet Modal renders HERE in the body (a Modal inside the native
+        // header never opens). Shared `modelOpen` links them.
+        <ModelSelector
+          variant="sheet"
+          open={modelOpen}
+          onOpenChange={setModelOpen}
+          teamId={activeTeam.id}
+          conversationId={convId.current}
+          value={selectedModel}
+          onChange={setSelectedModel}
+        />
       ) : null}
       <FlatList
         data={messages}
