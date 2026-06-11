@@ -185,6 +185,21 @@ class VaultSpeechService : Service() {
     @Volatile private var sharedOffline: OfflineRecognizer? = null
     @Volatile private var sharedOfflineTried = false
     private val offlineLock = Any()
+    /** Guards the single background whisper download/load thread (Task 2). */
+    @Volatile private var whisperBgStarted = false
+    private val whisperBgLock = Any()
+
+    /**
+     * Progress sink for whisper model lifecycle, set by the live service instance
+     * so the static download path can drive the on-screen onModelStatus banner +
+     * FileLog from a BACKGROUND thread. Signature mirrors emitModelStatus:
+     *   (state, progress 0..100 or -1, bytes or -1, total or -1, message?).
+     * Best-effort; null when no instance is bound (one-shot path).
+     */
+    @Volatile var whisperStatusSink: ((String, Int, Long, Long, String?) -> Unit)? = null
+    private fun whisperStatus(state: String, progress: Int = -1, bytes: Long = -1, total: Long = -1, message: String? = null) {
+      try { whisperStatusSink?.invoke(state, progress, bytes, total, message) } catch (_: Throwable) {}
+    }
 
     /** All whisper files present in [dir]? */
     private fun whisperModelComplete(dir: File): Boolean =
@@ -821,8 +836,11 @@ class VaultSpeechService : Service() {
           val ready = ensureWhisperModelStatic(ctx) ?: run {
             Log.w("KillioSTT", "Whisper model unavailable (download failed/offline) — kroko fallback")
             FileLog.log("KillioSTT", "Whisper model unavailable — falling back to kroko streaming zipformer")
+            // Allow a fresh attempt next time (e.g. background retry on next capture).
+            sharedOfflineTried = false
             return null
           }
+          whisperStatus("preparing", message = "Whisper STT")
           val code = langCode(language)
           val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
@@ -842,18 +860,110 @@ class VaultSpeechService : Service() {
           )
           val r = OfflineRecognizer(null, config)
           sharedOffline = r
-          Log.i("KillioSTT", "Whisper OFFLINE recognizer loaded (base int8, lang=${whisperLang(code)}) — PRIMARY STT")
-          FileLog.log("KillioSTT", "Whisper OFFLINE recognizer loaded (base int8, lang=${whisperLang(code)}) — PRIMARY STT path")
+          Log.i("KillioSTT", "Whisper OFFLINE recognizer loaded (small int8, lang=${whisperLang(code)}) — PRIMARY STT")
+          FileLog.log("KillioSTT", "Whisper OFFLINE recognizer loaded (small int8, lang=${whisperLang(code)}) — PRIMARY STT path")
+          whisperStatus("ready", message = "Whisper STT")
           r
         } catch (e: Exception) {
           Log.w("KillioSTT", "Whisper recognizer construct FAILED: ${e.message} — kroko fallback")
           FileLog.log("KillioSTT", "Whisper recognizer construct FAILED: ${e.message} — kroko fallback")
+          whisperStatus("error", message = "Whisper STT: ${e.message}")
+          // Permit a retry (construct can fail transiently right after download).
+          sharedOfflineTried = false
           null
         }
       }
     }
 
-    /** Static whisper download (loose files from our public release). Null on fail. */
+    /**
+     * Kick the whisper model download + recognizer load on a SINGLE background
+     * thread (Task 2). Capture starts IMMEDIATELY on the fast kroko fallback; this
+     * does the slow ~375MB fetch off the recognition-loop thread so decoding is
+     * never blocked. Idempotent — only one background worker runs at a time. Once
+     * [sharedOffline] is set the loop transparently swaps kroko→whisper for
+     * subsequent segments (it reads [sharedOffline] each segment).
+     *
+     * Retry/latch: if the whole download+load fails we RESET [whisperBgStarted]
+     * (and loadSharedOffline already reset [sharedOfflineTried]) so the NEXT
+     * capture start re-kicks it — the resumable downloadTo already retries 8× per
+     * attempt, and this gives one more whole-attempt on the next start. Never
+     * throws into the loop.
+     */
+    fun kickWhisperBackgroundLoad(ctx: android.content.Context, language: String?) {
+      if (sharedOffline != null) return // already loaded
+      synchronized(whisperBgLock) {
+        if (whisperBgStarted || sharedOffline != null) return
+        whisperBgStarted = true
+      }
+      thread(start = true, name = "whisper-bg-load") {
+        try {
+          FileLog.log("KillioSTT", "Whisper background load started (kroko serving meanwhile)")
+          val r = loadSharedOffline(ctx, language)
+          if (r != null) {
+            FileLog.log("KillioSTT", "Whisper background load SUCCEEDED — loop will swap kroko→whisper")
+          } else {
+            FileLog.log("KillioSTT", "Whisper background load did NOT complete — staying on kroko (will retry next start)")
+          }
+        } catch (e: Throwable) {
+          // Never let a background failure crash anything.
+          FileLog.log("KillioSTT", "Whisper background load threw: ${e.message} — staying on kroko")
+        } finally {
+          // Allow a fresh whole-attempt on the next capture start if we didn't load.
+          synchronized(whisperBgLock) { whisperBgStarted = false }
+        }
+      }
+    }
+
+    /**
+     * Best-effort remote size of [url] (follows redirects, reads Content-Length via
+     * a Range probe so GitHub release CDNs answer with a 206 + Content-Range). Used
+     * to weight the OVERALL whisper download percentage across the 3 files. Returns
+     * -1 if the size can't be determined (then that file just doesn't contribute to
+     * the known total — progress still advances on the files whose size is known).
+     */
+    private fun remoteSize(url: String): Long {
+      var current = url
+      try {
+        for (redirect in 0..6) {
+          val conn = (URL(current).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 15_000
+            requestMethod = "GET"
+            instanceFollowRedirects = false
+            setRequestProperty("User-Agent", "KillioVault")
+            setRequestProperty("Range", "bytes=0-0")
+          }
+          try {
+            conn.connect()
+            val rc = conn.responseCode
+            if (rc in 300..399) {
+              val loc = conn.getHeaderField("Location") ?: return -1L
+              current = if (loc.startsWith("http")) loc else URL(URL(current), loc).toString()
+              continue
+            }
+            // 206 → "bytes 0-0/TOTAL"; otherwise fall back to Content-Length.
+            val cr = conn.getHeaderField("Content-Range")
+            val sz = cr?.substringAfterLast('/')?.toLongOrNull()
+            return sz ?: conn.contentLengthLong
+          } finally {
+            conn.disconnect()
+          }
+        }
+        return -1L // too many redirects
+      } catch (_: Exception) {
+        return -1L
+      }
+    }
+
+    /**
+     * Static whisper download (loose files from our public release). Null on fail.
+     * Now reports OVERALL progress across all 3 files via [whisperStatus] so the
+     * on-screen banner + the native FileLog show the (large) ~375MB fetch. Overall
+     * percent = (sum of bytes downloaded across files) / (sum of file totals); a
+     * file whose remote size is unknown simply doesn't add to the denominator.
+     * Emits throttled (~1% or ~500ms). downloadTo is RESUMABLE (kept) so a flaky-
+     * wifi drop resumes via HTTP Range instead of restarting.
+     */
     private fun ensureWhisperModelStatic(ctx: android.content.Context): File? {
       val dir = File(ctx.filesDir, WHISPER_DIR)
       if (whisperModelComplete(dir)) return dir
@@ -861,12 +971,74 @@ class VaultSpeechService : Service() {
       FileLog.log("KillioSTT", "Whisper model incomplete — downloading from $WHISPER_BASE_URL (first run only)")
       dir.mkdirs()
       return try {
+        // ── Plan the OVERALL byte budget across the files still to fetch ────────
+        // For each remaining file: known size via remoteSize() (best-effort), and
+        // already-on-disk .part bytes (resume). The denominator is the sum of file
+        // totals; the numerator is bytes-on-disk + per-file streamed bytes.
+        data class Plan(val remote: String, val dest: File, val total: Long)
+        val plans = ArrayList<Plan>()
+        var grandTotal = 0L
+        var anyUnknown = false
         for ((remote, local) in WHISPER_FILES) {
           val dest = File(dir, local)
-          if (dest.exists() && dest.length() > 0) continue
-          downloadTo("$WHISPER_BASE_URL/$remote", dest, null)
+          if (dest.exists() && dest.length() > 0) {
+            // Already complete — count it toward both numerator and denominator so
+            // the bar reflects true overall progress (e.g. resuming after 1/3 done).
+            val sz = dest.length()
+            plans.add(Plan(remote, dest, sz))
+            grandTotal += sz
+            continue
+          }
+          // The resumable downloadTo reports `downloaded` starting from the resumed
+          // .part offset, so we don't need to pre-account the .part here.
+          val sz = remoteSize("$WHISPER_BASE_URL/$remote")
+          if (sz > 0) grandTotal += sz else anyUnknown = true
+          plans.add(Plan(remote, dest, sz))
         }
-        if (whisperModelComplete(dir)) dir else null
+        FileLog.log(
+          "KillioSTT",
+          "Whisper download plan: files=${plans.size} grandTotal=${grandTotal}B (~${grandTotal / (1024 * 1024)}MB) unknownSizes=$anyUnknown",
+        )
+
+        // Bytes from files already fully present (the static numerator base).
+        var completedBytes = 0L
+        for (p in plans) if (p.dest.exists() && p.dest.length() > 0) completedBytes += p.total
+
+        whisperStatus("downloading", progress = if (grandTotal > 0) ((completedBytes * 100L) / grandTotal).toInt() else 0,
+          bytes = completedBytes, total = if (grandTotal > 0) grandTotal else -1, message = "Whisper STT")
+
+        var lastEmit = 0L
+        var lastPct = -1
+        for (p in plans) {
+          if (p.dest.exists() && p.dest.length() > 0) continue // already done
+          downloadTo("$WHISPER_BASE_URL/${p.remote}", p.dest) { downloaded, _ ->
+            // OVERALL bytes = previously-completed files + this file's streamed bytes.
+            val overall = completedBytes + downloaded
+            val pct = if (grandTotal > 0) ((overall * 100L) / grandTotal).toInt().coerceIn(0, 100) else -1
+            val now = System.currentTimeMillis()
+            if ((pct != lastPct && pct >= 0) || now - lastEmit >= 500L) {
+              lastEmit = now
+              if (pct != lastPct) {
+                lastPct = pct
+                // Periodic native-log line so killio.log shows the % too (every ~1%).
+                if (pct < 0 || pct % 5 == 0) {
+                  FileLog.log("KillioSTT", "Whisper download ${if (pct >= 0) "$pct%" else "?"} (${overall / (1024 * 1024)}MB/${grandTotal / (1024 * 1024)}MB)")
+                }
+              }
+              whisperStatus("downloading", progress = pct, bytes = overall,
+                total = if (grandTotal > 0) grandTotal else -1, message = "Whisper STT")
+            }
+          }
+          // This file finished — fold its size into the completed base.
+          completedBytes += if (p.total > 0) p.total else p.dest.length()
+        }
+        if (whisperModelComplete(dir)) {
+          FileLog.log("KillioSTT", "Whisper model download COMPLETE at ${dir.absolutePath}")
+          dir
+        } else {
+          FileLog.log("KillioSTT", "Whisper model still incomplete after download attempt")
+          null
+        }
       } catch (e: Exception) {
         Log.w("KillioSTT", "Whisper model download failed: ${e.message}")
         FileLog.log("KillioSTT", "Whisper model download failed: ${e.message}")
@@ -1334,16 +1506,31 @@ class VaultSpeechService : Service() {
     Log.i("KillioSTT", "[$langCode] kroko streaming recognizer loaded (fallback path)")
     FileLog.log("KillioSTT", "[$langCode] kroko streaming recognizer loaded (fallback path)")
 
-    // PRIMARY STT: offline whisper-base int8 (better Spanish). Best-effort —
-    // downloads on first run; if it can't be prepared we transparently keep using
-    // the kroko streaming recognizer above. Drives the same onModelStatus banner.
-    offline = loadSharedOfflineWithProgress(langCode)
+    // PRIMARY STT: offline whisper-small int8 (much better Spanish). Best-effort.
+    // Task 2: NEVER block the recognition loop on the ~375MB download. If whisper
+    // is already on disk + loadable it's picked up FAST below; otherwise capture
+    // proceeds IMMEDIATELY on the kroko fallback while the model downloads on a
+    // SEPARATE background thread. Once it loads, the loop reads `sharedOffline`
+    // each segment and transparently switches kroko→whisper.
+    //
+    // Wire the progress sink so the background download drives the SAME
+    // onModelStatus banner + native FileLog (Task 1).
+    whisperStatusSink = { state, progress, bytes, total, message ->
+      emitModelStatus(state, progress, bytes, total, message)
+    }
+    // Fast, non-blocking pickup: if the model is already complete on disk this
+    // returns the cached/loaded recognizer immediately (no download). If it isn't
+    // present it returns null FAST (it doesn't download synchronously here —
+    // sharedOfflineTried gate + present check), so the loop starts on kroko now.
+    offline = if (whisperModelComplete(File(filesDir, WHISPER_DIR))) loadSharedOffline(this, langCode) else null
     if (offline != null) {
-      Log.i("KillioSTT", "[$langCode] STT engine = WHISPER offline (primary)")
-      FileLog.log("KillioSTT", "[$langCode] STT engine = WHISPER offline (primary)")
+      Log.i("KillioSTT", "[$langCode] STT engine = WHISPER offline (primary, already present)")
+      FileLog.log("KillioSTT", "[$langCode] STT engine = WHISPER offline (primary, already present)")
     } else {
-      Log.w("KillioSTT", "[$langCode] STT engine = kroko streaming (whisper unavailable, fallback)")
-      FileLog.log("KillioSTT", "[$langCode] STT engine = kroko streaming (whisper unavailable, fallback)")
+      Log.w("KillioSTT", "[$langCode] STT engine = kroko streaming for now; whisper loading in background")
+      FileLog.log("KillioSTT", "[$langCode] STT engine = kroko streaming for now; whisper downloading/loading in BACKGROUND")
+      // Kick the slow download+load off-thread; the loop swaps to whisper when ready.
+      kickWhisperBackgroundLoad(this, langCode)
     }
 
     // Silero VAD — gates decoding. Required for the streaming loop; if it can't
@@ -1529,8 +1716,16 @@ class VaultSpeechService : Service() {
           v.pop()
           val samples = segment.samples
           if (samples.isEmpty()) continue
+          // Pick whisper up the moment the background load finishes: if our
+          // per-session `offline` is still null, consult the shared instance (set
+          // by kickWhisperBackgroundLoad) and latch it so subsequent segments use
+          // whisper transparently. Until then we decode with kroko (fast).
+          val off = offline ?: sharedOffline?.also {
+            offline = it
+            Log.i("KillioSTT", "[$langCode] STT engine swapped kroko→WHISPER (background load ready)")
+            FileLog.log("KillioSTT", "[$langCode] STT engine swapped kroko→WHISPER (background load ready)")
+          }
           val text = try {
-            val off = offline
             if (off != null) decodeSegmentOffline(off, samples) else decodeSegment(rec, samples)
           } catch (e: Exception) {
             Log.w("KillioSTT", "decode failed: ${e.message}")
@@ -1599,16 +1794,6 @@ class VaultSpeechService : Service() {
       putBoolean("active", active)
       putDouble("ts", System.currentTimeMillis().toDouble())
     })
-  }
-
-  /** Whisper offline load with onModelStatus progress (first-run download). */
-  private fun loadSharedOfflineWithProgress(language: String): OfflineRecognizer? {
-    val dir = File(filesDir, WHISPER_DIR)
-    if (!File(dir, "decoder.int8.onnx").let { it.exists() && it.length() > 0 }) {
-      // Surface the (large) whisper download on the same banner as ASR/VAD/KWS.
-      emitModelStatus("downloading", progress = 0, bytes = 0, total = -1)
-    }
-    return loadSharedOffline(this, language)
   }
 
   /**
@@ -1783,6 +1968,10 @@ class VaultSpeechService : Service() {
     kws = null
     recognizer = null
     spk = null
+    // Drop the progress sink so a late background-download emit doesn't reference a
+    // destroyed instance (best-effort; the shared whisper recognizer itself is kept
+    // process-wide for reuse, like the other shared models).
+    if (whisperStatusSink != null) whisperStatusSink = null
     if (instance === this) instance = null
     super.onDestroy()
   }

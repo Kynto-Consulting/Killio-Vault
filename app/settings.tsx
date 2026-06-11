@@ -6,6 +6,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
 import { JS_LOG_DIR, JS_LOG_PATH, readJsLog } from '@/core/filelog';
+import { readNativeLog } from '@/stt/native/KillioSpeech';
 
 import { Screen, Card, H1, Body, Button } from '@/ui';
 import { colors } from '@/theme/theme';
@@ -124,14 +125,25 @@ export default function SettingsScreen() {
   const exportLogs = async () => {
     setLogBusy(true);
     try {
-      const body = await readJsLog();
+      // Concatenate BOTH logs (clearly separated) so the export shows the whisper
+      // download status + KWS/capture lines (native killio.log) alongside the JS
+      // pipeline log. The native log is the priority for debugging the STT model
+      // download; JS can't read its external path directly, so the native module
+      // returns its tail (~200KB). Both reads are best-effort.
+      const [jsBody, nativeBody] = await Promise.all([
+        readJsLog().catch(() => ''),
+        readNativeLog().catch(() => ''),
+      ]);
+      const body =
+        `==== NATIVE (killio.log) ====\n` +
+        `${nativeBody && nativeBody.length > 0 ? nativeBody : '(no native log entries yet)\n'}` +
+        `\n==== JS (killio-js.log) ====\n` +
+        `${jsBody && jsBody.length > 0 ? jsBody : '(no JS log entries yet)\n'}`;
       // Write a snapshot file to share (so even an in-progress log exports cleanly).
-      const out = `${FileSystem.cacheDirectory ?? JS_LOG_DIR}killio-js-export.log`;
-      await FileSystem.writeAsStringAsync(
-        out,
-        body && body.length > 0 ? body : '(no JS log entries yet)\n',
-        { encoding: FileSystem.EncodingType.UTF8 },
-      );
+      const out = `${FileSystem.cacheDirectory ?? JS_LOG_DIR}killio-logs-export.log`;
+      await FileSystem.writeAsStringAsync(out, body, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
         await Sharing.shareAsync(out, {

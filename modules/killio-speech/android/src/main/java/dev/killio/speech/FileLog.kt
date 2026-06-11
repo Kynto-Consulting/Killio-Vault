@@ -92,6 +92,40 @@ object FileLog {
   fun currentDir(): String? = logsDir?.absolutePath
 
   /**
+   * Return the TAIL of the native log (current + rotated, oldest-first), capped at
+   * ~[maxBytes] so the in-app "Export logs" can concatenate the native lines (KWS +
+   * whisper download + capture) with the JS log WITHOUT adb. Resolves the external
+   * file even if [init] hasn't been called yet (e.g. capture never started this
+   * launch) by best-effort re-resolving from [context]. Never throws; returns "" if
+   * nothing is readable.
+   */
+  fun readTail(context: Context, maxBytes: Int = 200 * 1024): String {
+    return try {
+      // Resolve the dir even if the speech service never ran this launch.
+      val dir = logsDir ?: run {
+        val base = context.getExternalFilesDir(null) ?: context.filesDir
+        File(base, "logs")
+      }
+      val current = logFile ?: File(dir, LOG_NAME)
+      val rotated = File(dir, ROTATED_NAME)
+      val sb = StringBuilder()
+      synchronized(lock) {
+        // oldest first: rotated then current.
+        for (f in listOf(rotated, current)) {
+          if (f.exists() && f.length() > 0) {
+            try { sb.append(f.readText()) } catch (_: Throwable) {}
+          }
+        }
+      }
+      val text = sb.toString()
+      if (text.length <= maxBytes) text
+      else "…(truncated)…\n" + text.substring(text.length - maxBytes)
+    } catch (_: Throwable) {
+      ""
+    }
+  }
+
+  /**
    * Append a timestamped line `<ISO8601Z> <TAG>: <message>` to killio.log.
    * Thread-safe, buffered (one open/append per call — fine at our log rate),
    * best-effort — never throws. No-op if [init] hasn't resolved a file yet.

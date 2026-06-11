@@ -93,6 +93,16 @@ class KillioSpeechModule : Module() {
       Unit
     }
 
+    // Return the TAIL (~200KB) of the NATIVE FileLog (killio.log: KWS + whisper
+    // download status + capture lines) so the Settings "Export logs" can
+    // concatenate native + JS logs into one shared file WITHOUT adb. Best-effort:
+    // returns "" if the native log isn't readable. Resolves the external log path
+    // even if capture never ran this launch.
+    AsyncFunction("readNativeLog") {
+      val ctx: Context? = appContext.reactContext
+      if (ctx == null) "" else FileLog.readTail(ctx)
+    }
+
     AsyncFunction("stop") {
       val ctx: Context? = appContext.reactContext
       if (ctx != null) {

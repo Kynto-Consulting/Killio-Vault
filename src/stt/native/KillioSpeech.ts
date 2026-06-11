@@ -202,6 +202,23 @@ export async function stop(): Promise<void> {
   await native.stop();
 }
 
+/**
+ * Read the tail (~200KB) of the NATIVE diagnostic log (killio.log: KWS + whisper
+ * download status + capture lines) from the app's external files dir. JS can't
+ * reach that path via expo-file-system, so the native module returns it. Returns
+ * '' if the native module is absent (Expo Go) or nothing is logged yet. Used by
+ * the Settings "Export logs" to include the native log alongside the JS log.
+ */
+export async function readNativeLog(): Promise<string> {
+  try {
+    if (!native?.readNativeLog) return '';
+    const s = await native.readNativeLog();
+    return typeof s === 'string' ? s : '';
+  } catch {
+    return '';
+  }
+}
+
 /** One-shot recognition for push-to-talk. Returns '' if nothing was heard. */
 export async function recognizeOnce(language = 'es-ES'): Promise<string> {
   if (!native?.recognizeOnce) {
