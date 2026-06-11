@@ -257,13 +257,23 @@ export default function AssistantScreen() {
     navigation.setOptions({
       headerTitle: agent?.name ?? tFallback('agent'),
       headerRight: () => (
-        <Pressable onPressIn={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
-          <SquarePen size={20} color={colors.foreground} />
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 4 }}>
+          {activeTeam?.id ? (
+            <ModelSelector
+              teamId={activeTeam.id}
+              conversationId={convId.current}
+              value={selectedModel}
+              onChange={setSelectedModel}
+            />
+          ) : null}
+          <Pressable onPressIn={newChat} hitSlop={12} style={{ paddingHorizontal: 6 }}>
+            <SquarePen size={20} color={colors.foreground} />
+          </Pressable>
+        </View>
       ),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigation, agent?.name]);
+  }, [navigation, agent?.name, activeTeam?.id, selectedModel]);
 
   // Resume an existing conversation from history.
   useEffect(() => {
@@ -869,16 +879,6 @@ export default function AssistantScreen() {
             left, the text field in the middle, and a right button that toggles
             between Mic (empty input → push-to-talk) and Send (has text). */}
         <View className="border-t border-border bg-background px-4 py-3">
-          {activeTeam?.id ? (
-            <View className="mb-2">
-              <ModelSelector
-                teamId={activeTeam.id}
-                conversationId={convId.current}
-                value={selectedModel}
-                onChange={setSelectedModel}
-              />
-            </View>
-          ) : null}
           <View className="flex-row items-center gap-1.5 rounded-full border border-border bg-card pl-1.5 pr-1.5 py-1">
             <Pressable
               onPress={() => setAttachMenuOpen(true)}
