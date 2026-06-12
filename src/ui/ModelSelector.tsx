@@ -98,8 +98,11 @@ export function ModelSelector({
     <>
       {variant !== 'sheet' ? (
       <Pressable
-        onPress={() => !locked && setOpen(true)}
+        // onPressIn (not onPress): a JS Pressable child of a native-stack header
+        // doesn't fire onPress reliably (same reason the new-chat button uses it).
+        onPressIn={() => !locked && setOpen(true)}
         disabled={locked}
+        hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel={t('select')}
         className={`flex-row items-center gap-1 self-start rounded-full border border-border bg-card px-2.5 py-1 ${
