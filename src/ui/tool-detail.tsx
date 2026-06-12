@@ -86,6 +86,29 @@ export function InputKV({ input }: { input: Record<string, unknown> }) {
   );
 }
 
+/** The most useful SECONDARY scalar to show next to an item's label. Prefers a
+ *  phone/number/value/email/url/status, falling back to id. Keeps the render
+ *  informative (the user complained it "muestra casi nada"). */
+function secondaryValue(obj: Record<string, unknown>): string {
+  // Contact-shaped item (phone / number / numbers present) → show the number.
+  if (obj.phone || obj.number || Array.isArray(obj.numbers)) {
+    const num =
+      obj.phone ??
+      obj.number ??
+      (Array.isArray(obj.numbers) ? (obj.numbers as unknown[])[0] : undefined);
+    if (num != null && String(num).trim()) return formatScalar(num, 40);
+  }
+  for (const key of ['value', 'email', 'url', 'status']) {
+    if (obj[key] != null && String(obj[key]).trim()) return formatScalar(obj[key], 40);
+  }
+  // Domain-specific extras (board/list parity) before falling back to id.
+  for (const key of ['boardType', 'visibility', 'updatedAt']) {
+    if (obj[key] != null && String(obj[key]).trim()) return formatScalar(obj[key], 40);
+  }
+  if (obj.id != null && String(obj.id).trim()) return formatScalar(obj.id, 40);
+  return '';
+}
+
 function formatPreviewItem(item: unknown): string {
   if (item === null || item === undefined) return '—';
   if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean')
@@ -94,13 +117,9 @@ function formatPreviewItem(item: unknown): string {
   if (typeof item === 'object') {
     const obj = item as Record<string, unknown>;
     const primary = formatScalar(obj.title ?? obj.name ?? obj.label ?? obj.id, 80);
-    const details = [
-      obj.boardType ? formatScalar(obj.boardType, 40) : '',
-      obj.visibility ? formatScalar(obj.visibility, 40) : '',
-      obj.status ? formatScalar(obj.status, 40) : '',
-      obj.updatedAt ? formatScalar(obj.updatedAt, 40) : '',
-    ].filter(Boolean);
-    return details.length > 0 ? `${primary} · ${details.join(' · ')}` : primary;
+    const secondary = secondaryValue(obj);
+    // Avoid duplicating when the label already equals the secondary (e.g. id).
+    return secondary && secondary !== primary ? `${primary} · ${secondary}` : primary;
   }
   return formatScalar(item, 80);
 }
@@ -172,13 +191,22 @@ export function OutputSummary({ output, isError }: { output: unknown; isError: b
     if (obj.error || (obj.message && isError)) {
       return <Text style={valueStyle(true)}>{formatScalar(obj.error ?? obj.message)}</Text>;
     }
-    const importantKeys = ['title', 'name', 'id', 'status', 'count', 'message', 'result', 'output', 'content'];
+    // Meaningful scalars first — phone/number/value/count are ALWAYS surfaced so
+    // a contact/result object never collapses to just a label (the "muestra casi
+    // nada" complaint). id is shown last (least useful).
+    const importantKeys = [
+      'title', 'name', 'label', 'phone', 'number', 'numbers', 'value', 'email',
+      'url', 'status', 'count', 'message', 'result', 'output', 'content', 'id',
+    ];
     const shown: [string, unknown][] = [];
     for (const k of importantKeys) {
-      if (k in obj && obj[k] !== null && obj[k] !== undefined) shown.push([k, obj[k]]);
+      if (k in obj && obj[k] !== null && obj[k] !== undefined) {
+        if (Array.isArray(obj[k])) shown.push([k, { __arr: obj[k] as unknown[] }]);
+        else shown.push([k, obj[k]]);
+      }
     }
     for (const [k, v] of Object.entries(obj)) {
-      if (shown.length >= 4) break;
+      if (shown.length >= 6) break;
       if (importantKeys.includes(k) || SKIP_KEYS.has(k)) continue;
       if (v === null || v === undefined) continue;
       if (Array.isArray(v)) {
@@ -208,7 +236,7 @@ export function OutputSummary({ output, isError }: { output: unknown; isError: b
             {v && typeof v === 'object' && '__arr' in (v as object) ? (
               <ArrayPreview arr={(v as { __arr: unknown[] }).__arr} />
             ) : (
-              <Text style={valueStyle(isError)}>{formatScalar(v)}</Text>
+              <Text style={valueStyle(isError)}>{formatScalar(v, 120)}</Text>
             )}
           </KVRow>
         ))}
