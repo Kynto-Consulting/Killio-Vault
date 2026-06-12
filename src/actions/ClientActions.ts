@@ -1,4 +1,5 @@
-import { Linking, Platform } from 'react-native';
+import { Linking, Platform, PermissionsAndroid } from 'react-native';
+import * as IntentLauncher from 'expo-intent-launcher';
 
 import { uploadScreenshot } from '../screen/ScreenCapture';
 import * as Calendar from '../calendar/Calendar';
@@ -34,6 +35,23 @@ export async function callNumber(number: string): Promise<ClientActionResult> {
   const digits = String(number).replace(/[^+\d#*]/g, '');
   if (!digits) return { success: false, error: 'No phone number given.' };
   const tel = `tel:${digits}`;
+  // DIRECT call: tel: via Linking only OPENS the dialer (ACTION_DIAL) — the user
+  // must still tap call. To actually PLACE the call we need ACTION_CALL + the
+  // runtime CALL_PHONE permission. If granted, dial directly; otherwise fall
+  // back to opening the dialer (ACTION_DIAL, no permission).
+  if (Platform.OS === 'android') {
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.CALL_PHONE,
+      );
+      if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+        await IntentLauncher.startActivityAsync('android.intent.action.CALL', { data: tel });
+        return { success: true, output: { called: true, number: digits } };
+      }
+    } catch {
+      /* ACTION_CALL failed (OEM/permission) → fall through to the dialer */
+    }
+  }
   // Do NOT gate tel: on Linking.canOpenURL — on Android 11+ package visibility
   // makes canOpenURL('tel:') return FALSE unless `tel` is whitelisted in the
   // manifest <queries>, so the dialer-always-present case wrongly reported

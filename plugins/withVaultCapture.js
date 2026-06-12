@@ -31,6 +31,9 @@ const PERMISSIONS = [
   'android.permission.ACCESS_COARSE_LOCATION',
   'android.permission.ACCESS_FINE_LOCATION',
   'android.permission.SEND_SMS',
+  // call_number — ACTION_CALL places the call DIRECTLY (vs ACTION_DIAL which only
+  // opens the dialer). Requested at runtime; falls back to the dialer if denied.
+  'android.permission.CALL_PHONE',
   // Torch control (flashlight client-action) goes through expo-camera.
   'android.permission.CAMERA',
   // set_alarm client-action — the clock-app intent throws SecurityException
