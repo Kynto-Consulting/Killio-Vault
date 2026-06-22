@@ -26,6 +26,7 @@ import {
   Box,
 } from "lucide-react-native";
 import { WebView } from "react-native-webview";
+import { buildWidgetSrcdoc, isWidgetUrl, widgetLangFrom, type WidgetLang } from "@/lib/widget-sandbox";
 import { useTranslations } from "@/i18n";
 import { colors } from "@/theme/theme";
 import { fonts } from "@/theme/fonts";
@@ -212,6 +213,56 @@ const Model3DViewer: React.FC<{ uri: string; full?: boolean }> = ({ uri, full })
   );
 };
 
+// Code-widget viewer (HTML/JS/TS/TSX). Source = inline `content.code` or a cloud
+// URL fetched as text. Rendered inside a sandboxed WebView (the WebView origin is
+// isolated from the app). Local `asset:` refs don't resolve on mobile (same as
+// images); inline code and cloud URLs work.
+const WidgetView: React.FC<{
+  code?: string | null;
+  url?: string | null;
+  lang: WidgetLang;
+  args?: Record<string, unknown> | null;
+  full?: boolean;
+}> = ({ code, url, lang, args, full }) => {
+  const [src, setSrc] = React.useState<string | null>(code && code.trim() ? code : null);
+  React.useEffect(() => {
+    if (code && code.trim()) { setSrc(code); return; }
+    if (!url || url.startsWith("asset:")) { setSrc(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(resolveUrl(url));
+        const text = await res.text();
+        if (!cancelled) setSrc(text);
+      } catch { if (!cancelled) setSrc(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [code, url]);
+
+  if (!src) {
+    return (
+      <View style={{ padding: 16, borderRadius: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border + "80" }}>
+        <Text style={{ fontSize: 12, color: colors.mutedForeground, fontFamily: fonts.regular }}>
+          Widget source unavailable (local widgets need a synced copy).
+        </Text>
+      </View>
+    );
+  }
+  const html = buildWidgetSrcdoc({ lang, code: src, args });
+  return (
+    <View style={{ width: full ? "100%" : 340, height: 380, maxWidth: "100%", alignSelf: "center", backgroundColor: "transparent" }}>
+      <WebView
+        originWhitelist={["*"]}
+        source={{ html }}
+        style={{ backgroundColor: "transparent" }}
+        javaScriptEnabled
+        domStorageEnabled
+        scrollEnabled
+      />
+    </View>
+  );
+};
+
 export const UnifiedMediaBrick: React.FC<{
   brickId: string;
   kind?: string;
@@ -262,6 +313,10 @@ export const UnifiedMediaBrick: React.FC<{
     /\.(glb|gltf)(\?|#|$)/i.test(activeItem?.url || "") ||
     content.mediaType === "model3d" ||
     kind === "model3d";
+  const hasInlineCode = typeof (content as any).code === "string" && !!(content as any).code;
+  const isWidget = isWidgetUrl(activeItem?.url, mime, content.mediaType as string, kind, hasInlineCode);
+  const widgetLang: WidgetLang =
+    ((content as any).widgetLang as WidgetLang) || widgetLangFrom(null, activeItem?.url, mime) || "html";
 
   const updateMeta = (nextMeta: MediaMeta, nextIndex = 0) => {
     const first = nextMeta.items[0];
@@ -337,6 +392,17 @@ export const UnifiedMediaBrick: React.FC<{
   const EmptyIcon = kind === "image" ? ImageIcon : kind === "video" ? VideoIcon : kind === "audio" ? Music : kind === "bookmark" ? Bookmark : kind === "model3d" ? Box : FileText;
 
   const renderMedia = () => {
+    if (isWidget) {
+      return (
+        <WidgetView
+          code={(content as any).code}
+          url={activeItem?.url}
+          lang={widgetLang}
+          args={(content as any).widgetArgs}
+          full={layout === "full"}
+        />
+      );
+    }
     if (!activeItem?.url) {
       return (
         <View
