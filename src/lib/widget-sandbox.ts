@@ -70,22 +70,28 @@ const ASSET_RUNTIME = `
 (function(){
   var MAP = window.__KA__ || {};
   function base(v){ return String(v).replace(/^asset:/i,'').split(/[\\\\/]/).pop(); }
-  function res(v){ if(!v) return v; var i=v.indexOf('asset:'); if(i<0) return v;
+  function res(v){ if(!v) return v; if(v.indexOf('asset:')<0) return v;
     return v.replace(/asset:[A-Za-z0-9_\\-.\\/]+/g, function(m){ var d=MAP[base(m)]; return d||m; }); }
   window.kasset = function(n){ return MAP[base(n)] || n; };
-  function sweep(rootEl){
-    if(!rootEl||!rootEl.querySelectorAll) return;
-    var els = rootEl.querySelectorAll('[src],[href],[poster],[style]');
-    for(var i=0;i<els.length;i++){ var el=els[i];
-      ['src','href','poster'].forEach(function(a){ var v=el.getAttribute&&el.getAttribute(a);
-        if(v&&v.indexOf('asset:')===0){ var d=MAP[base(v)]; if(d) el.setAttribute(a,d); } });
-      var st=el.getAttribute&&el.getAttribute('style'); if(st&&st.indexOf('asset:')>-1) el.setAttribute('style',res(st));
-    }
+  // Resolve asset: on a SINGLE element (attributes + inline style).
+  function sweepEl(el){
+    if(!el||el.nodeType!==1||!el.getAttribute) return;
+    ['src','href','poster','data-src'].forEach(function(a){ var v=el.getAttribute(a);
+      if(v&&v.indexOf('asset:')===0){ var d=MAP[base(v)]; if(d) el.setAttribute(a,d); } });
+    var ss=el.getAttribute('srcset'); if(ss&&ss.indexOf('asset:')>-1) el.setAttribute('srcset',res(ss));
+    var st=el.getAttribute('style'); if(st&&st.indexOf('asset:')>-1) el.setAttribute('style',res(st));
+  }
+  // Sweep a node AND its subtree (querySelectorAll excludes the node itself, so
+  // directly-inserted <img asset:> were being missed).
+  function sweep(root){
+    if(!root) return;
+    sweepEl(root);
+    if(root.querySelectorAll){ var els=root.querySelectorAll('*'); for(var i=0;i<els.length;i++) sweepEl(els[i]); }
   }
   window.__ksweep__ = sweep;
   function go(){ sweep(document.body);
-    try{ new MutationObserver(function(ms){ for(var i=0;i<ms.length;i++){ var an=ms[i].addedNodes; for(var j=0;j<an.length;j++) sweep(an[j]); if(ms[i].type==='attributes') sweep(ms[i].target); } })
-      .observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['src','href','poster','style']}); }catch(e){}
+    try{ new MutationObserver(function(ms){ for(var i=0;i<ms.length;i++){ var an=ms[i].addedNodes; for(var j=0;j<an.length;j++) sweep(an[j]); if(ms[i].type==='attributes') sweepEl(ms[i].target); } })
+      .observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['src','href','poster','srcset','style','data-src']}); }catch(e){}
   }
   if(document.body) go(); else document.addEventListener('DOMContentLoaded', go);
 })();`;
