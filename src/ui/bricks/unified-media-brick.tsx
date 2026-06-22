@@ -23,7 +23,9 @@ import {
   Bookmark,
   Play,
   Pause,
+  Box,
 } from "lucide-react-native";
+import { WebView } from "react-native-webview";
 import { useTranslations } from "@/i18n";
 import { colors } from "@/theme/theme";
 import { fonts } from "@/theme/fonts";
@@ -186,6 +188,30 @@ const AudioPlayer: React.FC<{ uri: string; title?: string | null }> = ({ uri, ti
   );
 };
 
+// 3D model (.glb/.gltf) viewer. glB packs geometry + textures + materials in ONE
+// file, so a single cloud (`/uploads/`) URL renders fully. Drawn with Google's
+// <model-viewer> inside a WebView (orbit / pinch-zoom / auto-rotate) — no native
+// GL module needed. (Local `asset:` refs don't resolve on mobile, same as images.)
+const Model3DViewer: React.FC<{ uri: string; full?: boolean }> = ({ uri, full }) => {
+  const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+<style>html,body{margin:0;height:100%;background:transparent}model-viewer{width:100%;height:100%;--poster-color:transparent}</style></head>
+<body><model-viewer src="${uri.replace(/"/g, "&quot;")}" camera-controls auto-rotate touch-action="pan-y" shadow-intensity="1" exposure="1" interaction-prompt="none" loading="eager"></model-viewer></body></html>`;
+  return (
+    <View style={{ width: full ? "100%" : 320, height: 360, maxWidth: "100%", alignSelf: "center", backgroundColor: "transparent" }}>
+      <WebView
+        originWhitelist={["*"]}
+        source={{ html }}
+        style={{ backgroundColor: "transparent" }}
+        javaScriptEnabled
+        domStorageEnabled
+        allowsFullscreenVideo={false}
+        scrollEnabled={false}
+      />
+    </View>
+  );
+};
+
 export const UnifiedMediaBrick: React.FC<{
   brickId: string;
   kind?: string;
@@ -230,6 +256,12 @@ export const UnifiedMediaBrick: React.FC<{
     content.mediaType === "audio" ||
     kind === "audio";
   const isWebBookmark = content.mediaType === "bookmark" || kind === "bookmark" || mime === "text/html";
+  const is3D =
+    mime === "model/gltf-binary" ||
+    mime === "model/gltf+json" ||
+    /\.(glb|gltf)(\?|#|$)/i.test(activeItem?.url || "") ||
+    content.mediaType === "model3d" ||
+    kind === "model3d";
 
   const updateMeta = (nextMeta: MediaMeta, nextIndex = 0) => {
     const first = nextMeta.items[0];
@@ -302,7 +334,7 @@ export const UnifiedMediaBrick: React.FC<{
     setLinkInput("");
   };
 
-  const EmptyIcon = kind === "image" ? ImageIcon : kind === "video" ? VideoIcon : kind === "audio" ? Music : kind === "bookmark" ? Bookmark : FileText;
+  const EmptyIcon = kind === "image" ? ImageIcon : kind === "video" ? VideoIcon : kind === "audio" ? Music : kind === "bookmark" ? Bookmark : kind === "model3d" ? Box : FileText;
 
   const renderMedia = () => {
     if (!activeItem?.url) {
@@ -410,6 +442,10 @@ export const UnifiedMediaBrick: React.FC<{
           </View>
         </Pressable>
       );
+    }
+
+    if (is3D) {
+      return <Model3DViewer uri={uri} full={layout === "full"} />;
     }
 
     if (isVideo) {
