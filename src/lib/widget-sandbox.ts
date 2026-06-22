@@ -98,7 +98,7 @@ ${reactTags}
   function fail(e){ document.body.innerHTML = '<pre class="k-werr">'+String((e&&e.stack)||e)+'</pre>'; }
   try {
     if (!window.Babel) { fail('Code widgets need a connection to load the compiler.'); return; }
-    var compiled = window.Babel.transform(SRC, { presets: ${presets}, filename: 'widget.${lang}' }).code;
+    var compiled = window.Babel.transform(SRC, { presets: ${presets}, plugins: ['transform-modules-commonjs'], filename: 'widget.${lang}' }).code;
     var mod = { exports: {} };
     var run = new Function('module','exports','React','ReactDOM', compiled + '\\n;return (module.exports.default !== undefined ? module.exports.default : module.exports);');
     var widget = run(mod, mod.exports, window.React, window.ReactDOM);
